@@ -1189,8 +1189,103 @@ class WebZoneServerNode(Node):
         self._update_nav_state(res)
         return True, ""
 
+    @staticmethod
+    def _normalize_yaw_deg(yaw_deg: float) -> float:
+        yaw = float(yaw_deg)
+        while yaw <= -180.0:
+            yaw += 360.0
+        while yaw > 180.0:
+            yaw -= 360.0
+        return float(yaw)
+
+    @staticmethod
+    def _bearing_deg_between_ll(
+        start_lat: float, start_lon: float, end_lat: float, end_lon: float
+    ) -> Optional[float]:
+        if not (
+            np.isfinite(start_lat)
+            and np.isfinite(start_lon)
+            and np.isfinite(end_lat)
+            and np.isfinite(end_lon)
+        ):
+            return None
+        meters_per_deg_lat = 111_320.0
+        cos_lat = max(1.0e-6, abs(math.cos(math.radians(float(start_lat)))))
+        meters_per_deg_lon = meters_per_deg_lat * cos_lat
+        north_m = (float(end_lat) - float(start_lat)) * meters_per_deg_lat
+        east_m = (float(end_lon) - float(start_lon)) * meters_per_deg_lon
+        if math.hypot(north_m, east_m) <= 1.0e-6:
+            return None
+        return WebZoneServerNode._normalize_yaw_deg(math.degrees(math.atan2(north_m, east_m)))
+
+    def _resolve_waypoint_yaws(
+        self, waypoints: List[Dict[str, Any]], loop: bool
+    ) -> List[float]:
+        resolved: List[Optional[float]] = [None] * len(waypoints)
+        with self._lock:
+            robot_pose = dict(self._last_robot_pose) if self._last_robot_pose is not None else None
+            robot_heading_deg = self._last_robot_heading_deg
+
+        for idx, wp in enumerate(waypoints):
+            yaw_deg = wp.get("yaw_deg", UNSET)
+            if yaw_deg is not UNSET and yaw_deg is not None and np.isfinite(float(yaw_deg)):
+                resolved[idx] = self._normalize_yaw_deg(float(yaw_deg))
+
+        for idx in range(len(waypoints)):
+            if resolved[idx] is not None:
+                continue
+            lat = float(waypoints[idx]["lat"])
+            lon = float(waypoints[idx]["lon"])
+
+            next_idx: Optional[int] = None
+            if idx + 1 < len(waypoints):
+                next_idx = idx + 1
+            elif loop and len(waypoints) > 1:
+                next_idx = 0
+
+            if next_idx is not None:
+                next_wp = waypoints[next_idx]
+                bearing = self._bearing_deg_between_ll(
+                    lat, lon, float(next_wp["lat"]), float(next_wp["lon"])
+                )
+                if bearing is not None:
+                    resolved[idx] = bearing
+                    continue
+
+            prev_idx = idx - 1
+            if prev_idx >= 0:
+                prev_wp = waypoints[prev_idx]
+                bearing = self._bearing_deg_between_ll(
+                    float(prev_wp["lat"]), float(prev_wp["lon"]), lat, lon
+                )
+                if bearing is not None:
+                    resolved[idx] = bearing
+                    continue
+
+            if robot_pose is not None:
+                bearing = self._bearing_deg_between_ll(
+                    float(robot_pose["lat"]),
+                    float(robot_pose["lon"]),
+                    lat,
+                    lon,
+                )
+                if bearing is not None:
+                    resolved[idx] = bearing
+                    continue
+                heading_deg = robot_pose.get("heading_deg", None)
+                if heading_deg is not None and np.isfinite(float(heading_deg)):
+                    resolved[idx] = self._normalize_yaw_deg(float(heading_deg))
+                    continue
+
+            if robot_heading_deg is not None and np.isfinite(float(robot_heading_deg)):
+                resolved[idx] = self._normalize_yaw_deg(float(robot_heading_deg))
+            else:
+                resolved[idx] = 0.0
+
+        return [float(yaw) for yaw in resolved]
+
     def set_nav_goals(
-        self, waypoints: List[Dict[str, float]], loop: bool
+        self, waypoints: List[Dict[str, Any]], loop: bool
     ) -> Tuple[bool, str, int, bool]:
         if len(waypoints) == 0:
             return False, "at least one waypoint is required", 0, False
@@ -1199,10 +1294,11 @@ class WebZoneServerNode(Node):
             f"WS->ROS set_nav_goals (count={len(waypoints)}, loop={bool(loop)})"
         )
         req = SetNavGoalLL.Request()
+        resolved_yaws_deg = self._resolve_waypoint_yaws(waypoints, loop)
 
         req.lats = [float(wp["lat"]) for wp in waypoints]
         req.lons = [float(wp["lon"]) for wp in waypoints]
-        req.yaws_deg = [float(wp.get("yaw_deg", 0.0)) for wp in waypoints]
+        req.yaws_deg = [float(yaw_deg) for yaw_deg in resolved_yaws_deg]
         req.loop = bool(loop)
 
         # Keep legacy single-goal fields populated for compatibility.
@@ -1438,12 +1534,18 @@ class WebSocketApi:
             try:
                 lat = float(msg["lat"])
                 lon = float(msg["lon"])
-                yaw_deg = float(msg.get("yaw_deg", 0.0))
+                yaw_raw = msg.get("yaw_deg", UNSET)
             except (KeyError, ValueError, TypeError) as exc:
                 return None, False, f"invalid parameters: {exc}"
-            if (not np.isfinite(lat)) or (not np.isfinite(lon)) or (not np.isfinite(yaw_deg)):
-                return None, False, "lat/lon/yaw_deg must be finite numbers"
-            return [{"lat": lat, "lon": lon, "yaw_deg": yaw_deg}], loop, ""
+            if (not np.isfinite(lat)) or (not np.isfinite(lon)):
+                return None, False, "lat/lon must be finite numbers"
+            waypoint = {"lat": lat, "lon": lon}
+            if yaw_raw is not UNSET:
+                yaw_deg = float(yaw_raw)
+                if not np.isfinite(yaw_deg):
+                    return None, False, "yaw_deg must be a finite number"
+                waypoint["yaw_deg"] = float(yaw_deg)
+            return [waypoint], loop, ""
 
         if not isinstance(waypoints_raw, list) or len(waypoints_raw) == 0:
             return None, False, "waypoints must be a non-empty list"
@@ -1455,12 +1557,18 @@ class WebSocketApi:
             try:
                 lat = float(item["lat"])
                 lon = float(item["lon"])
-                yaw_deg = float(item.get("yaw_deg", 0.0))
+                yaw_raw = item.get("yaw_deg", UNSET)
             except (KeyError, ValueError, TypeError) as exc:
                 return None, False, f"invalid waypoint[{idx}] values: {exc}"
-            if (not np.isfinite(lat)) or (not np.isfinite(lon)) or (not np.isfinite(yaw_deg)):
-                return None, False, f"waypoint[{idx}] values must be finite"
-            waypoints.append({"lat": lat, "lon": lon, "yaw_deg": yaw_deg})
+            if (not np.isfinite(lat)) or (not np.isfinite(lon)):
+                return None, False, f"waypoint[{idx}] lat/lon must be finite"
+            waypoint: Dict[str, Any] = {"lat": lat, "lon": lon}
+            if yaw_raw is not UNSET:
+                yaw_deg = float(yaw_raw)
+                if not np.isfinite(yaw_deg):
+                    return None, False, f"waypoint[{idx}] yaw_deg must be finite"
+                waypoint["yaw_deg"] = float(yaw_deg)
+            waypoints.append(waypoint)
 
         return waypoints, loop, ""
 
