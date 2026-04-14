@@ -66,7 +66,9 @@ def generate_launch_description():
     default_global_localization_params = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
     )
-    default_nav2_params = _resolve_config_file_path(gps_wpf_dir, "nav2_global_v2_params.yaml")
+    default_nav2_params = _resolve_config_file_path(
+        gps_wpf_dir, "nav2_global_v2_real_rolling_params.yaml"
+    )
     default_collision_monitor_params = _resolve_config_file_path(
         gps_wpf_dir, "collision_monitor_v2.yaml"
     )

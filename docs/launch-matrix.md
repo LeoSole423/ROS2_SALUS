@@ -8,7 +8,7 @@ Fuente de verdad: `src/**/launch/*.launch.py` y `tools/*.sh`
 | Perfil | Launch | Helper | Destino | Estado |
 | --- | --- | --- | --- | --- |
 | Sim global Ackermann | `ros2 launch navegacion_gps sim_global_v2.launch.py` | `./tools/launch_sim_global_v2.sh` | contenedor | vigente |
-| Real global Ackermann | `ros2 launch navegacion_gps real_global_v2.launch.py` | `./tools/launch_real_global_v2.sh` | robot/contenedor | vigente, con perfil CycloneDDS Wi-Fi seguro |
+| Real global Ackermann | `ros2 launch navegacion_gps real_global_v2.launch.py` | `./tools/launch_real_global_v2.sh` | robot/contenedor | vigente, con perfil CycloneDDS Wi-Fi seguro y `global_costmap` rolling |
 | RViz real global V2 | `ros2 launch navegacion_gps rviz_real_global_v2.launch.py` | `./tools/launch_real_global_v2_rviz.sh` | PC local | vigente, con perfil CycloneDDS Wi-Fi seguro |
 | Replay offline localizacion global | `ros2 launch navegacion_gps replay_localization_global_v2.launch.py` | `./tools/run_localization_replay_compare.sh <bag_dir>` | contenedor | soporte |
 
@@ -42,7 +42,7 @@ En `real_global_v2` queda disponible `/scan_wifi_debug` como `LaserScan` reducid
 | --- | --- | --- |
 | Recompilar cambios de navegación/control | `./tools/compile-ros.sh controller_server navegacion_gps` | recompila dentro del contenedor |
 | Abrir shell del contenedor | `./tools/exec.sh` | usar si hace falta correr `colcon` o `ros2` a mano |
-| Lanzar `real_global_v2` | `./tools/launch_real_global_v2.sh` | wrapper corto sobre `ros2 launch navegacion_gps real_global_v2.launch.py`; hoy arranca con `use_keepout:=False` por default |
+| Lanzar `real_global_v2` | `./tools/launch_real_global_v2.sh` | wrapper corto sobre `ros2 launch navegacion_gps real_global_v2.launch.py`; hoy arranca con `use_keepout:=False` y `global_costmap` rolling por default |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
 ## Politica de datum
@@ -53,6 +53,7 @@ En `real_global_v2` queda disponible `/scan_wifi_debug` como `LaserScan` reducid
 ## Nota sim vs real
 - Los cambios en `sim_global_v2` que dependan de `joint_states` o `odom_raw` pertenecen a simulación y no pasan solos a `real_global_v2`.
 - `real_global_v2` ahora comparte con `sim_global_v2` el anclaje global en `map`: GPS geográfico -> `fromLL` -> `/gps/odometry_map`, además de soporte para `/gps/course_heading`.
+- `real_global_v2` usa un params file propio de Nav2 para dejar el `global_costmap` en rolling window sin tocar la localización global ni arrastrar overrides específicos de simulación.
 - La base local V2 no es legacy: `ackermann_odometry`, `localization_v2` y `/odometry/local` son parte activa de la navegacion global vigente. Lo no operativo son los launches locales standalone.
 - En `real_global_v2`, la fuente de steering que debe mantenerse estable es `/controller/drive_telemetry.steer_deg_measured`.
 - Si el robot mide el ángulo en la barra central de dirección, ese dato es el que debe alimentar la odometría Ackermann real.

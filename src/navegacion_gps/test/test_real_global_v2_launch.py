@@ -61,6 +61,7 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert '"map_gps_fromll_service_fallback": map_gps_fromll_service_fallback' in launch_contents
     assert '"map_gps_fromll_wait_timeout_s": map_gps_fromll_wait_timeout_s' in launch_contents
     assert 'DeclareLaunchArgument("navsat_use_odometry_yaw", default_value="false")' in launch_contents
+    assert "nav2_global_v2_real_rolling_params.yaml" in launch_contents
     assert '"navsat_use_odometry_yaw": navsat_use_odometry_yaw' in launch_contents
     assert 'DeclareLaunchArgument("enable_gps_course_heading", default_value="True")' in launch_contents
     assert 'DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0")' in launch_contents
@@ -147,6 +148,18 @@ def test_rviz_real_global_v2_launch_targets_global_config_for_local_pc() -> None
     assert launch_rsp_arg in launch_contents
     assert "condition=IfCondition(launch_robot_state_publisher)" in launch_contents
     assert 'executable="rviz2"' in launch_contents
+
+
+def test_real_nav2_global_params_enable_rolling_global_costmap() -> None:
+    params_contents = _read("config/nav2_global_v2_real_rolling_params.yaml")
+
+    assert "rolling_window: true" in params_contents
+    assert "global_frame: map" in params_contents
+    assert "width: 300" in params_contents
+    assert "height: 300" in params_contents
+    assert "origin_x" not in params_contents
+    assert "origin_y" not in params_contents
+    assert 'filters: ["keepout_filter"]' in params_contents
 
 
 def test_rviz_global_v2_prefers_wifi_debug_scan_for_remote_use() -> None:

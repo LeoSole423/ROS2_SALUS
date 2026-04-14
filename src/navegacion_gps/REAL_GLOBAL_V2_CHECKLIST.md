@@ -50,6 +50,7 @@ Confirmar que:
 - `fromLL` devuelve puntos coherentes con el mapa operativo
 - `/gps/course_heading` aparece solo cuando el avance GPS es valido y ayuda a cerrar el yaw global
 - un goal LL cae en la zona correcta de `map`
+- el `global_costmap` queda en frame `map` con ventana rolling de `300 x 300 m`, centrada sobre el robot y sin depender de `origin_x/y` fijos
 
 ## Cadena de Navegacion
 Verificar flujo:
