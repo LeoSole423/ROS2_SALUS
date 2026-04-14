@@ -11,6 +11,7 @@ from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
@@ -88,19 +89,34 @@ class NavSnapshotServerNode(Node):
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
+        latched_grid_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
 
         self._get_snapshot_srv = self.create_service(
             GetNavSnapshot, self.get_snapshot_service, self._on_get_snapshot
         )
 
         self._local_costmap_sub = self.create_subscription(
-            OccupancyGrid, self.local_costmap_topic, self._on_local_costmap, 10
+            OccupancyGrid,
+            self.local_costmap_topic,
+            self._on_local_costmap,
+            latched_grid_qos,
         )
         self._global_costmap_sub = self.create_subscription(
-            OccupancyGrid, self.global_costmap_topic, self._on_global_costmap, 10
+            OccupancyGrid,
+            self.global_costmap_topic,
+            self._on_global_costmap,
+            latched_grid_qos,
         )
         self._keepout_mask_sub = self.create_subscription(
-            OccupancyGrid, self.keepout_mask_topic, self._on_keepout_mask, 10
+            OccupancyGrid,
+            self.keepout_mask_topic,
+            self._on_keepout_mask,
+            latched_grid_qos,
         )
         self._local_footprint_sub = self.create_subscription(
             PolygonStamped, self.local_footprint_topic, self._on_local_footprint, 10

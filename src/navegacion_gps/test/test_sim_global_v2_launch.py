@@ -99,6 +99,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"max_sample_dt_s": ParameterValue(' in launch_contents
     assert '"publish_hz": ParameterValue(' in launch_contents
     assert '"hold_yaw_variance_multiplier": ParameterValue(' in launch_contents
+    assert "nav2_global_v2_sim_rolling_params.yaml" in launch_contents
     assert 'DeclareLaunchArgument("launch_web_app", default_value="True")' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
     assert '"launch_nav_command_server": "false"' in launch_contents
@@ -165,6 +166,15 @@ def test_nav2_global_params_switch_global_frame_to_map() -> None:
     assert "global_frame: map" in params_contents
     assert "local_frame: odom" in params_contents
     assert "odom_topic: /odometry/local" in params_contents
+
+
+def test_sim_nav2_global_params_enable_rolling_global_costmap() -> None:
+    params_contents = _read("config/nav2_global_v2_sim_rolling_params.yaml")
+
+    assert "rolling_window: true" in params_contents
+    assert "global_frame: map" in params_contents
+    assert "width: 300" in params_contents
+    assert "height: 300" in params_contents
 
 
 def test_rviz_global_config_and_launch_target_map() -> None:

@@ -169,9 +169,9 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
-    - Alpha: 0.95
+    - Alpha: 0.98
       Class: rviz_default_plugins/Map
-      Color Scheme: costmap
+      Color Scheme: map
       Draw Behind: false
       Enabled: true
       Name: Local Costmap
@@ -190,9 +190,9 @@ Visualization Manager:
         Value: /local_costmap/costmap_updates
       Use Timestamp: false
       Value: true
-    - Alpha: 0.22
+    - Alpha: 0.28
       Class: rviz_default_plugins/Map
-      Color Scheme: costmap
+      Color Scheme: map
       Draw Behind: true
       Enabled: true
       Name: Global Costmap
