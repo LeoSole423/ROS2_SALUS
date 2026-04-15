@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -10,10 +11,32 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
+    package_share_path = Path(package_share_dir)
+    default_path = package_share_path / "config" / filename
+    try:
+        workspace_root = package_share_path.parents[3]
+        source_path = workspace_root / "src" / "navegacion_gps" / "config" / filename
+        if source_path.exists():
+            return str(source_path)
+    except IndexError:
+        pass
+    return str(default_path)
+
+
 def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     map_tools_dir = get_package_share_directory("map_tools")
-    keepout_mask_yaml = os.path.join(gps_wpf_dir, "config", "keepout_mask.yaml")
+    keepout_mask_yaml = _resolve_config_file_path(gps_wpf_dir, "keepout_mask.yaml")
+    default_nav2_params_file = _resolve_config_file_path(
+        gps_wpf_dir, "nav2_global_v2_sim_rolling_params.yaml"
+    )
+    default_collision_monitor_params_file = _resolve_config_file_path(
+        gps_wpf_dir, "collision_monitor_v2.yaml"
+    )
+    default_global_localization_params_file = _resolve_config_file_path(
+        gps_wpf_dir, "localization_global_v2.yaml"
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     wheelbase_m = LaunchConfiguration("wheelbase_m")
@@ -89,18 +112,16 @@ def generate_launch_description():
             DeclareLaunchArgument("invert_steer_from_cmd_vel", default_value="True"),
             DeclareLaunchArgument(
                 "nav2_params_file",
-                default_value=os.path.join(
-                    gps_wpf_dir, "config", "nav2_global_v2_sim_rolling_params.yaml"
-                ),
+                default_value=default_nav2_params_file,
             ),
             DeclareLaunchArgument(
                 "collision_monitor_params_file",
-                default_value=os.path.join(gps_wpf_dir, "config", "collision_monitor_v2.yaml"),
+                default_value=default_collision_monitor_params_file,
             ),
             DeclareLaunchArgument("keepout_mask_yaml", default_value=keepout_mask_yaml),
             DeclareLaunchArgument(
                 "global_localization_params_file",
-                default_value=os.path.join(gps_wpf_dir, "config", "localization_global_v2.yaml"),
+                default_value=default_global_localization_params_file,
             ),
             DeclareLaunchArgument(
                 "custom_urdf",
@@ -384,6 +405,11 @@ def generate_launch_description():
                     "odom_topic": "/odometry/global",
                     "map_frame": "map",
                     "launch_nav_command_server": "false",
+                    "sensor_bridge_enabled": "false",
+                    "fixed_datum_lat": datum_lat,
+                    "fixed_datum_lon": datum_lon,
+                    "fixed_datum_yaw_deg": datum_yaw_deg,
+                    "fixed_datum_source": "sim_global_v2_fixed",
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

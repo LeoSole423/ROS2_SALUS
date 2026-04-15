@@ -294,7 +294,7 @@ def generate_launch_description():
                     os.path.join(sensores_dir, "launch", "mavros.launch.py")
                 ),
                 launch_arguments={
-                    "launch_web": "false",
+                    "launch_web": launch_web_app,
                     "launch_legacy_compat": "false",
                     # El bridge RTK queda activo por default en este perfil.
                     # Si el operador desactiva RTK pero luego habilita
@@ -537,6 +537,12 @@ def generate_launch_description():
                     "launch_nav_snapshot_server": "false",
                     "teleop_cmd_topic": "/cmd_vel_teleop",
                     "gps_status_topic": gps_rtk_status_topic,
+                    "sensor_bridge_enabled": launch_web_app,
+                    "sensor_bridge_http_url": "http://127.0.0.1:8000/data",
+                    "fixed_datum_lat": datum_lat,
+                    "fixed_datum_lon": datum_lon,
+                    "fixed_datum_yaw_deg": datum_yaw_deg,
+                    "fixed_datum_source": "real_global_v2_fixed",
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

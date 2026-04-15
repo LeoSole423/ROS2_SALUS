@@ -1,3 +1,5 @@
+import threading
+
 from diagnostic_msgs.msg import DiagnosticStatus
 
 from map_tools.web_zone_server import ROSBAG_TOPIC_PROFILES, WebZoneServerNode
@@ -25,6 +27,58 @@ class _FakeStatus:
         self.name = name
         self.level = level
         self.message = message
+
+
+class _FakeSensorNode(_FakeNode):
+    _build_default_datum_snapshot = WebZoneServerNode._build_default_datum_snapshot
+    _precision_from_gps_snapshot = staticmethod(WebZoneServerNode._precision_from_gps_snapshot)
+    _derive_mode = staticmethod(WebZoneServerNode._derive_mode)
+    _connection_status_locked = WebZoneServerNode._connection_status_locked
+    _build_general_sensor_snapshot = WebZoneServerNode._build_general_sensor_snapshot
+    build_sensor_info_message = WebZoneServerNode.build_sensor_info_message
+    is_ui_control_locked = WebZoneServerNode.is_ui_control_locked
+    get_ui_control_lock_reason = WebZoneServerNode.get_ui_control_lock_reason
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.fixed_datum_lat = -31.4858037
+        self.fixed_datum_lon = -64.2410570
+        self.fixed_datum_yaw_deg = 0.0
+        self.fixed_datum_source = "real_global_v2_fixed"
+        self._goal_active = False
+        self._manual_control = {"enabled": False}
+        self._control_locked = False
+        self._control_lock_reason = ""
+        self.sensor_bridge_enabled = True
+        self._gps_status_payload = {
+            "available": True,
+            "raw": "RTK_FIXED",
+            "normalized": "rtk_fixed",
+            "label": "RTK FIXED",
+            "level": "good",
+            "source": "rtk_status",
+        }
+        self._sensor_bridge_ok = True
+        self._sensor_bridge_error = ""
+        self._sensor_bridge_snapshot = {
+            "gps_meta": {
+                "fix_type_name": "RTK_FIXED",
+                "rtk_status": "rtk_fixed",
+                "satellites_visible": 18,
+                "eph": 85,
+            },
+            "rtk_source_state": {
+                "connected": True,
+                "active_source_label": "Base Norte",
+                "rtcm_age_s": 0.4,
+            },
+            "rtk_sources": [{"id": "base-norte", "label": "Base Norte"}],
+            "gps": {
+                "position_covariance": [0.04, 0.0, 0.0, 0.0, 0.09, 0.0, 0.0, 0.0, 0.0]
+            },
+            "diagnostics": {"yaw_delta_deg": 1.7},
+        }
+        self._datum_snapshot = self._build_default_datum_snapshot()
 
 
 def test_should_surface_diagnostic_accepts_navigation_errors():
@@ -97,3 +151,38 @@ def test_build_gps_status_payload_from_navsat_falls_back_to_3d_fix():
     assert payload["label"] == "3D FIX"
     assert payload["level"] == "warn"
     assert payload["source"] == "gps_fix"
+
+
+def test_build_default_datum_snapshot_uses_fixed_global_v2_values():
+    node = _FakeSensorNode()
+
+    snapshot = node._build_default_datum_snapshot()
+
+    assert snapshot["available"] is True
+    assert snapshot["already_set"] is True
+    assert snapshot["datum_lat"] == node.fixed_datum_lat
+    assert snapshot["datum_lon"] == node.fixed_datum_lon
+    assert snapshot["last_set_source"] == "real_global_v2_fixed"
+
+
+def test_build_general_sensor_snapshot_merges_bridge_state_and_precision():
+    node = _FakeSensorNode()
+
+    snapshot = node._build_general_sensor_snapshot()
+
+    assert snapshot["gps_meta"]["fix_type_name"] == "RTK_FIXED"
+    assert snapshot["gps_meta"]["estimated_precision_m"] == 0.85
+    assert snapshot["rtk_source_state"]["active_source_label"] == "Base Norte"
+    assert snapshot["datum"]["last_set_source"] == "real_global_v2_fixed"
+
+
+def test_build_sensor_info_message_reports_bridge_errors_for_pixhawk_tab():
+    node = _FakeSensorNode()
+    node._sensor_bridge_ok = False
+    node._sensor_bridge_error = "bridge offline"
+
+    payload = node.build_sensor_info_message(tab="pixhawk_gps", interval_s=0.5)
+
+    assert payload["implemented"] is True
+    assert payload["ok"] is False
+    assert payload["error"] == "bridge offline"

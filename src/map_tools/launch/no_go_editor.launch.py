@@ -31,6 +31,15 @@ def generate_launch_description():
     nav_telemetry_topic = LaunchConfiguration("nav_telemetry_topic")
     camera_pan_service = LaunchConfiguration("camera_pan_service")
     camera_status_service = LaunchConfiguration("camera_status_service")
+    enable_control_lock = LaunchConfiguration("enable_control_lock")
+    control_lock_start_locked = LaunchConfiguration("control_lock_start_locked")
+    sensor_bridge_enabled = LaunchConfiguration("sensor_bridge_enabled")
+    sensor_bridge_http_url = LaunchConfiguration("sensor_bridge_http_url")
+    datum_get_service = LaunchConfiguration("datum_get_service")
+    fixed_datum_lat = LaunchConfiguration("fixed_datum_lat")
+    fixed_datum_lon = LaunchConfiguration("fixed_datum_lon")
+    fixed_datum_yaw_deg = LaunchConfiguration("fixed_datum_yaw_deg")
+    fixed_datum_source = LaunchConfiguration("fixed_datum_source")
 
     request_timeout_s = LaunchConfiguration("request_timeout_s")
     snapshot_request_timeout_s = LaunchConfiguration("snapshot_request_timeout_s")
@@ -92,6 +101,24 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "camera_status_service",
                 default_value="/camara/camera_status",
+            ),
+            DeclareLaunchArgument("enable_control_lock", default_value="false"),
+            DeclareLaunchArgument("control_lock_start_locked", default_value="true"),
+            DeclareLaunchArgument("sensor_bridge_enabled", default_value="false"),
+            DeclareLaunchArgument(
+                "sensor_bridge_http_url",
+                default_value="http://127.0.0.1:8000/data",
+            ),
+            DeclareLaunchArgument(
+                "datum_get_service",
+                default_value="/datum_setter/get_datum",
+            ),
+            DeclareLaunchArgument("fixed_datum_lat", default_value="nan"),
+            DeclareLaunchArgument("fixed_datum_lon", default_value="nan"),
+            DeclareLaunchArgument("fixed_datum_yaw_deg", default_value="0.0"),
+            DeclareLaunchArgument(
+                "fixed_datum_source",
+                default_value="global_v2_fixed",
             ),
             DeclareLaunchArgument("request_timeout_s", default_value="5.0"),
             DeclareLaunchArgument("snapshot_request_timeout_s", default_value="2.0"),
@@ -170,6 +197,15 @@ def generate_launch_description():
                         "nav_telemetry_topic": nav_telemetry_topic,
                         "camera_pan_service": camera_pan_service,
                         "camera_status_service": camera_status_service,
+                        "enable_control_lock": enable_control_lock,
+                        "control_lock_start_locked": control_lock_start_locked,
+                        "sensor_bridge_enabled": sensor_bridge_enabled,
+                        "sensor_bridge_http_url": sensor_bridge_http_url,
+                        "datum_get_service": datum_get_service,
+                        "fixed_datum_lat": fixed_datum_lat,
+                        "fixed_datum_lon": fixed_datum_lon,
+                        "fixed_datum_yaw_deg": fixed_datum_yaw_deg,
+                        "fixed_datum_source": fixed_datum_source,
                         "request_timeout_s": request_timeout_s,
                         "snapshot_request_timeout_s": snapshot_request_timeout_s,
                         "set_zones_timeout_s": set_zones_timeout_s,

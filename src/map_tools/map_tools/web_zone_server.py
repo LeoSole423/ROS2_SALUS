@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib import request as urllib_request
 
 import numpy as np
 import rclpy
@@ -22,7 +23,7 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import NavSatFix, NavSatStatus
+from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -32,6 +33,7 @@ from interfaces.srv import (
     CameraPan,
     CameraStatus,
     CancelNavGoal,
+    GetDatum,
     GetNavSnapshot,
     GetNavState,
     GetZonesState,
@@ -113,6 +115,12 @@ ROSBAG_TOPIC_PROFILES: Dict[str, Tuple[str, ...]] = {
 UNSET = object()
 
 
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 class WebZoneServerNode(Node):
     @staticmethod
     def _diag_level_value(value: Any) -> int:
@@ -128,6 +136,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("ws_port", 8766)
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("gps_topic", "/gps/fix")
+        self.declare_parameter("imu_topic", "/imu/data")
         self.declare_parameter("gps_status_topic", "/gps/rtk_status")
         self.declare_parameter("odom_topic", "/odometry/local")
         self.declare_parameter("gps_broadcast_hz", 1.0)
@@ -156,11 +165,24 @@ class WebZoneServerNode(Node):
         self.declare_parameter("camera_pan_service", "/camara/camera_pan")
         self.declare_parameter("camera_zoom_toggle_service", "/camara/camera_zoom_toggle")
         self.declare_parameter("camera_status_service", "/camara/camera_status")
+        self.declare_parameter("enable_control_lock", False)
+        self.declare_parameter("control_lock_start_locked", True)
+        self.declare_parameter("control_lock_heartbeat_timeout_s", 2.5)
+        self.declare_parameter("sensor_bridge_enabled", False)
+        self.declare_parameter("sensor_bridge_http_url", "http://127.0.0.1:8000/data")
+        self.declare_parameter("sensor_bridge_timeout_s", 0.35)
+        self.declare_parameter("sensor_bridge_poll_hz", 2.0)
+        self.declare_parameter("datum_get_service", "/datum_setter/get_datum")
+        self.declare_parameter("fixed_datum_lat", float("nan"))
+        self.declare_parameter("fixed_datum_lon", float("nan"))
+        self.declare_parameter("fixed_datum_yaw_deg", 0.0)
+        self.declare_parameter("fixed_datum_source", "real_global_v2_fixed")
 
         self.ws_host = str(self.get_parameter("ws_host").value)
         self.ws_port = int(self.get_parameter("ws_port").value)
         self.map_frame = str(self.get_parameter("map_frame").value)
         self.gps_topic = str(self.get_parameter("gps_topic").value)
+        self.imu_topic = str(self.get_parameter("imu_topic").value)
         self.gps_status_topic = str(self.get_parameter("gps_status_topic").value)
         self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.gps_broadcast_hz = float(self.get_parameter("gps_broadcast_hz").value)
@@ -206,6 +228,32 @@ class WebZoneServerNode(Node):
             self.get_parameter("camera_zoom_toggle_service").value
         )
         self.camera_status_service = str(self.get_parameter("camera_status_service").value)
+        self.enable_control_lock = _coerce_bool(
+            self.get_parameter("enable_control_lock").value
+        )
+        self.control_lock_start_locked = _coerce_bool(
+            self.get_parameter("control_lock_start_locked").value
+        )
+        self.control_lock_heartbeat_timeout_s = max(
+            0.5, float(self.get_parameter("control_lock_heartbeat_timeout_s").value)
+        )
+        self.sensor_bridge_enabled = _coerce_bool(
+            self.get_parameter("sensor_bridge_enabled").value
+        )
+        self.sensor_bridge_http_url = str(
+            self.get_parameter("sensor_bridge_http_url").value
+        ).strip()
+        self.sensor_bridge_timeout_s = max(
+            0.1, float(self.get_parameter("sensor_bridge_timeout_s").value)
+        )
+        self.sensor_bridge_poll_hz = max(
+            0.2, float(self.get_parameter("sensor_bridge_poll_hz").value)
+        )
+        self.datum_get_service = str(self.get_parameter("datum_get_service").value)
+        self.fixed_datum_lat = float(self.get_parameter("fixed_datum_lat").value)
+        self.fixed_datum_lon = float(self.get_parameter("fixed_datum_lon").value)
+        self.fixed_datum_yaw_deg = float(self.get_parameter("fixed_datum_yaw_deg").value)
+        self.fixed_datum_source = str(self.get_parameter("fixed_datum_source").value).strip()
 
         self._lock = threading.Lock()
         self._ws_clients: Set[Any] = set()
@@ -213,6 +261,7 @@ class WebZoneServerNode(Node):
 
         self._last_robot_pose: Optional[Dict[str, float]] = None
         self._last_robot_heading_deg: Optional[float] = None
+        self._last_imu_heading_deg: Optional[float] = None
         self._last_gps_broadcast_monotonic: Optional[float] = None
         self._gps_status_payload = self._build_gps_status_payload(
             raw="",
@@ -256,11 +305,26 @@ class WebZoneServerNode(Node):
         self._rosbag_started_at_epoch_ms: Optional[int] = None
         self._rosbag_last_exit_code: Optional[int] = None
         self._rosbag_last_error = ""
+        self._control_locked = bool(
+            self.enable_control_lock and self.control_lock_start_locked
+        )
+        self._control_lock_reason = (
+            "STARTUP_LOCKED" if self._control_locked else ""
+        )
+        self._last_control_heartbeat_monotonic: Optional[float] = None
+        self._sensor_bridge_snapshot: Dict[str, Any] = {}
+        self._sensor_bridge_ok = False
+        self._sensor_bridge_error = ""
+        self._sensor_bridge_last_poll_monotonic: Optional[float] = None
+        self._datum_snapshot = self._build_default_datum_snapshot()
 
         self._manual_cmd_last_monotonic: Optional[float] = None
 
         self._gps_sub = self.create_subscription(
             NavSatFix, self.gps_topic, self._on_gps_fix, qos_profile_sensor_data
+        )
+        self._imu_sub = self.create_subscription(
+            Imu, self.imu_topic, self._on_imu, qos_profile_sensor_data
         )
         self._gps_status_sub = self.create_subscription(
             String, self.gps_status_topic, self._on_gps_status, 10
@@ -303,6 +367,14 @@ class WebZoneServerNode(Node):
         self._camera_status_client = self.create_client(
             CameraStatus, self.camera_status_service
         )
+        self._datum_get_client = self.create_client(GetDatum, self.datum_get_service)
+        self._control_lock_watchdog_timer = self.create_timer(
+            0.25, self._control_lock_watchdog_tick
+        )
+        self._sensor_bridge_timer = self.create_timer(
+            1.0 / float(self.sensor_bridge_poll_hz),
+            self._sensor_bridge_poll_tick,
+        )
         self.get_logger().info(
             "Web gateway ready "
             f"(ws={self.ws_host}:{self.ws_port}, zones_set={self.zones_set_geojson_service}, "
@@ -312,8 +384,10 @@ class WebZoneServerNode(Node):
             f"camera_pan={self.camera_pan_service}, camera_zoom_toggle={self.camera_zoom_toggle_service}, "
             f"camera_status={self.camera_status_service}, "
             f"teleop_topic={self.teleop_cmd_topic}, gps_topic={self.gps_topic}, "
+            f"imu_topic={self.imu_topic}, "
             f"gps_status_topic={self.gps_status_topic}, "
-            f"odom_topic={self.odom_topic})"
+            f"odom_topic={self.odom_topic}, control_lock={self.enable_control_lock}, "
+            f"sensor_bridge={self.sensor_bridge_enabled})"
         )
         self.get_logger().info(f"Waypoints file path: {self.waypoints_file}")
 
@@ -345,6 +419,7 @@ class WebZoneServerNode(Node):
 
     def snapshot_state(self) -> Dict[str, Any]:
         with self._lock:
+            connection_status = self._connection_status_locked()
             return {
                 "op": "state",
                 "ok": True,
@@ -365,6 +440,8 @@ class WebZoneServerNode(Node):
                 "recent_events": list(self._recent_nav_events),
                 "rosbag": self._build_rosbag_status_payload_locked(),
                 "camera_status": dict(self._camera_status),
+                "datum": dict(self._datum_snapshot),
+                **connection_status,
             }
 
     def _build_nav_telemetry_payload(self) -> Dict[str, Any]:
@@ -377,6 +454,7 @@ class WebZoneServerNode(Node):
             nav_result_event_id = int(self._nav_result_event_id)
             alerts = list(self._active_alerts)
             recent_events = list(self._recent_nav_events)
+            connection_status = self._connection_status_locked()
         return {
             "op": "nav_telemetry",
             "cmd_vel_safe": cmd_vel_safe,
@@ -387,6 +465,7 @@ class WebZoneServerNode(Node):
             "nav_result_event_id": nav_result_event_id,
             "alerts": alerts,
             "recent_events": recent_events,
+            **connection_status,
         }
 
     @staticmethod
@@ -464,6 +543,336 @@ class WebZoneServerNode(Node):
             if previous.get(key) != current.get(key):
                 return True
         return False
+
+    def _build_default_datum_snapshot(self) -> Dict[str, Any]:
+        if np.isfinite(self.fixed_datum_lat) and np.isfinite(self.fixed_datum_lon):
+            return {
+                "available": True,
+                "ok": True,
+                "already_set": True,
+                "datum_lat": float(self.fixed_datum_lat),
+                "datum_lon": float(self.fixed_datum_lon),
+                "datum_yaw_deg": float(self.fixed_datum_yaw_deg),
+                "last_set_source": self.fixed_datum_source or "fixed_config",
+                "last_set_epoch_ms": None,
+                "last_set_with_rtk": False,
+                "gps_is_rtk": False,
+            }
+        return {
+            "available": False,
+            "ok": False,
+            "already_set": False,
+            "datum_lat": None,
+            "datum_lon": None,
+            "datum_yaw_deg": None,
+            "last_set_source": "",
+            "last_set_epoch_ms": None,
+            "last_set_with_rtk": False,
+            "gps_is_rtk": False,
+        }
+
+    @staticmethod
+    def _stamp_to_epoch_ms(stamp: Any) -> Optional[int]:
+        if stamp is None:
+            return None
+        sec = getattr(stamp, "sec", None)
+        nanosec = getattr(stamp, "nanosec", None)
+        if not isinstance(sec, (int, float)) or not isinstance(nanosec, (int, float)):
+            return None
+        return int(float(sec) * 1000.0 + float(nanosec) / 1_000_000.0)
+
+    def _refresh_datum_snapshot(self) -> Dict[str, Any]:
+        default_snapshot = self._build_default_datum_snapshot()
+        req = GetDatum.Request()
+        res = self._call_service(self._datum_get_client, req, min(self.request_timeout_s, 1.0))
+        if res is None:
+            with self._lock:
+                self._datum_snapshot = default_snapshot
+                return dict(self._datum_snapshot)
+
+        snapshot = {
+            "available": bool(getattr(res, "ok", False)),
+            "ok": bool(getattr(res, "ok", False)),
+            "already_set": bool(getattr(res, "already_set", False)),
+            "datum_lat": (
+                float(res.datum_lat) if np.isfinite(float(getattr(res, "datum_lat", float("nan")))) else None
+            ),
+            "datum_lon": (
+                float(res.datum_lon) if np.isfinite(float(getattr(res, "datum_lon", float("nan")))) else None
+            ),
+            "datum_yaw_deg": float(self.fixed_datum_yaw_deg),
+            "last_set_source": str(getattr(res, "last_set_source", "") or ""),
+            "last_set_epoch_ms": self._stamp_to_epoch_ms(getattr(res, "last_set_stamp", None)),
+            "last_set_with_rtk": bool(getattr(res, "last_set_with_rtk", False)),
+            "gps_is_rtk": bool(getattr(res, "gps_is_rtk", False)),
+        }
+        if not snapshot["already_set"] and default_snapshot.get("available"):
+            snapshot = default_snapshot
+        with self._lock:
+            self._datum_snapshot = snapshot
+            return dict(self._datum_snapshot)
+
+    def _sensor_bridge_poll_tick(self) -> None:
+        if not self.sensor_bridge_enabled or not self.sensor_bridge_http_url:
+            return
+        try:
+            payload = self._poll_sensor_bridge_snapshot()
+            with self._lock:
+                self._sensor_bridge_snapshot = payload
+                self._sensor_bridge_ok = True
+                self._sensor_bridge_error = ""
+                self._sensor_bridge_last_poll_monotonic = time.monotonic()
+        except Exception as exc:
+            with self._lock:
+                self._sensor_bridge_ok = False
+                self._sensor_bridge_error = str(exc)
+                self._sensor_bridge_last_poll_monotonic = time.monotonic()
+
+    def _poll_sensor_bridge_snapshot(self) -> Dict[str, Any]:
+        req = urllib_request.Request(
+            self.sensor_bridge_http_url,
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with urllib_request.urlopen(req, timeout=self.sensor_bridge_timeout_s) as response:
+            raw = response.read().decode("utf-8")
+        payload = json.loads(raw or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError("sensor bridge response must be a JSON object")
+        return payload
+
+    @staticmethod
+    def _precision_from_gps_snapshot(snapshot: Dict[str, Any]) -> Optional[float]:
+        gps_meta = snapshot.get("gps_meta")
+        if isinstance(gps_meta, dict):
+            for key in ("estimated_precision_m", "hdop_m", "eph_m"):
+                value = gps_meta.get(key)
+                if isinstance(value, (int, float)) and np.isfinite(float(value)):
+                    return float(value)
+            eph_raw = gps_meta.get("eph")
+            if isinstance(eph_raw, (int, float)) and np.isfinite(float(eph_raw)):
+                return float(eph_raw) / 100.0
+        gps = snapshot.get("gps")
+        if isinstance(gps, dict):
+            covariance = gps.get("position_covariance")
+            if isinstance(covariance, list) and len(covariance) >= 2:
+                xx = covariance[0]
+                yy = covariance[4] if len(covariance) > 4 else covariance[1]
+                if isinstance(xx, (int, float)) and isinstance(yy, (int, float)):
+                    if np.isfinite(float(xx)) and np.isfinite(float(yy)):
+                        return math.sqrt(max(0.0, float(xx)) + max(0.0, float(yy)))
+        return None
+
+    @staticmethod
+    def _derive_mode(goal_active: bool, manual_enabled: bool) -> str:
+        if manual_enabled:
+            return "manual"
+        if goal_active:
+            return "navigating"
+        return "idle"
+
+    @staticmethod
+    def _normalize_delta_deg(delta_deg: float) -> float:
+        while delta_deg <= -180.0:
+            delta_deg += 360.0
+        while delta_deg > 180.0:
+            delta_deg -= 360.0
+        return float(delta_deg)
+
+    def _fallback_diagnostics_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            imu_heading = self._last_imu_heading_deg
+            robot_heading = self._last_robot_heading_deg
+        yaw_delta_deg = None
+        if imu_heading is not None and robot_heading is not None:
+            yaw_delta_deg = self._normalize_delta_deg(float(imu_heading) - float(robot_heading))
+        return {
+            "yaw_delta_deg": yaw_delta_deg,
+            "diferencias": yaw_delta_deg,
+        }
+
+    def _fallback_rtk_source_state(self, gps_status: Dict[str, Any]) -> Dict[str, Any]:
+        available = bool(gps_status.get("available", False))
+        label = str(gps_status.get("label") or "").strip()
+        normalized = str(gps_status.get("normalized") or "").strip()
+        source = str(gps_status.get("source") or "").strip()
+        return {
+            "connected": available,
+            "active_source_label": label or "sim_gps",
+            "active_source_id": normalized or source or "sim_gps",
+            "rtcm_age_s": None,
+            "received_count": None,
+            "last_error": "" if available else "gps unavailable",
+        }
+
+    def _connection_status_locked(self) -> Dict[str, Any]:
+        return {
+            "connected": True,
+            "mode": self._derive_mode(self._goal_active, bool(self._manual_control.get("enabled", False))),
+            "battery_pct": 0.0,
+            "control_locked": bool(self._control_locked),
+            "control_lock_reason": str(self._control_lock_reason),
+            "locked": bool(self._control_locked),
+            "lock_reason": str(self._control_lock_reason),
+        }
+
+    def _control_lock_watchdog_tick(self) -> None:
+        if not self.enable_control_lock:
+            return
+        with self._lock:
+            locked = bool(self._control_locked)
+            last_heartbeat = self._last_control_heartbeat_monotonic
+        if locked or last_heartbeat is None:
+            return
+        if (time.monotonic() - last_heartbeat) <= self.control_lock_heartbeat_timeout_s:
+            return
+        with self._lock:
+            self._control_locked = True
+            self._control_lock_reason = "UI_HEARTBEAT_TIMEOUT"
+            self._last_control_heartbeat_monotonic = None
+        self._broadcast_from_thread(self._build_nav_telemetry_payload())
+        self._broadcast_from_thread(self.snapshot_state())
+
+    def set_control_lock(self, locked: bool) -> Tuple[bool, str, bool, str]:
+        if not self.enable_control_lock:
+            return True, "", False, ""
+
+        next_locked = bool(locked)
+        with self._lock:
+            self._control_locked = next_locked
+            self._control_lock_reason = "UI_LOCK_REQUEST" if next_locked else ""
+            self._last_control_heartbeat_monotonic = (
+                None if next_locked else time.monotonic()
+            )
+            locked_after = bool(self._control_locked)
+            reason = str(self._control_lock_reason)
+        return True, "", locked_after, reason
+
+    def control_heartbeat(self) -> Tuple[bool, str, bool, str]:
+        if not self.enable_control_lock:
+            return True, "", False, ""
+
+        with self._lock:
+            if not self._control_locked:
+                self._last_control_heartbeat_monotonic = time.monotonic()
+            locked_after = bool(self._control_locked)
+            reason = str(self._control_lock_reason)
+        return True, "", locked_after, reason
+
+    def is_ui_control_locked(self) -> bool:
+        if not self.enable_control_lock:
+            return False
+        with self._lock:
+            return bool(self._control_locked)
+
+    def get_ui_control_lock_reason(self) -> str:
+        if not self.enable_control_lock:
+            return ""
+        with self._lock:
+            return str(self._control_lock_reason)
+
+    def _build_general_sensor_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            bridge_snapshot = dict(self._sensor_bridge_snapshot)
+            datum_snapshot = dict(self._datum_snapshot)
+            bridge_ok = bool(self._sensor_bridge_ok)
+            bridge_error = str(self._sensor_bridge_error)
+            gps_status = dict(self._gps_status_payload)
+
+        gps_meta = {}
+        if isinstance(bridge_snapshot.get("gps_meta"), dict):
+            gps_meta = dict(bridge_snapshot["gps_meta"])
+        if "fix_type_name" not in gps_meta:
+            gps_meta["fix_type_name"] = gps_status.get("label", "UNKNOWN")
+        if "rtk_status" not in gps_meta:
+            gps_meta["rtk_status"] = gps_status.get("normalized") or gps_status.get("raw", "")
+        precision = self._precision_from_gps_snapshot(bridge_snapshot)
+        if precision is not None and "estimated_precision_m" not in gps_meta:
+            gps_meta["estimated_precision_m"] = precision
+
+        rtk_source_state = (
+            dict(bridge_snapshot.get("rtk_source_state"))
+            if isinstance(bridge_snapshot.get("rtk_source_state"), dict)
+            else self._fallback_rtk_source_state(gps_status)
+        )
+        diagnostics = (
+            dict(bridge_snapshot.get("diagnostics"))
+            if isinstance(bridge_snapshot.get("diagnostics"), dict)
+            else self._fallback_diagnostics_snapshot()
+        )
+
+        snapshot = {
+            "gps_meta": gps_meta,
+            "gps_status": gps_status,
+            "rtk_source_state": rtk_source_state,
+            "rtk_sources": list(bridge_snapshot.get("rtk_sources") or []),
+            "datum": datum_snapshot,
+            "diagnostics": diagnostics,
+        }
+        if bridge_ok:
+            snapshot["sensor_bridge_ok"] = True
+        elif bridge_error:
+            snapshot["sensor_bridge_error"] = bridge_error
+        return snapshot
+
+    def build_sensor_info_message(
+        self, *, tab: str, interval_s: float, topic_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        normalized_tab = str(tab or "").strip()
+        payload: Dict[str, Any] = {
+            "op": "sensor_info",
+            "tab": normalized_tab,
+            "interval_s": float(interval_s),
+            "enabled": True,
+            "implemented": False,
+            "ok": True,
+            "snapshot": {},
+        }
+
+        if normalized_tab == "general":
+            payload["implemented"] = True
+            payload["snapshot"] = self._build_general_sensor_snapshot()
+            return payload
+
+        if normalized_tab == "pixhawk_gps":
+            with self._lock:
+                bridge_snapshot = dict(self._sensor_bridge_snapshot)
+                bridge_ok = bool(self._sensor_bridge_ok)
+                bridge_error = str(self._sensor_bridge_error)
+            payload["implemented"] = True
+            if not self.sensor_bridge_enabled:
+                payload["snapshot"] = {
+                    "gps_meta": {
+                        "fix_type_name": self._gps_status_payload.get("label", "UNKNOWN"),
+                        "rtk_status": self._gps_status_payload.get("normalized", ""),
+                    },
+                    "diagnostics": self._fallback_diagnostics_snapshot(),
+                }
+                return payload
+            payload["snapshot"] = bridge_snapshot
+            if not bridge_ok:
+                payload["ok"] = False
+                payload["error"] = bridge_error or "sensor bridge unavailable"
+            return payload
+
+        if normalized_tab == "topics":
+            payload["implemented"] = False
+            payload["snapshot"] = {
+                "selected_topic": str(topic_name or ""),
+                "selected_type": "",
+                "topics_catalog": [],
+                "history_text": "",
+                "error": "topic stream bridge not implemented in SALUS yet",
+            }
+            return payload
+
+        if normalized_tab in {"lidar", "camera"}:
+            payload["implemented"] = False
+            return payload
+
+        payload["ok"] = False
+        payload["error"] = f"unknown sensor tab: {normalized_tab}"
+        return payload
 
     @staticmethod
     def _rosbag_topics_for_profile(profile: str) -> Optional[Tuple[str, ...]]:
@@ -876,6 +1285,16 @@ class WebZoneServerNode(Node):
             self._last_robot_heading_deg = float(heading_deg)
             if self._last_robot_pose is not None:
                 self._last_robot_pose["heading_deg"] = float(heading_deg)
+
+    def _on_imu(self, msg: Imu) -> None:
+        q = msg.orientation
+        heading_deg = self._yaw_deg_from_quaternion(
+            float(q.x), float(q.y), float(q.z), float(q.w)
+        )
+        if heading_deg is None:
+            return
+        with self._lock:
+            self._last_imu_heading_deg = float(heading_deg)
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
         robot_pose_payload = None
@@ -1504,12 +1923,17 @@ class WebZoneServerNode(Node):
         ok_c, err_c, _ = self.get_camera_status()
         if not ok_c and err_c:
             self.get_logger().warning(f"camera bootstrap failed: {err_c}")
+        self._refresh_datum_snapshot()
+        if self.sensor_bridge_enabled and self.sensor_bridge_http_url:
+            self._sensor_bridge_poll_tick()
         self.get_logger().info("Gateway bootstrap finished")
 
 
 class WebSocketApi:
     def __init__(self, node: WebZoneServerNode):
         self.node = node
+        self._sensor_info_views: Dict[Any, Dict[str, Any]] = {}
+        self._sensor_info_tasks: Dict[Any, asyncio.Task[Any]] = {}
 
     async def _reload_zones_on_connect(self) -> None:
         try:
@@ -1601,6 +2025,72 @@ class WebSocketApi:
             payload.update(extra)
         return payload
 
+    def _control_lock_extra(self, *, locked: Optional[bool] = None, reason: Optional[str] = None) -> Dict[str, Any]:
+        locked_value = self.node.is_ui_control_locked() if locked is None else bool(locked)
+        reason_value = self.node.get_ui_control_lock_reason() if reason is None else str(reason or "")
+        return {
+            "control_locked": bool(locked_value),
+            "control_lock_reason": reason_value,
+            "locked": bool(locked_value),
+            "lock_reason": reason_value,
+        }
+
+    def _is_controlled_robot_op(self, op: Any, msg: Dict[str, Any]) -> bool:
+        if not self.node.enable_control_lock:
+            return False
+        op_name = str(op or "")
+        if op_name == "set_goal_ll":
+            return True
+        if op_name == "set_manual_cmd":
+            return True
+        if op_name == "set_manual_mode":
+            return bool(msg.get("enabled") is True)
+        return False
+
+    async def _send_sensor_info_snapshot(self, ws: Any) -> None:
+        view = self._sensor_info_views.get(ws)
+        if not view or not bool(view.get("enabled")):
+            return
+        payload = self.node.build_sensor_info_message(
+            tab=str(view.get("tab") or ""),
+            interval_s=float(view.get("interval_s") or 0.1),
+            topic_name=view.get("topic_name"),
+        )
+        await self._send_json(ws, payload)
+
+    async def _sensor_info_loop(self, ws: Any) -> None:
+        try:
+            while True:
+                view = self._sensor_info_views.get(ws)
+                if not view or not bool(view.get("enabled")):
+                    return
+                await self._send_sensor_info_snapshot(ws)
+                await asyncio.sleep(max(0.1, float(view.get("interval_s") or 0.1)))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.node.get_logger().warning(f"sensor_info loop stopped: {exc}")
+        finally:
+            current = self._sensor_info_tasks.get(ws)
+            if current is not None and current.done():
+                self._sensor_info_tasks.pop(ws, None)
+
+    def _restart_sensor_info_loop(self, ws: Any) -> None:
+        current = self._sensor_info_tasks.pop(ws, None)
+        if current is not None:
+            current.cancel()
+        view = self._sensor_info_views.get(ws)
+        if not view or not bool(view.get("enabled")):
+            return
+        task = asyncio.create_task(self._sensor_info_loop(ws))
+        self._sensor_info_tasks[ws] = task
+
+    def _clear_sensor_info_client(self, ws: Any) -> None:
+        task = self._sensor_info_tasks.pop(ws, None)
+        if task is not None:
+            task.cancel()
+        self._sensor_info_views.pop(ws, None)
+
     async def _send_json(self, ws: Any, payload: Dict[str, Any]) -> None:
         await self.node.send_ws_json(ws, payload)
 
@@ -1629,6 +2119,12 @@ class WebSocketApi:
         _ = path
         pending_tasks: Set[asyncio.Task[Any]] = set()
         self.node.add_client(ws)
+        self._sensor_info_views[ws] = {
+            "enabled": False,
+            "tab": None,
+            "interval_s": 0.1,
+            "topic_name": None,
+        }
         try:
             await self._send_json(ws, self.node.snapshot_state())
             connect_reload_task = asyncio.create_task(self._reload_zones_on_connect())
@@ -1645,6 +2141,7 @@ class WebSocketApi:
                 task.cancel()
             if pending_tasks:
                 await asyncio.gather(*pending_tasks, return_exceptions=True)
+            self._clear_sensor_info_client(ws)
             self.node.remove_client(ws)
 
     async def _handle_message_safe(self, ws: Any, raw: str) -> None:
@@ -1682,6 +2179,115 @@ class WebSocketApi:
             if client_req_id is not None:
                 payload["client_req_id"] = client_req_id
             await self._send_json(ws, payload)
+            return
+
+        if op == "set_control_lock":
+            locked_raw = msg.get("locked")
+            if not isinstance(locked_raw, bool):
+                await self._send_ack(
+                    ws,
+                    "set_control_lock",
+                    False,
+                    "locked must be boolean",
+                    client_req_id=client_req_id,
+                    extra=self._control_lock_extra(),
+                )
+                return
+            ok, err, locked_after, reason = await asyncio.to_thread(
+                self.node.set_control_lock, locked_raw
+            )
+            await self._send_ack(
+                ws,
+                "set_control_lock",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=self._control_lock_extra(locked=locked_after, reason=reason),
+            )
+            if ok:
+                await self.node._broadcast(self.node._build_nav_telemetry_payload())
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "control_heartbeat":
+            ok, err, locked_after, reason = await asyncio.to_thread(
+                self.node.control_heartbeat
+            )
+            await self._send_ack(
+                ws,
+                "control_heartbeat",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=self._control_lock_extra(locked=locked_after, reason=reason),
+            )
+            return
+
+        if op == "set_sensor_info_view":
+            enabled = bool(msg.get("enabled"))
+            tab = None if msg.get("tab") is None else str(msg.get("tab"))
+            topic_name = None if msg.get("topic_name") is None else str(msg.get("topic_name"))
+            try:
+                interval_s = float(msg.get("interval_s", 0.1))
+            except (TypeError, ValueError):
+                interval_s = 0.1
+            interval_s = max(0.1, min(5.0, interval_s))
+
+            self._sensor_info_views[ws] = {
+                "enabled": enabled,
+                "tab": tab,
+                "interval_s": interval_s,
+                "topic_name": topic_name,
+            }
+            if enabled:
+                message = self.node.build_sensor_info_message(
+                    tab=tab or "",
+                    interval_s=interval_s,
+                    topic_name=topic_name,
+                )
+                await self._send_ack(
+                    ws,
+                    "set_sensor_info_view",
+                    True,
+                    None,
+                    client_req_id=client_req_id,
+                    extra={
+                        "enabled": True,
+                        "tab": tab,
+                        "interval_s": interval_s,
+                        "topic_name": topic_name,
+                        "implemented": bool(message.get("implemented", False)),
+                    },
+                )
+                self._restart_sensor_info_loop(ws)
+                await self._send_json(ws, message)
+            else:
+                self._restart_sensor_info_loop(ws)
+                await self._send_ack(
+                    ws,
+                    "set_sensor_info_view",
+                    True,
+                    None,
+                    client_req_id=client_req_id,
+                    extra={
+                        "enabled": False,
+                        "tab": tab,
+                        "interval_s": interval_s,
+                        "topic_name": topic_name,
+                        "implemented": False,
+                    },
+                )
+            return
+
+        if self._is_controlled_robot_op(op, msg) and self.node.is_ui_control_locked():
+            await self._send_ack(
+                ws,
+                str(op),
+                False,
+                f"controls are locked ({self.node.get_ui_control_lock_reason() or 'locked'})",
+                client_req_id=client_req_id,
+                extra=self._control_lock_extra(),
+            )
             return
 
         if op == "set_zones_geojson":
@@ -1785,6 +2391,7 @@ class WebSocketApi:
                 extra={
                     "waypoint_count": int(waypoint_count),
                     "loop": bool(loop_used),
+                    **self._control_lock_extra(),
                 },
             )
             return
@@ -1824,7 +2431,10 @@ class WebSocketApi:
                 ok,
                 err,
                 client_req_id=client_req_id,
-                extra={"enabled": bool(enabled_after)},
+                extra={
+                    "enabled": bool(enabled_after),
+                    **self._control_lock_extra(),
+                },
             )
             if ok:
                 await self.node._broadcast(self.node.snapshot_state())
@@ -1856,6 +2466,7 @@ class WebSocketApi:
                 ok,
                 err,
                 client_req_id=client_req_id,
+                extra=self._control_lock_extra(),
             )
             return
 
