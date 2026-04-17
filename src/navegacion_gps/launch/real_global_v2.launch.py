@@ -473,6 +473,22 @@ def generate_launch_description():
                     }
                 ],
             ),
+            Node(
+                package="navegacion_gps",
+                executable="route_executor",
+                name="route_executor",
+                output="screen",
+                parameters=[
+                    {
+                        "nav_set_goal_service": "/nav_command_server/set_goal_ll",
+                        "nav_cancel_goal_service": "/nav_command_server/cancel_goal",
+                        "nav_telemetry_topic": "/nav_command_server/telemetry",
+                        "set_route_service": "/route_executor/set_route_ll",
+                        "cancel_route_service": "/route_executor/cancel_route",
+                        "get_state_service": "/route_executor/get_state",
+                    }
+                ],
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(gps_wpf_dir, "launch", "localization_global_v2.launch.py")
@@ -532,9 +548,8 @@ def generate_launch_description():
                     "gps_topic": "/global_position/raw/fix",
                     "odom_topic": "/odometry/global",
                     "map_frame": "map",
-                    "launch_zones_manager": "false",
                     "launch_nav_command_server": "false",
-                    "launch_nav_snapshot_server": "false",
+                    "launch_route_executor": "false",
                     "teleop_cmd_topic": "/cmd_vel_teleop",
                     "gps_status_topic": gps_rtk_status_topic,
                     "sensor_bridge_enabled": launch_web_app,

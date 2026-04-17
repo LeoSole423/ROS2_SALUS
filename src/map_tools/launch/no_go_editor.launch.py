@@ -15,6 +15,7 @@ def generate_launch_description():
     launch_zones_manager = LaunchConfiguration("launch_zones_manager")
     launch_nav_command_server = LaunchConfiguration("launch_nav_command_server")
     launch_nav_snapshot_server = LaunchConfiguration("launch_nav_snapshot_server")
+    launch_route_executor = LaunchConfiguration("launch_route_executor")
 
     zones_set_geojson_service = LaunchConfiguration("zones_set_geojson_service")
     zones_get_state_service = LaunchConfiguration("zones_get_state_service")
@@ -25,6 +26,9 @@ def generate_launch_description():
     nav_brake_service = LaunchConfiguration("nav_brake_service")
     nav_set_manual_mode_service = LaunchConfiguration("nav_set_manual_mode_service")
     nav_get_state_service = LaunchConfiguration("nav_get_state_service")
+    route_set_service = LaunchConfiguration("route_set_service")
+    route_cancel_service = LaunchConfiguration("route_cancel_service")
+    route_get_state_service = LaunchConfiguration("route_get_state_service")
     teleop_cmd_topic = LaunchConfiguration("teleop_cmd_topic")
 
     nav_snapshot_service = LaunchConfiguration("nav_snapshot_service")
@@ -57,6 +61,7 @@ def generate_launch_description():
             DeclareLaunchArgument("launch_zones_manager", default_value="true"),
             DeclareLaunchArgument("launch_nav_command_server", default_value="true"),
             DeclareLaunchArgument("launch_nav_snapshot_server", default_value="true"),
+            DeclareLaunchArgument("launch_route_executor", default_value="true"),
             DeclareLaunchArgument(
                 "zones_set_geojson_service", default_value="/zones_manager/set_geojson"
             ),
@@ -85,6 +90,15 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "nav_get_state_service", default_value="/nav_command_server/get_state"
+            ),
+            DeclareLaunchArgument(
+                "route_set_service", default_value="/route_executor/set_route_ll"
+            ),
+            DeclareLaunchArgument(
+                "route_cancel_service", default_value="/route_executor/cancel_route"
+            ),
+            DeclareLaunchArgument(
+                "route_get_state_service", default_value="/route_executor/get_state"
             ),
             DeclareLaunchArgument(
                 "nav_snapshot_service",
@@ -172,6 +186,23 @@ def generate_launch_description():
                 ],
             ),
             Node(
+                package="navegacion_gps",
+                executable="route_executor",
+                name="route_executor",
+                output="screen",
+                condition=IfCondition(launch_route_executor),
+                parameters=[
+                    {
+                        "nav_set_goal_service": nav_set_goal_service,
+                        "nav_cancel_goal_service": nav_cancel_goal_service,
+                        "nav_telemetry_topic": nav_telemetry_topic,
+                        "set_route_service": route_set_service,
+                        "cancel_route_service": route_cancel_service,
+                        "get_state_service": route_get_state_service,
+                    }
+                ],
+            ),
+            Node(
                 package="map_tools",
                 executable="web_zone_server",
                 name="web_zone_server",
@@ -192,6 +223,9 @@ def generate_launch_description():
                         "nav_brake_service": nav_brake_service,
                         "nav_set_manual_mode_service": nav_set_manual_mode_service,
                         "nav_get_state_service": nav_get_state_service,
+                        "route_set_service": route_set_service,
+                        "route_cancel_service": route_cancel_service,
+                        "route_get_state_service": route_get_state_service,
                         "teleop_cmd_topic": teleop_cmd_topic,
                         "nav_snapshot_service": nav_snapshot_service,
                         "nav_telemetry_topic": nav_telemetry_topic,

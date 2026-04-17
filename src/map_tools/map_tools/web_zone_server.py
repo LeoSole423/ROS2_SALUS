@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib import request as urllib_request
 
 import numpy as np
@@ -33,12 +33,15 @@ from interfaces.srv import (
     CameraPan,
     CameraStatus,
     CancelNavGoal,
+    CancelRouteMission,
     GetDatum,
     GetNavSnapshot,
     GetNavState,
+    GetRouteMissionState,
     GetZonesState,
     SetManualMode,
     SetNavGoalLL,
+    SetRouteMissionLL,
     SetZonesGeoJson,
 )
 from .waypoints_file_utils import load_waypoints_yaml_file, save_waypoints_yaml_file
@@ -155,6 +158,10 @@ class WebZoneServerNode(Node):
         self.declare_parameter("nav_brake_service", "/nav_command_server/brake")
         self.declare_parameter("nav_set_manual_mode_service", "/nav_command_server/set_manual_mode")
         self.declare_parameter("nav_get_state_service", "/nav_command_server/get_state")
+        self.declare_parameter("route_set_service", "/route_executor/set_route_ll")
+        self.declare_parameter("route_cancel_service", "/route_executor/cancel_route")
+        self.declare_parameter("route_get_state_service", "/route_executor/get_state")
+        self.declare_parameter("route_state_poll_hz", 2.0)
         self.declare_parameter("teleop_cmd_topic", "/cmd_vel_teleop")
 
         self.declare_parameter("nav_snapshot_service", "/nav_snapshot_server/get_nav_snapshot")
@@ -216,6 +223,14 @@ class WebZoneServerNode(Node):
             self.get_parameter("nav_set_manual_mode_service").value
         )
         self.nav_get_state_service = str(self.get_parameter("nav_get_state_service").value)
+        self.route_set_service = str(self.get_parameter("route_set_service").value)
+        self.route_cancel_service = str(self.get_parameter("route_cancel_service").value)
+        self.route_get_state_service = str(
+            self.get_parameter("route_get_state_service").value
+        )
+        self.route_state_poll_hz = max(
+            0.2, float(self.get_parameter("route_state_poll_hz").value)
+        )
         self.teleop_cmd_topic = str(self.get_parameter("teleop_cmd_topic").value)
 
         self.nav_snapshot_service = str(self.get_parameter("nav_snapshot_service").value)
@@ -296,6 +311,7 @@ class WebZoneServerNode(Node):
             "last_command": "none",
             "zoom_in": False,
         }
+        self._route_mission = self._build_default_route_mission_payload()
         self._recent_nav_events: deque[Dict[str, Any]] = deque(maxlen=30)
         self._active_alerts: List[Dict[str, Any]] = []
         self._rosbag_process: Optional[subprocess.Popen] = None
@@ -319,6 +335,7 @@ class WebZoneServerNode(Node):
         self._datum_snapshot = self._build_default_datum_snapshot()
 
         self._manual_cmd_last_monotonic: Optional[float] = None
+        self._route_state_poll_inflight = False
 
         self._gps_sub = self.create_subscription(
             NavSatFix, self.gps_topic, self._on_gps_fix, qos_profile_sensor_data
@@ -359,6 +376,13 @@ class WebZoneServerNode(Node):
         )
         self._teleop_cmd_pub = self.create_publisher(CmdVelFinal, self.teleop_cmd_topic, 10)
         self._nav_get_state_client = self.create_client(GetNavState, self.nav_get_state_service)
+        self._route_set_client = self.create_client(SetRouteMissionLL, self.route_set_service)
+        self._route_cancel_client = self.create_client(
+            CancelRouteMission, self.route_cancel_service
+        )
+        self._route_get_state_client = self.create_client(
+            GetRouteMissionState, self.route_get_state_service
+        )
         self._nav_snapshot_client = self.create_client(GetNavSnapshot, self.nav_snapshot_service)
         self._camera_pan_client = self.create_client(CameraPan, self.camera_pan_service)
         self._camera_zoom_toggle_client = self.create_client(
@@ -375,10 +399,15 @@ class WebZoneServerNode(Node):
             1.0 / float(self.sensor_bridge_poll_hz),
             self._sensor_bridge_poll_tick,
         )
+        self._route_state_poll_timer = self.create_timer(
+            1.0 / float(self.route_state_poll_hz),
+            self._route_state_poll_tick,
+        )
         self.get_logger().info(
             "Web gateway ready "
             f"(ws={self.ws_host}:{self.ws_port}, zones_set={self.zones_set_geojson_service}, "
             f"goal_set={self.nav_set_goal_service}, snapshot={self.nav_snapshot_service}, "
+            f"route_set={self.route_set_service}, route_get_state={self.route_get_state_service}, "
             f"nav_events={self.nav_events_topic}, diagnostics={self.diagnostics_topic}, "
             f"rosbag_dir={self.rosbag_output_dir}, "
             f"camera_pan={self.camera_pan_service}, camera_zoom_toggle={self.camera_zoom_toggle_service}, "
@@ -436,6 +465,7 @@ class WebZoneServerNode(Node):
                 "nav_result_status": int(self._nav_result_status),
                 "nav_result_text": str(self._nav_result_text),
                 "nav_result_event_id": int(self._nav_result_event_id),
+                "route_mission": dict(self._route_mission),
                 "alerts": list(self._active_alerts),
                 "recent_events": list(self._recent_nav_events),
                 "rosbag": self._build_rosbag_status_payload_locked(),
@@ -452,6 +482,8 @@ class WebZoneServerNode(Node):
             nav_result_status = int(self._nav_result_status)
             nav_result_text = str(self._nav_result_text)
             nav_result_event_id = int(self._nav_result_event_id)
+            robot_pose = dict(self._last_robot_pose) if self._last_robot_pose is not None else None
+            route_mission = dict(self._route_mission)
             alerts = list(self._active_alerts)
             recent_events = list(self._recent_nav_events)
             connection_status = self._connection_status_locked()
@@ -463,6 +495,8 @@ class WebZoneServerNode(Node):
             "nav_result_status": nav_result_status,
             "nav_result_text": nav_result_text,
             "nav_result_event_id": nav_result_event_id,
+            "robot_pose": robot_pose,
+            "route_mission": route_mission,
             "alerts": alerts,
             "recent_events": recent_events,
             **connection_status,
@@ -570,6 +604,75 @@ class WebZoneServerNode(Node):
             "last_set_with_rtk": False,
             "gps_is_rtk": False,
         }
+
+    @staticmethod
+    def _build_default_route_mission_payload() -> Dict[str, Any]:
+        return {
+            "active": False,
+            "paused": False,
+            "loop": False,
+            "status": "idle",
+            "input_waypoint_count": 0,
+            "expanded_waypoint_count": 0,
+            "current_start_index": 0,
+            "current_target_index": 0,
+            "active_chunk_size": 0,
+            "leg_spacing_m": 0.0,
+            "chunk_span_m": 0.0,
+            "chunk_max_waypoints": 0,
+            "mission_waypoints": [],
+            "active_chunk_waypoints": [],
+        }
+
+    @staticmethod
+    def _route_waypoints_from_state(
+        lats: Sequence[float], lons: Sequence[float], yaws_deg: Sequence[float]
+    ) -> List[Dict[str, float]]:
+        if not (len(lats) == len(lons) == len(yaws_deg)):
+            return []
+        waypoints: List[Dict[str, float]] = []
+        for lat, lon, yaw_deg in zip(lats, lons, yaws_deg):
+            lat_value = float(lat)
+            lon_value = float(lon)
+            yaw_value = float(yaw_deg)
+            if not (
+                np.isfinite(lat_value)
+                and np.isfinite(lon_value)
+                and np.isfinite(yaw_value)
+            ):
+                continue
+            waypoints.append(
+                {
+                    "lat": lat_value,
+                    "lon": lon_value,
+                    "yaw_deg": yaw_value,
+                }
+            )
+        return waypoints
+
+    def _update_route_state(self, response: GetRouteMissionState.Response) -> None:
+        payload = {
+            "active": bool(response.active),
+            "paused": bool(response.paused),
+            "loop": bool(response.loop),
+            "status": str(response.status),
+            "input_waypoint_count": int(response.input_waypoint_count),
+            "expanded_waypoint_count": int(response.expanded_waypoint_count),
+            "current_start_index": int(response.current_start_index),
+            "current_target_index": int(response.current_target_index),
+            "active_chunk_size": int(response.active_chunk_size),
+            "leg_spacing_m": float(response.leg_spacing_m),
+            "chunk_span_m": float(response.chunk_span_m),
+            "chunk_max_waypoints": int(response.chunk_max_waypoints),
+            "mission_waypoints": self._route_waypoints_from_state(
+                response.mission_lats, response.mission_lons, response.mission_yaws_deg
+            ),
+            "active_chunk_waypoints": self._route_waypoints_from_state(
+                response.active_lats, response.active_lons, response.active_yaws_deg
+            ),
+        }
+        with self._lock:
+            self._route_mission = payload
 
     @staticmethod
     def _stamp_to_epoch_ms(stamp: Any) -> Optional[int]:
@@ -1608,6 +1711,37 @@ class WebZoneServerNode(Node):
         self._update_nav_state(res)
         return True, ""
 
+    def get_route_state(self) -> Tuple[bool, str]:
+        req = GetRouteMissionState.Request()
+        res = self._call_service(self._route_get_state_client, req, self.request_timeout_s)
+        if res is None:
+            return False, "route get_state timeout"
+        if not res.ok:
+            return False, str(res.error)
+        self._update_route_state(res)
+        return True, ""
+
+    def _route_state_poll_tick(self) -> None:
+        with self._lock:
+            if self._route_state_poll_inflight:
+                return
+            self._route_state_poll_inflight = True
+        thread = threading.Thread(
+            target=self._run_route_state_poll,
+            daemon=True,
+            name="route_state_poll",
+        )
+        thread.start()
+
+    def _run_route_state_poll(self) -> None:
+        try:
+            ok, err = self.get_route_state()
+            if not ok and err:
+                self.get_logger().debug(f"route state poll skipped: {err}")
+        finally:
+            with self._lock:
+                self._route_state_poll_inflight = False
+
     @staticmethod
     def _normalize_yaw_deg(yaw_deg: float) -> float:
         yaw = float(yaw_deg)
@@ -1733,6 +1867,65 @@ class WebZoneServerNode(Node):
         else:
             self.get_logger().info("set_nav_goals ok")
         return bool(res.ok), str(res.error), len(waypoints), bool(loop)
+
+    def set_route_mission(
+        self,
+        waypoints: List[Dict[str, Any]],
+        loop: bool,
+        leg_spacing_m: Optional[float] = None,
+        chunk_span_m: Optional[float] = None,
+        chunk_max_waypoints: Optional[int] = None,
+    ) -> Tuple[bool, str, int, int]:
+        if len(waypoints) == 0:
+            return False, "at least one waypoint is required", 0, 0
+
+        self.get_logger().info(
+            "WS->ROS set_route_mission "
+            f"(count={len(waypoints)}, loop={bool(loop)}, "
+            f"leg_spacing_m={leg_spacing_m}, chunk_span_m={chunk_span_m}, "
+            f"chunk_max_waypoints={chunk_max_waypoints})"
+        )
+        req = SetRouteMissionLL.Request()
+        resolved_yaws_deg = self._resolve_waypoint_yaws(waypoints, loop)
+        req.lats = [float(wp["lat"]) for wp in waypoints]
+        req.lons = [float(wp["lon"]) for wp in waypoints]
+        req.yaws_deg = [float(yaw_deg) for yaw_deg in resolved_yaws_deg]
+        req.loop = bool(loop)
+        req.leg_spacing_m = (
+            float(leg_spacing_m)
+            if leg_spacing_m is not None and np.isfinite(float(leg_spacing_m))
+            else 0.0
+        )
+        req.chunk_span_m = (
+            float(chunk_span_m)
+            if chunk_span_m is not None and np.isfinite(float(chunk_span_m))
+            else 0.0
+        )
+        req.chunk_max_waypoints = max(0, int(chunk_max_waypoints or 0))
+
+        res = self._call_service(self._route_set_client, req, self.set_goal_timeout_s)
+        if res is None:
+            return False, "set_route_ll timeout", len(waypoints), 0
+        if not res.ok:
+            self.get_logger().warning(f"set_route_mission failed: {res.error}")
+        else:
+            self.get_logger().info("set_route_mission ok")
+            self.get_route_state()
+        return (
+            bool(res.ok),
+            str(res.error),
+            int(getattr(res, "input_waypoint_count", len(waypoints))),
+            int(getattr(res, "expanded_waypoint_count", 0)),
+        )
+
+    def cancel_route_mission(self) -> Tuple[bool, str]:
+        req = CancelRouteMission.Request()
+        res = self._call_service(self._route_cancel_client, req, self.request_timeout_s)
+        if res is None:
+            return False, "cancel_route timeout"
+        if bool(res.ok):
+            self.get_route_state()
+        return bool(res.ok), str(res.error)
 
     def save_waypoints_file(self, waypoints: List[Dict[str, float]]) -> Tuple[bool, str, int]:
         ok, err, count = save_waypoints_yaml_file(self.waypoints_file, waypoints)
@@ -1920,6 +2113,9 @@ class WebZoneServerNode(Node):
         ok_n, err_n = self.get_nav_state()
         if not ok_n and err_n:
             self.get_logger().warning(f"nav bootstrap failed: {err_n}")
+        ok_r, err_r = self.get_route_state()
+        if not ok_r and err_r:
+            self.get_logger().warning(f"route bootstrap failed: {err_r}")
         ok_c, err_c, _ = self.get_camera_status()
         if not ok_c and err_c:
             self.get_logger().warning(f"camera bootstrap failed: {err_c}")
@@ -1947,6 +2143,24 @@ class WebSocketApi:
             await self.node._broadcast(self.node.snapshot_state())
         except Exception as exc:
             self.node.get_logger().warning(f"zones reload on WS connect crashed: {exc}")
+
+    async def _refresh_nav_state_on_connect(self) -> None:
+        try:
+            ok_nav, err_nav = await asyncio.to_thread(self.node.get_nav_state)
+            if not ok_nav and err_nav:
+                self.node.get_logger().warning(
+                    f"nav refresh on WS connect failed: {err_nav}"
+                )
+            await self.node._broadcast(self.node.snapshot_state())
+            ok_route, err_route = await asyncio.to_thread(self.node.get_route_state)
+            if not ok_route and err_route:
+                self.node.get_logger().warning(
+                    f"route refresh on WS connect failed: {err_route}"
+                )
+                return
+            await self.node._broadcast(self.node.snapshot_state())
+        except Exception as exc:
+            self.node.get_logger().warning(f"nav refresh on WS connect crashed: {exc}")
 
     def _parse_waypoints_from_message(
         self, msg: Dict[str, Any]
@@ -2041,11 +2255,51 @@ class WebSocketApi:
         op_name = str(op or "")
         if op_name == "set_goal_ll":
             return True
+        if op_name == "set_route_ll":
+            return True
         if op_name == "set_manual_cmd":
             return True
         if op_name == "set_manual_mode":
             return bool(msg.get("enabled") is True)
         return False
+
+    @staticmethod
+    def _parse_route_options(
+        msg: Dict[str, Any]
+    ) -> Tuple[Optional[float], Optional[float], Optional[int], str]:
+        leg_spacing_raw = msg.get("leg_spacing_m", None)
+        chunk_span_raw = msg.get("chunk_span_m", None)
+        chunk_max_raw = msg.get("chunk_max_waypoints", None)
+
+        leg_spacing_m: Optional[float] = None
+        chunk_span_m: Optional[float] = None
+        chunk_max_waypoints: Optional[int] = None
+
+        if leg_spacing_raw is not None:
+            try:
+                leg_spacing_m = float(leg_spacing_raw)
+            except (TypeError, ValueError):
+                return None, None, None, "leg_spacing_m must be a number"
+            if (not np.isfinite(leg_spacing_m)) or leg_spacing_m <= 0.0:
+                return None, None, None, "leg_spacing_m must be > 0"
+
+        if chunk_span_raw is not None:
+            try:
+                chunk_span_m = float(chunk_span_raw)
+            except (TypeError, ValueError):
+                return None, None, None, "chunk_span_m must be a number"
+            if (not np.isfinite(chunk_span_m)) or chunk_span_m <= 0.0:
+                return None, None, None, "chunk_span_m must be > 0"
+
+        if chunk_max_raw is not None:
+            try:
+                chunk_max_waypoints = int(chunk_max_raw)
+            except (TypeError, ValueError):
+                return None, None, None, "chunk_max_waypoints must be an integer"
+            if chunk_max_waypoints <= 0:
+                return None, None, None, "chunk_max_waypoints must be > 0"
+
+        return leg_spacing_m, chunk_span_m, chunk_max_waypoints, ""
 
     async def _send_sensor_info_snapshot(self, ws: Any) -> None:
         view = self._sensor_info_views.get(ws)
@@ -2132,6 +2386,11 @@ class WebSocketApi:
             connect_reload_task.add_done_callback(
                 lambda done: pending_tasks.discard(done)
             )
+            connect_nav_refresh_task = asyncio.create_task(self._refresh_nav_state_on_connect())
+            pending_tasks.add(connect_nav_refresh_task)
+            connect_nav_refresh_task.add_done_callback(
+                lambda done: pending_tasks.discard(done)
+            )
             async for raw in ws:
                 task = asyncio.create_task(self._handle_message_safe(ws, raw))
                 pending_tasks.add(task)
@@ -2165,6 +2424,14 @@ class WebSocketApi:
         if op != "set_manual_cmd":
             self.node.get_logger().info(f"WS op received: {op}")
         if op == "get_state":
+            ok_nav, err_nav = await asyncio.to_thread(self.node.get_nav_state)
+            if not ok_nav and err_nav:
+                self.node.get_logger().warning(f"get_state nav refresh failed: {err_nav}")
+            ok_route, err_route = await asyncio.to_thread(self.node.get_route_state)
+            if not ok_route and err_route:
+                self.node.get_logger().warning(
+                    f"get_state route refresh failed: {err_route}"
+                )
             payload = self.node.snapshot_state()
             if client_req_id is not None:
                 payload["client_req_id"] = client_req_id
@@ -2396,11 +2663,67 @@ class WebSocketApi:
             )
             return
 
+        if op == "set_route_ll":
+            waypoints, loop_enabled, parse_err = self._parse_waypoints_from_message(msg)
+            if waypoints is None:
+                await self._send_ack(
+                    ws,
+                    "set_route_ll",
+                    False,
+                    parse_err,
+                    client_req_id=client_req_id,
+                )
+                return
+            leg_spacing_m, chunk_span_m, chunk_max_waypoints, options_err = (
+                self._parse_route_options(msg)
+            )
+            if options_err:
+                await self._send_ack(
+                    ws,
+                    "set_route_ll",
+                    False,
+                    options_err,
+                    client_req_id=client_req_id,
+                )
+                return
+            ok, err, input_count, expanded_count = await asyncio.to_thread(
+                self.node.set_route_mission,
+                waypoints,
+                loop_enabled,
+                leg_spacing_m,
+                chunk_span_m,
+                chunk_max_waypoints,
+            )
+            await self._send_ack(
+                ws,
+                "set_route_ll",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra={
+                    "input_waypoint_count": int(input_count),
+                    "expanded_waypoint_count": int(expanded_count),
+                    **self._control_lock_extra(),
+                },
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
         if op == "cancel_goal":
             ok, err = await asyncio.to_thread(self.node.cancel_nav_goal)
             await self._send_ack(
                 ws, "cancel_goal", ok, err, client_req_id=client_req_id
             )
+            return
+
+        if op == "cancel_route":
+            ok, err = await asyncio.to_thread(self.node.cancel_route_mission)
+            await self._send_ack(
+                ws, "cancel_route", ok, err, client_req_id=client_req_id
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
             return
 
         if op == "brake":

@@ -1,0 +1,21 @@
+---
+bool ok
+string error
+bool active
+bool paused
+bool loop
+uint32 input_waypoint_count
+uint32 expanded_waypoint_count
+uint32 current_start_index
+uint32 current_target_index
+uint32 active_chunk_size
+float64 leg_spacing_m
+float64 chunk_span_m
+uint32 chunk_max_waypoints
+string status
+float64[] mission_lats
+float64[] mission_lons
+float64[] mission_yaws_deg
+float64[] active_lats
+float64[] active_lons
+float64[] active_yaws_deg

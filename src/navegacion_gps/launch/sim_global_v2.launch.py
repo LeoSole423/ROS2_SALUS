@@ -298,6 +298,23 @@ def generate_launch_description():
             ),
             Node(
                 package="navegacion_gps",
+                executable="route_executor",
+                name="route_executor",
+                output="screen",
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "nav_set_goal_service": "/nav_command_server/set_goal_ll",
+                        "nav_cancel_goal_service": "/nav_command_server/cancel_goal",
+                        "nav_telemetry_topic": "/nav_command_server/telemetry",
+                        "set_route_service": "/route_executor/set_route_ll",
+                        "cancel_route_service": "/route_executor/cancel_route",
+                        "get_state_service": "/route_executor/get_state",
+                    }
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
                 executable="gps_course_heading",
                 name="gps_course_heading",
                 output="screen",
@@ -405,6 +422,7 @@ def generate_launch_description():
                     "odom_topic": "/odometry/global",
                     "map_frame": "map",
                     "launch_nav_command_server": "false",
+                    "launch_route_executor": "false",
                     "sensor_bridge_enabled": "false",
                     "fixed_datum_lat": datum_lat,
                     "fixed_datum_lon": datum_lon,
