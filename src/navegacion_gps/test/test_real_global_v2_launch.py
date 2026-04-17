@@ -173,3 +173,38 @@ def test_rviz_global_v2_prefers_wifi_debug_scan_for_remote_use() -> None:
     assert "Enabled: false" in rviz_contents
     assert "Name: LaserScan" in rviz_contents
     assert "Value: /scan_wifi_debug" in rviz_contents
+
+
+def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
+    launch_contents = _read("launch/real_global_v2_wifi.launch.py")
+
+    assert "real_global_v2.launch.py" in launch_contents
+    assert "nav2_global_v2_real_rolling_wifi_params.yaml" in launch_contents
+    assert '"use_rviz": "false"' in launch_contents
+    assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_range_max_m", default_value="12.0"' in launch_contents
+
+
+def test_real_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
+    launch_contents = _read("launch/rviz_real_global_v2_wifi.launch.py")
+    rviz_contents = _read("config/rviz_global_v2_wifi.rviz")
+    nav2_params_contents = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
+
+    assert "rviz_real_global_v2.launch.py" in launch_contents
+    assert "rviz_global_v2_wifi.rviz" in launch_contents
+    assert "Value: /scan_wifi_debug" in rviz_contents
+    assert "Value: /odometry/global" in rviz_contents
+    assert "Value: /local_costmap/costmap" in rviz_contents
+    assert "Value: /global_costmap/costmap" in rviz_contents
+    assert "Value: /plan" in rviz_contents
+    assert "/gps/odometry_map" not in rviz_contents
+    assert "/odometry/local" not in rviz_contents
+    assert "/local_nav_v2/path_tracking_debug" not in rviz_contents
+    assert "/scan_3d" not in rviz_contents
+    assert "publish_frequency: 1.0" in nav2_params_contents
+    assert "publish_frequency: 0.5" in nav2_params_contents
+    assert "publish_voxel_map: False" in nav2_params_contents
+    assert "always_send_full_costmap: false" in nav2_params_contents
