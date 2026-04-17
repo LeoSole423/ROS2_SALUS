@@ -172,6 +172,22 @@ def build_chunk_waypoints(
     return chunk, end_index
 
 
+def next_chunk_start_index(
+    *,
+    current_target_index: int,
+    route_size: int,
+    loop: bool,
+) -> int:
+    total = max(0, int(route_size))
+    if total <= 0:
+        return 0
+
+    target_index = max(0, int(current_target_index))
+    if loop and total > 1:
+        return (target_index + 1) % total
+    return min(target_index, total - 1)
+
+
 class RouteExecutorNode(Node):
     def __init__(self) -> None:
         super().__init__("route_executor")
@@ -360,12 +376,16 @@ class RouteExecutorNode(Node):
         with self._lock:
             if not self._mission_active or self._mission_paused:
                 return
-            next_start_index = int(self._current_target_index)
             expanded_count = len(self._route_expanded)
             loop_enabled = bool(self._mission_loop)
             if expanded_count == 0:
                 self._reset_mission_locked("route failed: empty expanded route")
                 return
+            next_start_index = next_chunk_start_index(
+                current_target_index=self._current_target_index,
+                route_size=expanded_count,
+                loop=loop_enabled,
+            )
             reached_end = next_start_index >= max(0, expanded_count - 1)
             if reached_end and (not loop_enabled):
                 self._mission_active = False
@@ -374,8 +394,6 @@ class RouteExecutorNode(Node):
                 self._active_chunk = []
                 self._mission_status = "route completed"
                 return
-            if loop_enabled:
-                next_start_index %= expanded_count
 
         ok, err = self._send_chunk(start_index=next_start_index)
         if ok:

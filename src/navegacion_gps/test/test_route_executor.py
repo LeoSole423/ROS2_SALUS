@@ -2,6 +2,7 @@ from navegacion_gps.route_executor import (
     RouteWaypoint,
     build_chunk_waypoints,
     expand_route_waypoints,
+    next_chunk_start_index,
 )
 
 
@@ -82,3 +83,12 @@ def test_build_chunk_waypoints_wraps_for_loop_routes():
     assert chunk[0] == route[2]
     assert chunk[1] == route[0]
     assert end_index == 1
+
+
+def test_next_chunk_start_index_keeps_overlap_for_non_loop_routes():
+    assert next_chunk_start_index(current_target_index=3, route_size=6, loop=False) == 3
+
+
+def test_next_chunk_start_index_advances_for_loop_routes():
+    assert next_chunk_start_index(current_target_index=3, route_size=4, loop=True) == 0
+    assert next_chunk_start_index(current_target_index=1, route_size=4, loop=True) == 2
