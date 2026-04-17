@@ -7,6 +7,7 @@ from typing import Optional
 import rclpy
 from interfaces.msg import DriveTelemetry
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
 
 
@@ -36,7 +37,14 @@ class GlobalImuStationaryGateNode(Node):
         self._last_drive_telemetry_monotonic_s: Optional[float] = None
 
         self._imu_pub = self.create_publisher(Imu, output_imu_topic, 10)
-        self.create_subscription(Imu, input_imu_topic, self._on_imu, 10)
+        # Match the canonical ROS 2 sensor QoS so the gate can consume
+        # BEST_EFFORT IMU publishers such as MAVROS.
+        self.create_subscription(
+            Imu,
+            input_imu_topic,
+            self._on_imu,
+            qos_profile_sensor_data,
+        )
         self.create_subscription(
             DriveTelemetry,
             drive_telemetry_topic,

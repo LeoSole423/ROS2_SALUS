@@ -1,7 +1,11 @@
 from interfaces.msg import DriveTelemetry
+from rclpy.qos import ReliabilityPolicy
 from sensor_msgs.msg import Imu
 
-from navegacion_gps.global_imu_stationary_gate import GlobalImuStationaryGateNode
+from navegacion_gps.global_imu_stationary_gate import (
+    GlobalImuStationaryGateNode,
+    qos_profile_sensor_data,
+)
 
 
 class _FakePublisher:
@@ -87,3 +91,7 @@ def test_gate_passes_through_imu_when_drive_telemetry_is_stale() -> None:
     assert published.angular_velocity.x == 0.01
     assert published.angular_velocity.y == -0.02
     assert published.angular_velocity.z == 0.03
+
+
+def test_gate_uses_sensor_data_qos_for_imu_input() -> None:
+    assert qos_profile_sensor_data.reliability == ReliabilityPolicy.BEST_EFFORT
