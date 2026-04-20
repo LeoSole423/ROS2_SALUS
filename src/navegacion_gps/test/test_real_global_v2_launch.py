@@ -234,4 +234,5 @@ def test_real_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
     assert "publish_frequency: 1.0" in nav2_params_contents
     assert "publish_frequency: 0.5" in nav2_params_contents
     assert "publish_voxel_map: False" in nav2_params_contents
+    assert "always_send_full_costmap: true" in nav2_params_contents
     assert "always_send_full_costmap: false" in nav2_params_contents

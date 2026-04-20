@@ -211,7 +211,11 @@ local_costmap:
         transform_tolerance: 1.0
         override_lethal_cost: True
         lethal_override_cost: 254
-      always_send_full_costmap: false
+      # En RViz remoto el mapa base del costmap local puede quedar latcheado con
+      # un stamp viejo en `odom`, y entonces el display lo descarta al intentar
+      # transformarlo hacia `map`. Forzamos mapas completos frescos para que el
+      # operador vea siempre el costmap local actual.
+      always_send_full_costmap: true
 
 # ================================
 # GLOBAL COSTMAP
