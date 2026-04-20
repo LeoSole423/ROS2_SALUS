@@ -3,6 +3,7 @@ from navegacion_gps.route_executor import (
     build_chunk_waypoints,
     expand_route_waypoints,
     next_chunk_start_index,
+    prepare_route_waypoints,
 )
 
 
@@ -92,3 +93,66 @@ def test_next_chunk_start_index_keeps_overlap_for_non_loop_routes():
 def test_next_chunk_start_index_advances_for_loop_routes():
     assert next_chunk_start_index(current_target_index=3, route_size=4, loop=True) == 0
     assert next_chunk_start_index(current_target_index=1, route_size=4, loop=True) == 2
+
+
+def test_prepare_route_waypoints_skips_reached_prefix_for_non_loop_routes():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.00001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0005, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.skipped_waypoints == 2
+    assert prepared.note == "skipped 2 reached waypoints"
+    assert prepared.waypoints == [route[2]]
+
+
+def test_prepare_route_waypoints_rejects_non_loop_when_final_is_already_reached():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert prepared is None
+    assert "final waypoint already within 1.20 m" in error
+
+
+def test_prepare_route_waypoints_rotates_loop_to_next_useful_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0003, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.0003,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.rotated is True
+    assert prepared.start_index == 1
+    assert prepared.note == "loop rotated to waypoint 2"
+    assert prepared.waypoints == [route[1], route[2], route[0]]

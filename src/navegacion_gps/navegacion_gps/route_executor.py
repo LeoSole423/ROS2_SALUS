@@ -28,6 +28,15 @@ class RouteWaypoint:
     yaw_deg: float
 
 
+@dataclass(frozen=True)
+class PreparedRouteMission:
+    waypoints: List[RouteWaypoint]
+    start_index: int
+    skipped_waypoints: int
+    rotated: bool
+    note: str
+
+
 def _normalize_yaw_deg(yaw_deg: float) -> float:
     yaw = float(yaw_deg)
     while yaw <= -180.0:
@@ -113,6 +122,96 @@ def expand_route_waypoints(
             expanded.append(base[idx + 1])
 
     return expanded
+
+
+def prepare_route_waypoints(
+    base_waypoints: Sequence[RouteWaypoint],
+    *,
+    loop: bool,
+    robot_lat: Optional[float],
+    robot_lon: Optional[float],
+    waypoint_reached_tolerance_m: float,
+) -> Tuple[Optional[PreparedRouteMission], str]:
+    route = list(base_waypoints)
+    if not route:
+        return PreparedRouteMission([], 0, 0, False, ""), ""
+
+    if (
+        robot_lat is None
+        or robot_lon is None
+        or (not np.isfinite(float(robot_lat)))
+        or (not np.isfinite(float(robot_lon)))
+    ):
+        return PreparedRouteMission(route, 0, 0, False, ""), ""
+
+    tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+    distances_m = [
+        _distance_m(float(robot_lat), float(robot_lon), waypoint.lat, waypoint.lon)
+        for waypoint in route
+    ]
+
+    if loop:
+        if all(distance_m <= tolerance_m for distance_m in distances_m):
+            return None, (
+                f"route already within {tolerance_m:.2f} m of robot; "
+                "refine the patrol route before sending it"
+            )
+
+        if len(route) <= 1:
+            return PreparedRouteMission(route, 0, 0, False, ""), ""
+
+        reached_indexes = [
+            idx for idx, distance_m in enumerate(distances_m) if distance_m <= tolerance_m
+        ]
+        if not reached_indexes:
+            return PreparedRouteMission(route, 0, 0, False, ""), ""
+
+        anchor_index = min(reached_indexes, key=lambda idx: (distances_m[idx], idx))
+        start_index = anchor_index
+        for _ in range(len(route)):
+            if distances_m[start_index] > tolerance_m:
+                break
+            start_index = (start_index + 1) % len(route)
+
+        if start_index == 0:
+            return PreparedRouteMission(route, 0, 0, False, ""), ""
+
+        return (
+            PreparedRouteMission(
+                route[start_index:] + route[:start_index],
+                int(start_index),
+                0,
+                True,
+                f"loop rotated to waypoint {start_index + 1}",
+            ),
+            "",
+        )
+
+    if distances_m[-1] <= tolerance_m:
+        return None, (
+            f"final waypoint already within {tolerance_m:.2f} m of robot; "
+            "reorder the non-loop route or enable loop mode"
+        )
+
+    start_index = 0
+    while start_index < (len(route) - 1) and distances_m[start_index] <= tolerance_m:
+        start_index += 1
+
+    note = ""
+    if start_index > 0:
+        suffix = "s" if start_index != 1 else ""
+        note = f"skipped {start_index} reached waypoint{suffix}"
+
+    return (
+        PreparedRouteMission(
+            route[start_index:],
+            int(start_index),
+            int(start_index),
+            False,
+            note,
+        ),
+        "",
+    )
 
 
 def build_chunk_waypoints(
@@ -205,6 +304,7 @@ class RouteExecutorNode(Node):
         self.declare_parameter("min_leg_spacing_m", 5.0)
         self.declare_parameter("min_chunk_span_m", 20.0)
         self.declare_parameter("min_chunk_max_waypoints", 2)
+        self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
 
         self.nav_set_goal_service = str(self.get_parameter("nav_set_goal_service").value)
         self.nav_cancel_goal_service = str(self.get_parameter("nav_cancel_goal_service").value)
@@ -223,6 +323,9 @@ class RouteExecutorNode(Node):
         self.min_chunk_max_waypoints = max(
             2, int(self.get_parameter("min_chunk_max_waypoints").value)
         )
+        self.route_waypoint_reached_tolerance_m = max(
+            0.05, float(self.get_parameter("route_waypoint_reached_tolerance_m").value)
+        )
 
         self._lock = threading.Lock()
         self._route_input: List[RouteWaypoint] = []
@@ -235,6 +338,8 @@ class RouteExecutorNode(Node):
         self._leg_spacing_m = float(self.default_leg_spacing_m)
         self._chunk_span_m = float(self.default_chunk_span_m)
         self._chunk_max_waypoints = int(self.default_chunk_max_waypoints)
+        self._last_robot_pose: Optional[Tuple[float, float]] = None
+        self._mission_note = ""
         self._current_start_index = 0
         self._current_target_index = 0
         self._awaiting_chunk_result = False
@@ -315,10 +420,17 @@ class RouteExecutorNode(Node):
         self._mission_paused = False
         self._mission_loop = False
         self._mission_status = str(status)
+        self._mission_note = ""
         self._current_start_index = 0
         self._current_target_index = 0
         self._awaiting_chunk_result = False
         self._last_handled_nav_result_event_id = self._last_nav_result_event_id
+
+    def _status_with_note_locked(self, status: str) -> str:
+        note = str(self._mission_note).strip()
+        if not note:
+            return str(status)
+        return f"{status} [{note}]"
 
     def _cancel_nav_goal(self) -> Tuple[bool, str]:
         res = self._call_service(
@@ -364,7 +476,7 @@ class RouteExecutorNode(Node):
             self._current_start_index = int(start_index)
             self._current_target_index = int(end_index)
             self._awaiting_chunk_result = True
-            self._mission_status = (
+            self._mission_status = self._status_with_note_locked(
                 f"route active ({self._current_start_index + 1}->{self._current_target_index + 1})"
             )
         self.get_logger().info(
@@ -392,7 +504,7 @@ class RouteExecutorNode(Node):
                 self._mission_paused = False
                 self._awaiting_chunk_result = False
                 self._active_chunk = []
-                self._mission_status = "route completed"
+                self._mission_status = self._status_with_note_locked("route completed")
                 return
 
         ok, err = self._send_chunk(start_index=next_start_index)
@@ -403,7 +515,7 @@ class RouteExecutorNode(Node):
             self._mission_paused = False
             self._awaiting_chunk_result = False
             self._active_chunk = []
-            self._mission_status = f"route failed: {err}"
+            self._mission_status = self._status_with_note_locked(f"route failed: {err}")
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
         should_pause = False
@@ -412,6 +524,8 @@ class RouteExecutorNode(Node):
         stop_reason = ""
 
         with self._lock:
+            if np.isfinite(float(msg.robot_lat)) and np.isfinite(float(msg.robot_lon)):
+                self._last_robot_pose = (float(msg.robot_lat), float(msg.robot_lon))
             self._last_nav_goal_active = bool(msg.goal_active)
             self._last_nav_result_status = int(msg.nav_result_status)
             self._last_nav_result_event_id = int(msg.nav_result_event_id)
@@ -423,7 +537,9 @@ class RouteExecutorNode(Node):
                 self._mission_paused = True
                 self._awaiting_chunk_result = False
                 self._active_chunk = []
-                self._mission_status = "route paused by manual takeover"
+                self._mission_status = self._status_with_note_locked(
+                    "route paused by manual takeover"
+                )
                 should_pause = True
             elif self._mission_paused:
                 return
@@ -451,13 +567,15 @@ class RouteExecutorNode(Node):
             elif status == int(GoalStatus.STATUS_CANCELED):
                 self._mission_active = False
                 self._active_chunk = []
-                self._mission_status = "route cancelled"
+                self._mission_status = self._status_with_note_locked("route cancelled")
                 should_stop = True
                 stop_reason = "cancelled"
             else:
                 self._mission_active = False
                 self._active_chunk = []
-                self._mission_status = f"route failed: {str(msg.nav_result_text)}"
+                self._mission_status = self._status_with_note_locked(
+                    f"route failed: {str(msg.nav_result_text)}"
+                )
                 should_stop = True
                 stop_reason = str(msg.nav_result_text)
 
@@ -525,8 +643,24 @@ class RouteExecutorNode(Node):
             response.error = error
             return response
 
-        expanded = expand_route_waypoints(
+        with self._lock:
+            robot_pose = self._last_robot_pose
+        prepared, prepare_error = prepare_route_waypoints(
             route_input,
+            loop=loop_enabled,
+            robot_lat=None if robot_pose is None else float(robot_pose[0]),
+            robot_lon=None if robot_pose is None else float(robot_pose[1]),
+            waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+        )
+        if prepared is None:
+            response.ok = False
+            response.error = prepare_error
+            response.input_waypoint_count = 0
+            response.expanded_waypoint_count = 0
+            return response
+
+        expanded = expand_route_waypoints(
+            prepared.waypoints,
             leg_spacing_m=leg_spacing_m,
             loop=loop_enabled,
         )
@@ -537,13 +671,14 @@ class RouteExecutorNode(Node):
             self._cancel_nav_goal()
 
         with self._lock:
-            self._route_input = list(route_input)
+            self._route_input = list(prepared.waypoints)
             self._route_expanded = list(expanded)
             self._active_chunk = []
             self._mission_active = True
             self._mission_paused = False
             self._mission_loop = bool(loop_enabled)
-            self._mission_status = "route starting"
+            self._mission_note = str(prepared.note)
+            self._mission_status = self._status_with_note_locked("route starting")
             self._leg_spacing_m = float(leg_spacing_m)
             self._chunk_span_m = float(chunk_span_m)
             self._chunk_max_waypoints = int(chunk_max_waypoints)
@@ -553,7 +688,7 @@ class RouteExecutorNode(Node):
             self._last_handled_nav_result_event_id = self._last_nav_result_event_id
 
         ok, err = self._send_chunk(start_index=0)
-        response.input_waypoint_count = int(len(route_input))
+        response.input_waypoint_count = int(len(prepared.waypoints))
         response.expanded_waypoint_count = int(len(expanded))
         response.ok = bool(ok)
         response.error = "" if ok else str(err)
@@ -562,7 +697,7 @@ class RouteExecutorNode(Node):
                 self._mission_active = False
                 self._mission_paused = False
                 self._active_chunk = []
-                self._mission_status = f"route failed: {err}"
+                self._mission_status = self._status_with_note_locked(f"route failed: {err}")
         return response
 
     def _on_cancel_route(
