@@ -52,6 +52,7 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
 
     assert "mavros.launch.py" in launch_contents
     assert "rs16.launch.py" in launch_contents
+    assert "pointcloud_to_laserscan_real.yaml" in launch_contents
     assert 'executable="pointcloud_to_laserscan_node"' in launch_contents
     assert 'executable="controller_server_node"' in launch_contents
     assert "localization_global_v2.launch.py" in launch_contents

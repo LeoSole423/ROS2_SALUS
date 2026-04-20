@@ -61,7 +61,7 @@ def generate_launch_description():
 
     default_rviz = _resolve_config_file_path(gps_wpf_dir, "rviz_global_v2.rviz")
     lidar_to_scan_params = _resolve_config_file_path(
-        gps_wpf_dir, "pointcloud_to_laserscan.yaml"
+        gps_wpf_dir, "pointcloud_to_laserscan_real.yaml"
     )
     default_global_localization_params = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
