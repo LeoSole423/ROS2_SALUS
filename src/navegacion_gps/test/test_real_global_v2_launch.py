@@ -8,6 +8,30 @@ def _read(relative_path: str) -> str:
     return (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _assert_real_wifi_wrapper_parity(launch_contents: str) -> None:
+    assert 'DeclareLaunchArgument("use_keepout", default_value="False")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_gps_course_heading", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.8")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_invalid_hold_s", default_value="0.8")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_max_sample_dt_s", default_value="2.5")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True")' in launch_contents
+    assert 'default_value="RTK_FIXED,RTK_FIX,RTK_FLOAT,RTCM_OK"' in launch_contents
+    assert 'default_value="/gps/rtk_status_mavros"' in launch_contents
+    assert '"gps_course_heading_rtk_status_max_age_s"' in launch_contents
+    assert 'default_value="2.5"' in launch_contents
+    assert 'DeclareLaunchArgument("navsat_use_odometry_yaw", default_value="false")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_rtk", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
+    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_range_max_m", default_value="12.0"' in launch_contents
+    assert 'source_path.exists()' in launch_contents
+    assert "source_path.parent.exists()" not in launch_contents
+
+
 def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> None:
     launch_contents = _read("launch/real_global_v2.launch.py")
     map_gps_enable_arg = (
@@ -99,6 +123,7 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert '"allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses' in launch_contents
     assert '"enable_gps_course_heading": enable_gps_course_heading' in launch_contents
     assert '"gps_course_heading_topic": "/gps/course_heading"' in launch_contents
+    _assert_real_wifi_wrapper_parity(launch_contents)
 
 
 def test_localization_global_v2_launch_supports_datum_overrides() -> None:
@@ -181,11 +206,12 @@ def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
     assert "real_global_v2.launch.py" in launch_contents
     assert "nav2_global_v2_real_rolling_wifi_params.yaml" in launch_contents
     assert '"use_rviz": "false"' in launch_contents
-    assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
-    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
-    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
-    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
-    assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_range_max_m", default_value="12.0"' in launch_contents
+    assert '"enable_scan_wifi_debug": enable_scan_wifi_debug' in launch_contents
+    assert '"scan_wifi_debug_topic": scan_wifi_debug_topic' in launch_contents
+    assert '"scan_wifi_debug_publish_hz": scan_wifi_debug_publish_hz' in launch_contents
+    assert '"scan_wifi_debug_beam_stride": scan_wifi_debug_beam_stride' in launch_contents
+    assert '"scan_wifi_debug_range_max_m": scan_wifi_debug_range_max_m' in launch_contents
+    _assert_real_wifi_wrapper_parity(launch_contents)
 
 
 def test_real_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:

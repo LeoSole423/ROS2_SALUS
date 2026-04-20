@@ -14,7 +14,7 @@ def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
     try:
         workspace_root = package_share_path.parents[3]
         source_path = workspace_root / "src" / "navegacion_gps" / "config" / filename
-        if source_path.parent.exists():
+        if source_path.exists():
             return str(source_path)
     except IndexError:
         pass
@@ -194,7 +194,7 @@ def generate_launch_description():
                 default_value="RTK_FIXED,RTK_FIX,RTK_FLOAT,RTCM_OK",
             ),
             DeclareLaunchArgument(
-                "gps_course_heading_rtk_status_max_age_s", default_value="1.0"
+                "gps_course_heading_rtk_status_max_age_s", default_value="2.5"
             ),
             DeclareLaunchArgument(
                 "gps_rtk_status_topic",

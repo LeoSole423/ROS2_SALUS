@@ -27,7 +27,7 @@ def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
     try:
         workspace_root = package_share_path.parents[3]
         source_path = workspace_root / "src" / "navegacion_gps" / "config" / filename
-        if source_path.parent.exists():
+        if source_path.exists():
             return str(source_path)
     except IndexError:
         pass
