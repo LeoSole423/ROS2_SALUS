@@ -10,6 +10,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from navegacion_gps.datum_profile_resolver import resolve_selected_datum
+
 
 def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
     package_share_path = Path(package_share_dir)
@@ -37,6 +39,9 @@ def generate_launch_description():
     default_global_localization_params_file = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
     )
+    default_datum_lat, default_datum_lon, default_datum_yaw_deg, default_datums_file = (
+        resolve_selected_datum(gps_wpf_dir)
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     wheelbase_m = LaunchConfiguration("wheelbase_m")
@@ -62,6 +67,7 @@ def generate_launch_description():
     datum_lat = LaunchConfiguration("datum_lat")
     datum_lon = LaunchConfiguration("datum_lon")
     datum_yaw_deg = LaunchConfiguration("datum_yaw_deg")
+    datums_file = LaunchConfiguration("datums_file")
     datum_setter = LaunchConfiguration("datum_setter")
     enable_map_gps_absolute_measurement = LaunchConfiguration(
         "enable_map_gps_absolute_measurement"
@@ -138,11 +144,12 @@ def generate_launch_description():
             DeclareLaunchArgument("twist_covariance_vx", default_value="0.05"),
             DeclareLaunchArgument("twist_covariance_vy", default_value="0.01"),
             DeclareLaunchArgument("twist_covariance_yaw_rate", default_value="0.1"),
-            DeclareLaunchArgument("datum_lat", default_value="-31.4858037"),
-            DeclareLaunchArgument("datum_lon", default_value="-64.2410570"),
+            DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat)),
+            DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon)),
             # Convencion fija operativa para `global v2`: por default el robot
             # arranca mirando al Este (`datum_yaw_deg = 0.0` en ROS ENU).
-            DeclareLaunchArgument("datum_yaw_deg", default_value="0.0"),
+            DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg)),
+            DeclareLaunchArgument("datums_file", default_value=default_datums_file),
             DeclareLaunchArgument("datum_setter", default_value="false"),
             DeclareLaunchArgument("enable_map_gps_absolute_measurement", default_value="true"),
             DeclareLaunchArgument("map_gps_absolute_topic", default_value="/gps/odometry_map"),
@@ -428,6 +435,7 @@ def generate_launch_description():
                     "fixed_datum_lon": datum_lon,
                     "fixed_datum_yaw_deg": datum_yaw_deg,
                     "fixed_datum_source": "sim_global_v2_fixed",
+                    "datums_file": datums_file,
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

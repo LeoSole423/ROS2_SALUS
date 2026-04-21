@@ -44,6 +44,7 @@ def generate_launch_description():
     fixed_datum_lon = LaunchConfiguration("fixed_datum_lon")
     fixed_datum_yaw_deg = LaunchConfiguration("fixed_datum_yaw_deg")
     fixed_datum_source = LaunchConfiguration("fixed_datum_source")
+    datums_file = LaunchConfiguration("datums_file")
 
     request_timeout_s = LaunchConfiguration("request_timeout_s")
     snapshot_request_timeout_s = LaunchConfiguration("snapshot_request_timeout_s")
@@ -134,6 +135,7 @@ def generate_launch_description():
                 "fixed_datum_source",
                 default_value="global_v2_fixed",
             ),
+            DeclareLaunchArgument("datums_file", default_value=""),
             DeclareLaunchArgument("request_timeout_s", default_value="5.0"),
             DeclareLaunchArgument("snapshot_request_timeout_s", default_value="2.0"),
             DeclareLaunchArgument("set_zones_timeout_s", default_value="12.0"),
@@ -240,6 +242,7 @@ def generate_launch_description():
                         "fixed_datum_lon": fixed_datum_lon,
                         "fixed_datum_yaw_deg": fixed_datum_yaw_deg,
                         "fixed_datum_source": fixed_datum_source,
+                        "datums_file": datums_file,
                         "request_timeout_s": request_timeout_s,
                         "snapshot_request_timeout_s": snapshot_request_timeout_s,
                         "set_zones_timeout_s": set_zones_timeout_s,

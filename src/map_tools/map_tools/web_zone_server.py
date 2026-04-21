@@ -44,6 +44,14 @@ from interfaces.srv import (
     SetRouteMissionLL,
     SetZonesGeoJson,
 )
+from .datum_file_utils import (
+    build_datums_doc,
+    load_datums_yaml_file,
+    normalize_datum_profile,
+    save_datums_yaml_file,
+    unique_datum_id,
+    utc_now_iso,
+)
 from .waypoints_file_utils import load_waypoints_yaml_file, save_waypoints_yaml_file
 
 
@@ -148,6 +156,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("set_zones_timeout_s", 12.0)
         self.declare_parameter("set_goal_timeout_s", 12.0)
         self.declare_parameter("waypoints_file", "")
+        self.declare_parameter("datums_file", "")
 
         self.declare_parameter("zones_set_geojson_service", "/zones_manager/set_geojson")
         self.declare_parameter("zones_get_state_service", "/zones_manager/get_state")
@@ -205,6 +214,8 @@ class WebZoneServerNode(Node):
         )
         configured_waypoints_file = str(self.get_parameter("waypoints_file").value)
         self.waypoints_file = self._resolve_waypoints_file(configured_waypoints_file)
+        configured_datums_file = str(self.get_parameter("datums_file").value)
+        self.datums_file = self._resolve_datums_file(configured_datums_file)
 
         self.zones_set_geojson_service = str(
             self.get_parameter("zones_set_geojson_service").value
@@ -333,6 +344,8 @@ class WebZoneServerNode(Node):
         self._sensor_bridge_error = ""
         self._sensor_bridge_last_poll_monotonic: Optional[float] = None
         self._datum_snapshot = self._build_default_datum_snapshot()
+        self._datums_doc = build_datums_doc([], "")
+        self._datums_error = ""
 
         self._manual_cmd_last_monotonic: Optional[float] = None
         self._route_state_poll_inflight = False
@@ -419,6 +432,7 @@ class WebZoneServerNode(Node):
             f"sensor_bridge={self.sensor_bridge_enabled})"
         )
         self.get_logger().info(f"Waypoints file path: {self.waypoints_file}")
+        self.get_logger().info(f"Datums file path: {self.datums_file}")
 
     def add_client(self, ws: Any) -> None:
         with self._lock:
@@ -447,6 +461,7 @@ class WebZoneServerNode(Node):
         return await self.send_ws_text(ws, json.dumps(payload))
 
     def snapshot_state(self) -> Dict[str, Any]:
+        datums_payload = self._build_datums_state_payload()
         with self._lock:
             connection_status = self._connection_status_locked()
             return {
@@ -471,6 +486,7 @@ class WebZoneServerNode(Node):
                 "rosbag": self._build_rosbag_status_payload_locked(),
                 "camera_status": dict(self._camera_status),
                 "datum": dict(self._datum_snapshot),
+                "datums": datums_payload,
                 **connection_status,
             }
 
@@ -910,6 +926,7 @@ class WebZoneServerNode(Node):
             "rtk_source_state": rtk_source_state,
             "rtk_sources": list(bridge_snapshot.get("rtk_sources") or []),
             "datum": datum_snapshot,
+            "datums": self._build_datums_state_payload(),
             "diagnostics": diagnostics,
         }
         if bridge_ok:
@@ -1500,6 +1517,13 @@ class WebZoneServerNode(Node):
         config_dir = self._resolve_navegacion_config_dir()
         return config_dir / "saved_waypoints.yaml"
 
+    def _resolve_datums_file(self, configured_path: str) -> Path:
+        if configured_path:
+            return Path(configured_path)
+
+        config_dir = self._resolve_navegacion_config_dir()
+        return config_dir / "datums.yaml"
+
     def _resolve_navegacion_config_dir(self) -> Path:
         try:
             pkg_dir = Path(get_package_share_directory("navegacion_gps"))
@@ -1943,6 +1967,202 @@ class WebZoneServerNode(Node):
         self.get_logger().info(f"load_waypoints_file ok (count={len(waypoints)})")
         return True, "", waypoints
 
+    def _runtime_datum_payload(self) -> Dict[str, Any]:
+        with self._lock:
+            snapshot = dict(self._datum_snapshot)
+        return {
+            "lat": snapshot.get("datum_lat"),
+            "lon": snapshot.get("datum_lon"),
+            "yaw_deg": snapshot.get("datum_yaw_deg"),
+            "source": snapshot.get("last_set_source") or self.fixed_datum_source,
+            "already_set": bool(snapshot.get("already_set", False)),
+            "available": bool(snapshot.get("available", False)),
+        }
+
+    @staticmethod
+    def _datum_matches_runtime(profile: Optional[Dict[str, Any]], runtime: Dict[str, Any]) -> bool:
+        if not profile:
+            return False
+        try:
+            plat = float(profile.get("lat"))
+            plon = float(profile.get("lon"))
+            pyaw = float(profile.get("yaw_deg", 0.0))
+            rlat = float(runtime.get("lat"))
+            rlon = float(runtime.get("lon"))
+            ryaw = float(runtime.get("yaw_deg", 0.0))
+        except (TypeError, ValueError):
+            return False
+        if not all(np.isfinite(value) for value in (plat, plon, pyaw, rlat, rlon, ryaw)):
+            return False
+        return (
+            abs(plat - rlat) <= 1.0e-9
+            and abs(plon - rlon) <= 1.0e-9
+            and abs(WebZoneServerNode._normalize_yaw_deg(pyaw - ryaw)) <= 1.0e-6
+        )
+
+    def _build_datums_state_payload(self) -> Dict[str, Any]:
+        with self._lock:
+            doc = {
+                "version": int(self._datums_doc.get("version", 1)),
+                "selected_id": str(self._datums_doc.get("selected_id") or ""),
+                "datums": [dict(item) for item in self._datums_doc.get("datums", [])],
+            }
+            datums_error = str(self._datums_error)
+        runtime = self._runtime_datum_payload()
+        selected = None
+        for profile in doc["datums"]:
+            if str(profile.get("id") or "") == doc["selected_id"]:
+                selected = profile
+                break
+        pending_restart = selected is not None and not self._datum_matches_runtime(selected, runtime)
+        return {
+            "datums": doc["datums"],
+            "selected_id": doc["selected_id"],
+            "selected": dict(selected) if selected else None,
+            "runtime": runtime,
+            "pending_restart": bool(pending_restart),
+            "apply_mode": "next_restart",
+            "file_path": str(self.datums_file),
+            "error": datums_error,
+        }
+
+    def load_datums_file(self) -> Tuple[bool, str, Dict[str, Any]]:
+        ok, err, doc = load_datums_yaml_file(self.datums_file)
+        with self._lock:
+            self._datums_doc = doc
+            self._datums_error = "" if ok else err
+        if not ok:
+            self.get_logger().warning(f"load_datums_file failed: {err}")
+            return False, err, self._build_datums_state_payload()
+        return True, "", self._build_datums_state_payload()
+
+    def get_datums(self) -> Tuple[bool, str, Dict[str, Any]]:
+        ok, err, payload = self.load_datums_file()
+        return ok, err, payload
+
+    def _save_datums_doc(self, doc: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+        ok, err = save_datums_yaml_file(self.datums_file, doc)
+        if not ok:
+            with self._lock:
+                self._datums_error = err
+            self.get_logger().warning(f"save_datums_file failed: {err}")
+            return False, err, self._build_datums_state_payload()
+        ok_load, err_load, payload = self.load_datums_file()
+        return ok_load, err_load, payload
+
+    def save_datum(self, datum: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+        ok, err, payload = self.load_datums_file()
+        if not ok:
+            return False, err, payload
+        datums = [dict(item) for item in self._datums_doc.get("datums", [])]
+        requested_id = str(datum.get("id") or "").strip()
+        existing_index = None
+        if requested_id:
+            for idx, item in enumerate(datums):
+                if str(item.get("id") or "") == requested_id:
+                    existing_index = idx
+                    break
+
+        existing_ids = {
+            str(item.get("id") or "")
+            for idx, item in enumerate(datums)
+            if idx != existing_index and str(item.get("id") or "")
+        }
+        profile, parse_err = normalize_datum_profile(
+            datum,
+            existing_ids=existing_ids,
+            allow_existing_id=bool(requested_id),
+        )
+        if profile is None:
+            return False, parse_err, self._build_datums_state_payload()
+
+        now = utc_now_iso()
+        if existing_index is not None:
+            previous = datums[existing_index]
+            profile["id"] = str(previous.get("id") or profile["id"])
+            profile["created_at"] = str(previous.get("created_at") or profile["created_at"])
+            profile["updated_at"] = now
+            datums[existing_index] = profile
+        else:
+            profile["id"] = unique_datum_id(profile["name"], existing_ids, profile.get("id"))
+            profile["created_at"] = now
+            profile["updated_at"] = now
+            datums.append(profile)
+
+        selected_id = str(self._datums_doc.get("selected_id") or "")
+        if bool(datum.get("select", False)):
+            selected_id = str(profile["id"])
+        return self._save_datums_doc(build_datums_doc(datums, selected_id))
+
+    def delete_datum(self, datum_id: str) -> Tuple[bool, str, Dict[str, Any]]:
+        datum_id = str(datum_id or "").strip()
+        if not datum_id:
+            return False, "id is required", self._build_datums_state_payload()
+        ok, err, payload = self.load_datums_file()
+        if not ok:
+            return False, err, payload
+        datums = [dict(item) for item in self._datums_doc.get("datums", [])]
+        next_datums = [item for item in datums if str(item.get("id") or "") != datum_id]
+        if len(next_datums) == len(datums):
+            return False, f"datum not found: {datum_id}", self._build_datums_state_payload()
+        selected_id = str(self._datums_doc.get("selected_id") or "")
+        if selected_id == datum_id:
+            selected_id = ""
+        return self._save_datums_doc(build_datums_doc(next_datums, selected_id))
+
+    def select_datum(self, datum_id: str) -> Tuple[bool, str, Dict[str, Any]]:
+        datum_id = str(datum_id or "").strip()
+        if not datum_id:
+            return False, "id is required", self._build_datums_state_payload()
+        ok, err, payload = self.load_datums_file()
+        if not ok:
+            return False, err, payload
+        datums = [dict(item) for item in self._datums_doc.get("datums", [])]
+        if not any(str(item.get("id") or "") == datum_id for item in datums):
+            return False, f"datum not found: {datum_id}", self._build_datums_state_payload()
+        return self._save_datums_doc(build_datums_doc(datums, datum_id))
+
+    def capture_current_gps_datum(
+        self,
+        name: str,
+        yaw_deg: Optional[float] = None,
+        notes: str = "",
+        select: bool = False,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        with self._lock:
+            robot_pose = dict(self._last_robot_pose) if self._last_robot_pose is not None else None
+            gps_status = dict(self._gps_status_payload)
+        if robot_pose is None:
+            return False, "current GPS is unavailable", self._build_datums_state_payload()
+        lat = robot_pose.get("lat")
+        lon = robot_pose.get("lon")
+        if not (
+            isinstance(lat, (int, float))
+            and isinstance(lon, (int, float))
+            and np.isfinite(float(lat))
+            and np.isfinite(float(lon))
+        ):
+            return False, "current GPS lat/lon is invalid", self._build_datums_state_payload()
+        applied_yaw = (
+            float(yaw_deg)
+            if yaw_deg is not None and np.isfinite(float(yaw_deg))
+            else float(self.fixed_datum_yaw_deg)
+        )
+        datum = {
+            "name": name,
+            "lat": float(lat),
+            "lon": float(lon),
+            "yaw_deg": applied_yaw,
+            "source": "current_gps",
+            "notes": notes,
+            "select": bool(select),
+            "metadata": {
+                "captured_at": utc_now_iso(),
+                "gps_status": gps_status,
+            },
+        }
+        return self.save_datum(datum)
+
     def cancel_nav_goal(self) -> Tuple[bool, str]:
         req = CancelNavGoal.Request()
         res = self._call_service(self._nav_cancel_goal_client, req, self.request_timeout_s)
@@ -2120,6 +2340,9 @@ class WebZoneServerNode(Node):
         if not ok_c and err_c:
             self.get_logger().warning(f"camera bootstrap failed: {err_c}")
         self._refresh_datum_snapshot()
+        ok_d, err_d, _ = self.load_datums_file()
+        if not ok_d and err_d:
+            self.get_logger().warning(f"datums bootstrap failed: {err_d}")
         if self.sensor_bridge_enabled and self.sensor_bridge_http_url:
             self._sensor_bridge_poll_tick()
         self.get_logger().info("Gateway bootstrap finished")
@@ -2633,6 +2856,119 @@ class WebSocketApi:
                     "waypoints": list(waypoints) if ok else [],
                 },
             )
+            return
+
+        if op == "get_datums":
+            ok, err, datums_payload = await asyncio.to_thread(self.node.get_datums)
+            payload = {
+                "op": "datums",
+                "ok": bool(ok),
+                "error": None if ok else err,
+                **datums_payload,
+            }
+            if client_req_id is not None:
+                payload["client_req_id"] = client_req_id
+            await self._send_json(ws, payload)
+            return
+
+        if op == "save_datum":
+            datum_raw = msg.get("datum")
+            if not isinstance(datum_raw, dict):
+                datum_raw = {
+                    "id": msg.get("id"),
+                    "name": msg.get("name"),
+                    "lat": msg.get("lat"),
+                    "lon": msg.get("lon"),
+                    "yaw_deg": msg.get("yaw_deg", 0.0),
+                    "notes": msg.get("notes", ""),
+                    "select": msg.get("select", False),
+                }
+            ok, err, datums_payload = await asyncio.to_thread(self.node.save_datum, datum_raw)
+            await self._send_ack(
+                ws,
+                "save_datum",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=datums_payload,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "delete_datum":
+            datum_id = str(msg.get("id") or msg.get("datum_id") or "")
+            ok, err, datums_payload = await asyncio.to_thread(self.node.delete_datum, datum_id)
+            await self._send_ack(
+                ws,
+                "delete_datum",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=datums_payload,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "select_datum":
+            datum_id = str(msg.get("id") or msg.get("datum_id") or "")
+            ok, err, datums_payload = await asyncio.to_thread(self.node.select_datum, datum_id)
+            await self._send_ack(
+                ws,
+                "select_datum",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=datums_payload,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "capture_current_gps_datum":
+            name = str(msg.get("name") or "").strip()
+            notes = str(msg.get("notes") or "").strip()
+            yaw_raw = msg.get("yaw_deg", None)
+            yaw_deg = None
+            if yaw_raw is not None:
+                try:
+                    yaw_deg = float(yaw_raw)
+                except (TypeError, ValueError):
+                    await self._send_ack(
+                        ws,
+                        "capture_current_gps_datum",
+                        False,
+                        "yaw_deg must be numeric",
+                        client_req_id=client_req_id,
+                    )
+                    return
+                if not np.isfinite(yaw_deg):
+                    await self._send_ack(
+                        ws,
+                        "capture_current_gps_datum",
+                        False,
+                        "yaw_deg must be finite",
+                        client_req_id=client_req_id,
+                    )
+                    return
+            ok, err, datums_payload = await asyncio.to_thread(
+                self.node.capture_current_gps_datum,
+                name,
+                yaw_deg,
+                notes,
+                _coerce_bool(msg.get("select", True)),
+            )
+            await self._send_ack(
+                ws,
+                "capture_current_gps_datum",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=datums_payload,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
             return
 
         if op == "set_goal_ll":

@@ -7,6 +7,8 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
+from navegacion_gps.datum_profile_resolver import resolve_selected_datum
+
 
 def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
     package_share_path = Path(package_share_dir)
@@ -32,6 +34,9 @@ def generate_launch_description():
     default_keepout_mask_yaml = _resolve_config_file_path(gps_wpf_dir, "keepout_mask.yaml")
     default_global_localization_params_file = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
+    )
+    default_datum_lat, default_datum_lon, default_datum_yaw_deg, default_datums_file = (
+        resolve_selected_datum(gps_wpf_dir)
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -108,6 +113,7 @@ def generate_launch_description():
     datum_lat = LaunchConfiguration("datum_lat")
     datum_lon = LaunchConfiguration("datum_lon")
     datum_yaw_deg = LaunchConfiguration("datum_yaw_deg")
+    datums_file = LaunchConfiguration("datums_file")
 
     return LaunchDescription(
         [
@@ -200,9 +206,10 @@ def generate_launch_description():
                 "gps_rtk_status_topic",
                 default_value="/gps/rtk_status_mavros",
             ),
-            DeclareLaunchArgument("datum_lat", default_value="-31.4858037"),
-            DeclareLaunchArgument("datum_lon", default_value="-64.2410570"),
-            DeclareLaunchArgument("datum_yaw_deg", default_value="0.0"),
+            DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat)),
+            DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon)),
+            DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg)),
+            DeclareLaunchArgument("datums_file", default_value=default_datums_file),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(gps_wpf_dir, "launch", "real_global_v2.launch.py")
@@ -263,6 +270,7 @@ def generate_launch_description():
                     "datum_lat": datum_lat,
                     "datum_lon": datum_lon,
                     "datum_yaw_deg": datum_yaw_deg,
+                    "datums_file": datums_file,
                 }.items(),
             ),
         ]

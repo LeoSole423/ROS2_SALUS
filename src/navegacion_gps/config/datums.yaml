@@ -1,0 +1,12 @@
+version: 1
+selected_id: global-v2-default
+datums:
+- id: global-v2-default
+  name: Global V2 default
+  lat: -31.4858037
+  lon: -64.241057
+  yaw_deg: 0.0
+  created_at: '2026-04-21T00:00:00Z'
+  updated_at: '2026-04-21T00:00:00Z'
+  source: real_global_v2_fixed
+  notes: Default fixed datum used by the current global_v2 launch profiles.
