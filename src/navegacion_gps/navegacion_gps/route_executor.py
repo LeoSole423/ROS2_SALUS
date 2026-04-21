@@ -37,6 +37,14 @@ class PreparedRouteMission:
     note: str
 
 
+@dataclass(frozen=True)
+class RouteSegmentMatch:
+    segment_index: int
+    next_index: int
+    distance_m: float
+    ratio: float
+
+
 def _normalize_yaw_deg(yaw_deg: float) -> float:
     yaw = float(yaw_deg)
     while yaw <= -180.0:
@@ -71,6 +79,99 @@ def _interpolate_waypoint(start: RouteWaypoint, end: RouteWaypoint, ratio: float
         lat=float(start.lat + ((end.lat - start.lat) * ratio)),
         lon=float(start.lon + ((end.lon - start.lon) * ratio)),
         yaw_deg=_bearing_deg(start.lat, start.lon, end.lat, end.lon),
+    )
+
+
+def _local_xy_m(
+    lat: float,
+    lon: float,
+    *,
+    origin_lat: float,
+    origin_lon: float,
+) -> Tuple[float, float]:
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = meters_per_deg_lat * max(
+        1.0e-6, abs(math.cos(math.radians(float(origin_lat))))
+    )
+    x = (float(lon) - float(origin_lon)) * meters_per_deg_lon
+    y = (float(lat) - float(origin_lat)) * meters_per_deg_lat
+    return float(x), float(y)
+
+
+def _closest_route_segment(
+    route: Sequence[RouteWaypoint],
+    *,
+    robot_lat: float,
+    robot_lon: float,
+    loop: bool,
+) -> Optional[RouteSegmentMatch]:
+    route_list = list(route)
+    if len(route_list) <= 1:
+        return None
+
+    robot_x, robot_y = _local_xy_m(
+        robot_lat,
+        robot_lon,
+        origin_lat=robot_lat,
+        origin_lon=robot_lon,
+    )
+    segment_count = len(route_list) if loop else len(route_list) - 1
+    best: Optional[RouteSegmentMatch] = None
+
+    for idx in range(segment_count):
+        start = route_list[idx]
+        next_index = (idx + 1) % len(route_list)
+        end = route_list[next_index]
+        start_x, start_y = _local_xy_m(
+            start.lat,
+            start.lon,
+            origin_lat=robot_lat,
+            origin_lon=robot_lon,
+        )
+        end_x, end_y = _local_xy_m(
+            end.lat,
+            end.lon,
+            origin_lat=robot_lat,
+            origin_lon=robot_lon,
+        )
+        seg_x = end_x - start_x
+        seg_y = end_y - start_y
+        seg_len_sq = (seg_x * seg_x) + (seg_y * seg_y)
+        if seg_len_sq <= 1.0e-6:
+            continue
+
+        raw_ratio = (
+            ((robot_x - start_x) * seg_x) + ((robot_y - start_y) * seg_y)
+        ) / seg_len_sq
+        ratio = min(1.0, max(0.0, float(raw_ratio)))
+        proj_x = start_x + (seg_x * ratio)
+        proj_y = start_y + (seg_y * ratio)
+        distance_m = math.hypot(robot_x - proj_x, robot_y - proj_y)
+        candidate = RouteSegmentMatch(
+            segment_index=int(idx),
+            next_index=int(next_index),
+            distance_m=float(distance_m),
+            ratio=float(ratio),
+        )
+        if best is None or (candidate.distance_m, candidate.segment_index) < (
+            best.distance_m,
+            best.segment_index,
+        ):
+            best = candidate
+
+    return best
+
+
+def _is_usable_segment_match(
+    match: Optional[RouteSegmentMatch],
+    *,
+    segment_tolerance_m: float,
+) -> bool:
+    return bool(
+        match is not None
+        and match.distance_m <= segment_tolerance_m
+        and match.ratio > 0.0
+        and match.ratio < 1.0
     )
 
 
@@ -131,6 +232,7 @@ def prepare_route_waypoints(
     robot_lat: Optional[float],
     robot_lon: Optional[float],
     waypoint_reached_tolerance_m: float,
+    segment_start_tolerance_m: float = 5.0,
 ) -> Tuple[Optional[PreparedRouteMission], str]:
     route = list(base_waypoints)
     if not route:
@@ -145,6 +247,12 @@ def prepare_route_waypoints(
         return PreparedRouteMission(route, 0, 0, False, ""), ""
 
     tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+    segment_tolerance_raw = float(segment_start_tolerance_m)
+    segment_tolerance_m = (
+        max(tolerance_m, segment_tolerance_raw)
+        if np.isfinite(segment_tolerance_raw)
+        else tolerance_m
+    )
     distances_m = [
         _distance_m(float(robot_lat), float(robot_lon), waypoint.lat, waypoint.lon)
         for waypoint in route
@@ -164,7 +272,37 @@ def prepare_route_waypoints(
             idx for idx, distance_m in enumerate(distances_m) if distance_m <= tolerance_m
         ]
         if not reached_indexes:
-            return PreparedRouteMission(route, 0, 0, False, ""), ""
+            closest_segment = _closest_route_segment(
+                route,
+                robot_lat=float(robot_lat),
+                robot_lon=float(robot_lon),
+                loop=True,
+            )
+            if not _is_usable_segment_match(
+                closest_segment,
+                segment_tolerance_m=segment_tolerance_m,
+            ):
+                return PreparedRouteMission(route, 0, 0, False, ""), ""
+
+            match = closest_segment
+            if match is None:
+                return PreparedRouteMission(route, 0, 0, False, ""), ""
+            start_index = int(match.next_index)
+            if start_index == 0:
+                return PreparedRouteMission(route, 0, 0, False, ""), ""
+            return (
+                PreparedRouteMission(
+                    route[start_index:] + route[:start_index],
+                    int(start_index),
+                    0,
+                    True,
+                    (
+                        "loop joined nearest segment "
+                        f"{match.segment_index + 1}->{match.next_index + 1}"
+                    ),
+                ),
+                "",
+            )
 
         anchor_index = min(reached_indexes, key=lambda idx: (distances_m[idx], idx))
         start_index = anchor_index
@@ -197,8 +335,31 @@ def prepare_route_waypoints(
     while start_index < (len(route) - 1) and distances_m[start_index] <= tolerance_m:
         start_index += 1
 
+    segment_note = ""
+    if start_index == 0 and len(route) > 1:
+        closest_segment = _closest_route_segment(
+            route,
+            robot_lat=float(robot_lat),
+            robot_lon=float(robot_lon),
+            loop=False,
+        )
+        if _is_usable_segment_match(
+            closest_segment,
+            segment_tolerance_m=segment_tolerance_m,
+        ):
+            match = closest_segment
+            if match is None:
+                return PreparedRouteMission(route, 0, 0, False, ""), ""
+            start_index = max(start_index, int(match.next_index))
+            segment_note = (
+                "joined nearest segment "
+                f"{match.segment_index + 1}->{match.next_index + 1}"
+            )
+
     note = ""
-    if start_index > 0:
+    if segment_note:
+        note = segment_note
+    elif start_index > 0:
         suffix = "s" if start_index != 1 else ""
         note = f"skipped {start_index} reached waypoint{suffix}"
 
@@ -287,6 +448,18 @@ def next_chunk_start_index(
     return min(target_index, total - 1)
 
 
+def should_suppress_chunk_success_brake(
+    *,
+    current_target_index: int,
+    route_size: int,
+    loop: bool,
+) -> bool:
+    total = max(0, int(route_size))
+    if bool(loop):
+        return total > 1
+    return int(current_target_index) < max(0, total - 1)
+
+
 class RouteExecutorNode(Node):
     def __init__(self) -> None:
         super().__init__("route_executor")
@@ -305,6 +478,7 @@ class RouteExecutorNode(Node):
         self.declare_parameter("min_chunk_span_m", 20.0)
         self.declare_parameter("min_chunk_max_waypoints", 2)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
+        self.declare_parameter("route_segment_start_tolerance_m", 5.0)
 
         self.nav_set_goal_service = str(self.get_parameter("nav_set_goal_service").value)
         self.nav_cancel_goal_service = str(self.get_parameter("nav_cancel_goal_service").value)
@@ -325,6 +499,10 @@ class RouteExecutorNode(Node):
         )
         self.route_waypoint_reached_tolerance_m = max(
             0.05, float(self.get_parameter("route_waypoint_reached_tolerance_m").value)
+        )
+        self.route_segment_start_tolerance_m = max(
+            self.route_waypoint_reached_tolerance_m,
+            float(self.get_parameter("route_segment_start_tolerance_m").value),
         )
 
         self._lock = threading.Lock()
@@ -462,6 +640,11 @@ class RouteExecutorNode(Node):
         request.lons = [float(entry.lon) for entry in chunk]
         request.yaws_deg = [float(entry.yaw_deg) for entry in chunk]
         request.loop = False
+        request.suppress_success_brake = should_suppress_chunk_success_brake(
+            current_target_index=end_index,
+            route_size=len(route),
+            loop=loop_enabled,
+        )
         request.lat = float(request.lats[0])
         request.lon = float(request.lons[0])
         request.yaw_deg = float(request.yaws_deg[0])
@@ -651,6 +834,7 @@ class RouteExecutorNode(Node):
             robot_lat=None if robot_pose is None else float(robot_pose[0]),
             robot_lon=None if robot_pose is None else float(robot_pose[1]),
             waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+            segment_start_tolerance_m=self.route_segment_start_tolerance_m,
         )
         if prepared is None:
             response.ok = False

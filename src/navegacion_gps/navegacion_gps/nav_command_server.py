@@ -178,6 +178,7 @@ class NavCommandServerNode(Node):
         self._loop_original_poses: List[PoseStamped] = []
         self._loop_segment_start_index = 0
         self._loop_enabled = False
+        self._suppress_success_brake = False
         self._last_nav_result_status = int(GoalStatus.STATUS_UNKNOWN)
         self._last_nav_result_text = "idle"
         self._nav_result_event_id = 0
@@ -755,6 +756,7 @@ class NavCommandServerNode(Node):
         self._is_navigating = False
         self._auto_mode = "idle"
         self._active_action = "idle"
+        self._suppress_success_brake = False
         return handle
 
     def _cancel_goal_handle_blocking(self, handle: Any) -> Tuple[bool, str]:
@@ -1066,6 +1068,7 @@ class NavCommandServerNode(Node):
         loop_enabled: bool,
         reason: str,
         details: Optional[Dict[str, Any]] = None,
+        suppress_success_brake: bool = False,
     ) -> Tuple[bool, str]:
         poses_list = list(poses)
         if not poses_list:
@@ -1112,6 +1115,7 @@ class NavCommandServerNode(Node):
             self._current_goal_handle = goal_handle
             self._loop_waypoint_poses = poses_list
             self._loop_enabled = bool(loop_enabled and (len(poses_list) > 1))
+            self._suppress_success_brake = bool(suppress_success_brake)
             self._is_navigating = True
             self._auto_mode = "loop" if self._loop_enabled else "point_to_point"
             self._active_action = "follow_waypoints"
@@ -1136,6 +1140,7 @@ class NavCommandServerNode(Node):
             details={
                 "waypoints": len(poses_list),
                 "loop": bool(loop_enabled and (len(poses_list) > 1)),
+                "suppress_success_brake": bool(suppress_success_brake),
                 "reason": reason,
                 **dict(details or {}),
             },
@@ -1149,6 +1154,7 @@ class NavCommandServerNode(Node):
         loop_enabled: bool,
         reason: str,
         details: Optional[Dict[str, Any]] = None,
+        suppress_success_brake: bool = False,
     ) -> Tuple[bool, str]:
         poses_list = list(poses)
         if not poses_list:
@@ -1195,6 +1201,7 @@ class NavCommandServerNode(Node):
             self._current_goal_handle = goal_handle
             self._loop_waypoint_poses = poses_list
             self._loop_enabled = bool(loop_enabled and (len(poses_list) > 1))
+            self._suppress_success_brake = bool(suppress_success_brake)
             self._is_navigating = True
             self._auto_mode = "loop" if self._loop_enabled else "point_to_point"
             self._active_action = "navigate_through_poses"
@@ -1219,6 +1226,7 @@ class NavCommandServerNode(Node):
             details={
                 "waypoints": len(poses_list),
                 "loop": bool(loop_enabled and (len(poses_list) > 1)),
+                "suppress_success_brake": bool(suppress_success_brake),
                 "reason": reason,
                 **dict(details or {}),
             },
@@ -1232,6 +1240,7 @@ class NavCommandServerNode(Node):
         loop_enabled: bool,
         reason: str,
         details: Optional[Dict[str, Any]] = None,
+        suppress_success_brake: bool = False,
     ) -> Tuple[bool, str]:
         poses_list = list(poses)
         if len(poses_list) > 1:
@@ -1240,16 +1249,21 @@ class NavCommandServerNode(Node):
                 loop_enabled=loop_enabled,
                 reason=reason,
                 details=details,
+                suppress_success_brake=suppress_success_brake,
             )
         return self._send_follow_waypoints_goal(
             poses=poses_list,
             loop_enabled=loop_enabled,
             reason=reason,
             details=details,
+            suppress_success_brake=suppress_success_brake,
         )
 
     def send_nav2_goals(
-        self, waypoints: Sequence[Tuple[float, float, float]], loop_enabled: bool
+        self,
+        waypoints: Sequence[Tuple[float, float, float]],
+        loop_enabled: bool,
+        suppress_success_brake: bool = False,
     ) -> Tuple[bool, str]:
         if len(waypoints) == 0:
             return False, "at least one waypoint is required"
@@ -1266,13 +1280,18 @@ class NavCommandServerNode(Node):
             self._is_navigating = False
             self._auto_mode = "idle"
             self._active_action = "idle"
+            self._suppress_success_brake = False
 
         self._publish_event(
             DiagnosticStatus.OK,
             "nav_command_server",
             "GOAL_REQUESTED",
             "Navigation goal requested",
-            details={"waypoints": len(waypoints), "loop": bool(loop_enabled)},
+            details={
+                "waypoints": len(waypoints),
+                "loop": bool(loop_enabled),
+                "suppress_success_brake": bool(suppress_success_brake),
+            },
         )
         poses, err = self._convert_waypoints_to_poses(waypoints)
         if poses is None:
@@ -1292,6 +1311,7 @@ class NavCommandServerNode(Node):
                     "loop_segment_start_index": 0,
                     "loop_segment_size": len(loop_segment_poses),
                 },
+                suppress_success_brake=False,
             )
             if not ok:
                 with self._lock:
@@ -1322,6 +1342,7 @@ class NavCommandServerNode(Node):
             poses=poses,
             loop_enabled=loop_enabled,
             reason="set_goal_service",
+            suppress_success_brake=suppress_success_brake,
         )
         if not ok:
             with self._lock:
@@ -1356,6 +1377,7 @@ class NavCommandServerNode(Node):
         with self._lock:
             auto_mode = str(self._auto_mode)
             manual_enabled = bool(self._manual_enabled)
+            suppress_success_brake = bool(self._suppress_success_brake)
             self._current_goal_handle = None
             if (
                 auto_mode == "loop"
@@ -1388,7 +1410,13 @@ class NavCommandServerNode(Node):
                     if (status != GoalStatus.STATUS_SUCCEEDED) and (not manual_enabled):
                         force_brake = True
                 elif auto_mode == "point_to_point":
-                    if not manual_enabled:
+                    if (
+                        not manual_enabled
+                        and (
+                            status != GoalStatus.STATUS_SUCCEEDED
+                            or not suppress_success_brake
+                        )
+                    ):
                         force_brake = True
 
         should_restart = restart_goal_poses is not None
@@ -1405,6 +1433,7 @@ class NavCommandServerNode(Node):
                 loop_enabled=True,
                 reason=restart_reason,
                 details=restart_details,
+                suppress_success_brake=False,
             )
             with self._lock:
                 if ok and self._loop_enabled and (not self._manual_enabled):
@@ -1426,6 +1455,7 @@ class NavCommandServerNode(Node):
                     self._is_navigating = False
                     self._auto_mode = "idle"
                     self._active_action = "idle"
+                    self._suppress_success_brake = False
                     force_brake = not self._manual_enabled
                     self._set_failure_locked("LOOP_RESTART_FAILED", "nav_command_server")
                     NavCommandServerNode._set_nav_result_locked(
@@ -1444,6 +1474,7 @@ class NavCommandServerNode(Node):
                 )
         else:
             with self._lock:
+                self._suppress_success_brake = False
                 if status_code == int(GoalStatus.STATUS_SUCCEEDED):
                     self._set_failure_locked("", "")
                 elif status_code == int(GoalStatus.STATUS_ABORTED):
@@ -1663,6 +1694,9 @@ class NavCommandServerNode(Node):
         ok, err = self.send_nav2_goals(
             waypoints=waypoints,
             loop_enabled=loop_enabled,
+            suppress_success_brake=bool(
+                getattr(request, "suppress_success_brake", False)
+            ),
         )
         response.ok = bool(ok)
         response.error = "" if ok else str(err)

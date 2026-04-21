@@ -5,6 +5,7 @@ float64[] lats
 float64[] lons
 float64[] yaws_deg
 bool loop
+bool suppress_success_brake
 ---
 bool ok
 string error

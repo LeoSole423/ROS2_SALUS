@@ -4,6 +4,7 @@ from navegacion_gps.route_executor import (
     expand_route_waypoints,
     next_chunk_start_index,
     prepare_route_waypoints,
+    should_suppress_chunk_success_brake,
 )
 
 
@@ -95,6 +96,39 @@ def test_next_chunk_start_index_advances_for_loop_routes():
     assert next_chunk_start_index(current_target_index=1, route_size=4, loop=True) == 2
 
 
+def test_should_suppress_chunk_success_brake_for_intermediate_non_loop_chunk():
+    assert (
+        should_suppress_chunk_success_brake(
+            current_target_index=3,
+            route_size=6,
+            loop=False,
+        )
+        is True
+    )
+
+
+def test_should_not_suppress_chunk_success_brake_for_final_non_loop_chunk():
+    assert (
+        should_suppress_chunk_success_brake(
+            current_target_index=5,
+            route_size=6,
+            loop=False,
+        )
+        is False
+    )
+
+
+def test_should_suppress_chunk_success_brake_for_loop_chunk():
+    assert (
+        should_suppress_chunk_success_brake(
+            current_target_index=5,
+            route_size=6,
+            loop=True,
+        )
+        is True
+    )
+
+
 def test_prepare_route_waypoints_skips_reached_prefix_for_non_loop_routes():
     route = [
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
@@ -115,6 +149,53 @@ def test_prepare_route_waypoints_skips_reached_prefix_for_non_loop_routes():
     assert prepared.skipped_waypoints == 2
     assert prepared.note == "skipped 2 reached waypoints"
     assert prepared.waypoints == [route[2]]
+
+
+def test_prepare_route_waypoints_joins_nearest_segment_for_non_loop_routes():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.002, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=3.0,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.start_index == 1
+    assert prepared.skipped_waypoints == 1
+    assert prepared.note == "joined nearest segment 1->2"
+    assert prepared.waypoints == [route[1], route[2]]
+
+
+def test_prepare_route_waypoints_does_not_join_far_segment_for_non_loop_routes():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.002, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0001,
+        robot_lon=0.0005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=3.0,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.start_index == 0
+    assert prepared.note == ""
+    assert prepared.waypoints == route
 
 
 def test_prepare_route_waypoints_rejects_non_loop_when_final_is_already_reached():
@@ -155,4 +236,28 @@ def test_prepare_route_waypoints_rotates_loop_to_next_useful_waypoint():
     assert prepared.rotated is True
     assert prepared.start_index == 1
     assert prepared.note == "loop rotated to waypoint 2"
+    assert prepared.waypoints == [route[1], route[2], route[0]]
+
+
+def test_prepare_route_waypoints_joins_nearest_segment_for_loop_routes():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=90.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.0005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=3.0,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.rotated is True
+    assert prepared.start_index == 1
+    assert prepared.note == "loop joined nearest segment 1->2"
     assert prepared.waypoints == [route[1], route[2], route[0]]

@@ -81,6 +81,7 @@ class _FakeLoopNode:
         self._loop_original_poses = [1, 2, 3]
         self._loop_segment_start_index = 0
         self.loop_segment_size = 2
+        self._suppress_success_brake = False
         self._manual_enabled = False
         self._is_navigating = True
         self._auto_mode = "loop"
@@ -96,13 +97,21 @@ class _FakeLoopNode:
         self.events = []
         self.logger = _FakeLogger()
 
-    def _send_nav_goal_for_poses(self, poses, loop_enabled, reason, details=None):
+    def _send_nav_goal_for_poses(
+        self,
+        poses,
+        loop_enabled,
+        reason,
+        details=None,
+        suppress_success_brake=False,
+    ):
         self.sent_calls.append(
             (
                 list(poses),
                 bool(loop_enabled),
                 str(reason),
                 dict(details or {}),
+                bool(suppress_success_brake),
             )
         )
         return bool(self._send_ok), str(self._send_err)
@@ -156,10 +165,11 @@ def test_result_callback_advances_to_next_loop_segment_on_success() -> None:
         _FakeResultFuture(GoalStatus.STATUS_SUCCEEDED),
     )
 
-    poses, loop_enabled, reason, details = node.sent_calls[0]
+    poses, loop_enabled, reason, details, suppress_success_brake = node.sent_calls[0]
     assert poses == [3, 4]
     assert loop_enabled is True
     assert reason == "loop_segment_advance"
+    assert suppress_success_brake is False
     assert details["loop_segment_start_index"] == 2
     assert details["loop_segment_size"] == 2
     assert details["loop_total_waypoints"] == 4
@@ -181,10 +191,11 @@ def test_result_callback_wraps_to_first_waypoint_after_last_segment() -> None:
         _FakeResultFuture(GoalStatus.STATUS_SUCCEEDED),
     )
 
-    poses, loop_enabled, reason, details = node.sent_calls[0]
+    poses, loop_enabled, reason, details, suppress_success_brake = node.sent_calls[0]
     assert poses == [1, 2]
     assert loop_enabled is True
     assert reason == "loop_segment_advance"
+    assert suppress_success_brake is False
     assert details["loop_segment_start_index"] == 0
     assert node._loop_segment_start_index == 0
     assert node._loop_waypoint_poses == [1, 2]
@@ -242,6 +253,46 @@ def test_result_callback_point_to_point_stops_on_success() -> None:
     assert node.brake_calls == [100]
     assert node._is_navigating is False
     assert node._auto_mode == "idle"
+
+
+def test_result_callback_point_to_point_suppresses_brake_on_success() -> None:
+    node = _FakeLoopNode()
+    node._loop_enabled = False
+    node._auto_mode = "point_to_point"
+    node._suppress_success_brake = True
+    node._loop_original_poses = []
+    node._loop_waypoint_poses = []
+
+    NavCommandServerNode._on_nav_action_result_done(
+        node,
+        "NavigateThroughPoses",
+        _FakeResultFuture(GoalStatus.STATUS_SUCCEEDED),
+    )
+    assert node.sent_calls == []
+    assert node.brake_calls == []
+    assert node._is_navigating is False
+    assert node._auto_mode == "idle"
+    assert node._suppress_success_brake is False
+
+
+def test_result_callback_point_to_point_still_brakes_on_abort_when_suppressed() -> None:
+    node = _FakeLoopNode()
+    node._loop_enabled = False
+    node._auto_mode = "point_to_point"
+    node._suppress_success_brake = True
+    node._loop_original_poses = []
+    node._loop_waypoint_poses = []
+
+    NavCommandServerNode._on_nav_action_result_done(
+        node,
+        "NavigateThroughPoses",
+        _FakeResultFuture(GoalStatus.STATUS_ABORTED),
+    )
+    assert node.sent_calls == []
+    assert node.brake_calls == [100]
+    assert node._is_navigating is False
+    assert node._auto_mode == "idle"
+    assert node._suppress_success_brake is False
 
 
 def test_result_callback_point_to_point_manual_mode_does_not_brake() -> None:
