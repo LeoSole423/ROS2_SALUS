@@ -388,7 +388,10 @@ def build_chunk_waypoints(
         return [], 0
 
     total = len(route_list)
-    start = max(0, int(start_index)) % total
+    requested_start = max(0, int(start_index))
+    if not loop and requested_start >= total:
+        return [], total
+    start = requested_start % total if loop else requested_start
     max_points = max(1, int(chunk_max_waypoints))
     max_span_m = max(1.0, float(chunk_span_m))
 
@@ -445,7 +448,7 @@ def next_chunk_start_index(
     target_index = max(0, int(current_target_index))
     if loop and total > 1:
         return (target_index + 1) % total
-    return min(target_index, total - 1)
+    return min(target_index + 1, total)
 
 
 def should_suppress_chunk_success_brake(
@@ -681,7 +684,7 @@ class RouteExecutorNode(Node):
                 route_size=expanded_count,
                 loop=loop_enabled,
             )
-            reached_end = next_start_index >= max(0, expanded_count - 1)
+            reached_end = next_start_index >= expanded_count
             if reached_end and (not loop_enabled):
                 self._mission_active = False
                 self._mission_paused = False

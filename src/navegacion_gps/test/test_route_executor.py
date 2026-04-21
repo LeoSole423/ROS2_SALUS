@@ -35,7 +35,7 @@ def test_expand_route_waypoints_handles_loop_closure_without_duplicating_start()
     assert expanded.count(base[0]) == 1
 
 
-def test_build_chunk_waypoints_limits_chunk_by_span_and_keeps_progress_overlap():
+def test_build_chunk_waypoints_limits_chunk_by_span_and_advances_after_target():
     route = [
         RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
         RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
@@ -57,14 +57,14 @@ def test_build_chunk_waypoints_limits_chunk_by_span_and_keeps_progress_overlap()
 
     next_chunk, next_end_index = build_chunk_waypoints(
         route,
-        start_index=end_index,
+        start_index=end_index + 1,
         loop=False,
         chunk_span_m=50.0,
         chunk_max_waypoints=5,
     )
 
-    assert next_chunk[0] == route[end_index]
-    assert next_end_index >= end_index
+    assert next_chunk[0] == route[end_index + 1]
+    assert next_end_index >= end_index + 1
 
 
 def test_build_chunk_waypoints_wraps_for_loop_routes():
@@ -87,8 +87,9 @@ def test_build_chunk_waypoints_wraps_for_loop_routes():
     assert end_index == 1
 
 
-def test_next_chunk_start_index_keeps_overlap_for_non_loop_routes():
-    assert next_chunk_start_index(current_target_index=3, route_size=6, loop=False) == 3
+def test_next_chunk_start_index_advances_for_non_loop_routes():
+    assert next_chunk_start_index(current_target_index=3, route_size=6, loop=False) == 4
+    assert next_chunk_start_index(current_target_index=5, route_size=6, loop=False) == 6
 
 
 def test_next_chunk_start_index_advances_for_loop_routes():
