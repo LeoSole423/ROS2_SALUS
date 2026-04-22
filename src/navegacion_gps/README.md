@@ -8,6 +8,7 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
 
 ## Documentación del paquete
 - Resumen de perfiles y launches: [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
+- Politica de paridad sim/real: [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
 - Arquitectura runtime: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
 - Base local V2 usada por Global V2:
   - [LOCAL_NAV_V2.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/LOCAL_NAV_V2.md)

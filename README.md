@@ -22,6 +22,7 @@ Todos los paquetes bajo `src/` viven dentro de este mismo repositorio git.
 ## Documentación
 - Índice general: [docs/INDEX.md](/home/leo/codigo/ROS2_SALUS/docs/INDEX.md)
 - Matriz de launches y perfiles: [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
+- Politica de paridad sim/real: [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
 - Arquitectura runtime y flujo de tópicos: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
 - Integración con `cockpit`: [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md)
 - Históricos, transiciones y third-party: [docs/archive/README.md](/home/leo/codigo/ROS2_SALUS/docs/archive/README.md)

@@ -53,15 +53,14 @@ En `real_global_v2` queda disponible `/scan_wifi_debug` como `LaserScan` reducid
 - No reactivar auto-set de datum en operacion normal: moveria el origen de `map` y puede desalinear goals LL, zonas no-go y keepout persistentes.
 
 ## Nota sim vs real
+- La regla de mantenimiento completa esta en [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md).
 - Los cambios en `sim_global_v2` que dependan de `joint_states` o `odom_raw` pertenecen a simulación y no pasan solos a `real_global_v2`.
 - `real_global_v2` ahora comparte con `sim_global_v2` el anclaje global en `map`: GPS geográfico -> `fromLL` -> `/gps/odometry_map`, además de soporte para `/gps/course_heading`.
 - `real_global_v2` usa un params file propio de Nav2 para dejar el `global_costmap` en rolling window sin tocar la localización global ni arrastrar overrides específicos de simulación.
 - La base local V2 no es legacy: `ackermann_odometry`, `localization_v2` y `/odometry/local` son parte activa de la navegacion global vigente. Lo no operativo son los launches locales standalone.
 - En `real_global_v2`, la fuente de steering que debe mantenerse estable es `/controller/drive_telemetry.steer_deg_measured`.
 - Si el robot mide el ángulo en la barra central de dirección, ese dato es el que debe alimentar la odometría Ackermann real.
-- En `sim_global_v2`, el gating del heading GPS ahora tiene knobs propios:
-- `gps_course_heading_invalid_hold_s`
-- `gps_course_heading_hold_yaw_variance_multiplier`
+- El gating de `/gps/course_heading` debe mantenerse alineado entre sim y real; solo cambian las fuentes de GPS/RTK.
 
 ## Operación y diagnóstico
 | Herramienta | Comando | Estado |
