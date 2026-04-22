@@ -1,6 +1,8 @@
 # ================================
 # BEHAVIOR TREE NAVIGATOR
 # ================================
+# Variante WiFi: misma logica Nav2 que sim/real rolling, con menor trafico
+# de costmaps/voxel debug para operacion remota.
 bt_navigator:
   ros__parameters:
     use_sim_time: true
@@ -177,6 +179,7 @@ local_costmap:
       footprint: "[[1.05,0.38],[1.05,-0.38],[-0.12,-0.38],[-0.12,0.38]]"
       footprint_padding: 0.0
       plugins: ["voxel_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
       track_unknown_space: false
 
       inflation_layer:
@@ -247,6 +250,7 @@ global_costmap:
       track_unknown_space: false
       use_maximum_static_value: true
       plugins: ["obstacle_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"

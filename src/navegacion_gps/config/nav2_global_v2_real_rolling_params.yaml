@@ -1,6 +1,8 @@
 # ================================
 # BT NAVIGATOR
 # ================================
+# Mantener este perfil en paridad semantica con sim_global_v2 rolling.
+# Las diferencias deben limitarse a sim_time/sensores/hardware o WiFi.
 bt_navigator:
   ros__parameters:
     use_sim_time: true
@@ -48,6 +50,20 @@ behavior_server:
     max_deceleration: 2.0
     max_angular_acceleration: 1.0
     max_angular_deceleration: 1.0
+
+# ================================
+# WAYPOINT FOLLOWER
+# ================================
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: true
+    loop_rate: 20
+    stop_on_failure: true
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: false
+      waypoint_pause_duration: 0
 
 # ================================
 # PLANNER (Hybrid A*)

@@ -100,6 +100,14 @@ def generate_launch_description():
     gps_course_heading_hold_yaw_variance_multiplier = LaunchConfiguration(
         "gps_course_heading_hold_yaw_variance_multiplier"
     )
+    gps_course_heading_require_rtk = LaunchConfiguration("gps_course_heading_require_rtk")
+    gps_course_heading_allowed_rtk_statuses = LaunchConfiguration(
+        "gps_course_heading_allowed_rtk_statuses"
+    )
+    gps_course_heading_rtk_status_max_age_s = LaunchConfiguration(
+        "gps_course_heading_rtk_status_max_age_s"
+    )
+    gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
     gps_profile = LaunchConfiguration("gps_profile")
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
@@ -163,21 +171,30 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("map_gps_fromll_wait_timeout_s", default_value="0.2"),
             DeclareLaunchArgument("enable_gps_course_heading", default_value="true"),
-            DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="1.0"),
-            DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.4"),
+            DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0"),
+            DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.8"),
             DeclareLaunchArgument("gps_course_heading_max_abs_steer_deg", default_value="3.0"),
             DeclareLaunchArgument(
-                "gps_course_heading_max_abs_yaw_rate_rps", default_value="0.06"
+                "gps_course_heading_max_abs_yaw_rate_rps", default_value="0.05"
             ),
             DeclareLaunchArgument("gps_course_heading_invalid_hold_s", default_value="0.8"),
             DeclareLaunchArgument("gps_course_heading_max_sample_dt_s", default_value="2.5"),
-            DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="10.0"),
+            DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0"),
             DeclareLaunchArgument("gps_course_heading_yaw_variance_rad2", default_value="0.05"),
             DeclareLaunchArgument(
                 "gps_course_heading_hold_yaw_variance_multiplier",
                 default_value="4.0",
             ),
-            DeclareLaunchArgument("gps_profile", default_value="ideal"),
+            DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True"),
+            DeclareLaunchArgument(
+                "gps_course_heading_allowed_rtk_statuses",
+                default_value="RTK_FIXED,RTK_FIX,RTK_FLOAT,RTCM_OK",
+            ),
+            DeclareLaunchArgument(
+                "gps_course_heading_rtk_status_max_age_s", default_value="2.5"
+            ),
+            DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status"),
+            DeclareLaunchArgument("gps_profile", default_value="f9p_rtk"),
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
@@ -241,6 +258,10 @@ def generate_launch_description():
                     "gps_course_heading_publish_hz": gps_course_heading_publish_hz,
                     "gps_course_heading_yaw_variance_rad2": gps_course_heading_yaw_variance_rad2,
                     "gps_course_heading_hold_yaw_variance_multiplier": gps_course_heading_hold_yaw_variance_multiplier,
+                    "gps_course_heading_require_rtk": gps_course_heading_require_rtk,
+                    "gps_course_heading_allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses,
+                    "gps_course_heading_rtk_status_max_age_s": gps_course_heading_rtk_status_max_age_s,
+                    "gps_rtk_status_topic": gps_rtk_status_topic,
                     "gps_profile": gps_profile,
                     "launch_web_app": launch_web_app,
                     "ws_host": ws_host,

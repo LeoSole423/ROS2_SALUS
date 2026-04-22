@@ -1,6 +1,8 @@
 # ================================
 # BT NAVIGATOR
 # ================================
+# Variante WiFi: misma logica Nav2 que sim/real rolling, con menor trafico
+# de costmaps/voxel debug para operacion remota.
 bt_navigator:
   ros__parameters:
     use_sim_time: true
@@ -48,6 +50,20 @@ behavior_server:
     max_deceleration: 2.0
     max_angular_acceleration: 1.0
     max_angular_deceleration: 1.0
+
+# ================================
+# WAYPOINT FOLLOWER
+# ================================
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: true
+    loop_rate: 20
+    stop_on_failure: true
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: false
+      waypoint_pause_duration: 0
 
 # ================================
 # PLANNER (Hybrid A*)

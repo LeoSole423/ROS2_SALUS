@@ -30,6 +30,7 @@ Todos los paquetes bajo `src/` viven dentro de este mismo repositorio git.
 - Navegacion vigente:
   - `ros2 launch navegacion_gps sim_global_v2.launch.py`
   - `ros2 launch navegacion_gps real_global_v2.launch.py`
+  - `ros2 launch navegacion_gps real_global_v2_wifi.launch.py` (recomendado para WiFi)
 - Infraestructura:
   - `ros2 launch sensores pixhawk.launch.py`
   - `ros2 launch sensores rs16.launch.py`
@@ -74,6 +75,7 @@ docker compose up -d --build
 - `./tools/launch_no_go_editor.sh`
 - `./tools/launch_sim_global_v2.sh`
 - `./tools/launch_real_global_v2.sh`
+- `./tools/launch_real_global_v2_wifi.sh`
 - `./tools/record_nav_debug_bag.sh`
 - `./tools/healthcheck-lidar.sh`
 

@@ -101,6 +101,14 @@ def generate_launch_description():
     gps_course_heading_hold_yaw_variance_multiplier = LaunchConfiguration(
         "gps_course_heading_hold_yaw_variance_multiplier"
     )
+    gps_course_heading_require_rtk = LaunchConfiguration("gps_course_heading_require_rtk")
+    gps_course_heading_allowed_rtk_statuses = LaunchConfiguration(
+        "gps_course_heading_allowed_rtk_statuses"
+    )
+    gps_course_heading_rtk_status_max_age_s = LaunchConfiguration(
+        "gps_course_heading_rtk_status_max_age_s"
+    )
+    gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
     gps_profile = LaunchConfiguration("gps_profile")
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
@@ -161,15 +169,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("map_gps_fromll_wait_timeout_s", default_value="0.2"),
             DeclareLaunchArgument("enable_gps_course_heading", default_value="true"),
-            # Con GPS RTK simulado podemos cerrar el heading por avance antes y
-            # con más confianza que con el perfil ideal/m8n anterior.
-            DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="1.0"),
-            DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.4"),
-            # En curvas el heading inferido por desplazamiento GPS deja de ser
-            # una buena referencia del cuerpo Ackermann. Endurecemos el gating
-            # en simulacion para aceptarlo solo en tramos claramente rectos.
+            # Mantener estos defaults alineados con real_global_v2 para que el
+            # heading GPS tenga el mismo gating en sim y real.
+            DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0"),
+            DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.8"),
             DeclareLaunchArgument("gps_course_heading_max_abs_steer_deg", default_value="3.0"),
-            DeclareLaunchArgument("gps_course_heading_max_abs_yaw_rate_rps", default_value="0.06"),
+            DeclareLaunchArgument("gps_course_heading_max_abs_yaw_rate_rps", default_value="0.05"),
             # Cuando el vehiculo entra en una curva leve, dejar caer el heading
             # en un solo ciclo hace que el EKF global reoriente `map->odom`
             # demasiado brusco. Mantenemos el ultimo yaw valido por una ventana
@@ -179,15 +184,23 @@ def generate_launch_description():
             # el heading. En curvas largas, usar una cuerda demasiado antigua
             # reinyecta un yaw que ya no representa la tangente actual.
             DeclareLaunchArgument("gps_course_heading_max_sample_dt_s", default_value="2.5"),
-            DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="10.0"),
+            DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0"),
             DeclareLaunchArgument("gps_course_heading_yaw_variance_rad2", default_value="0.05"),
             DeclareLaunchArgument(
                 "gps_course_heading_hold_yaw_variance_multiplier",
                 default_value="4.0",
             ),
-            # Sim global defaults to the ideal profile so LL/map debugging is not
-            # polluted by GNSS noise unless the operator opts into RTK/M8N.
-            DeclareLaunchArgument("gps_profile", default_value="ideal"),
+            DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True"),
+            DeclareLaunchArgument(
+                "gps_course_heading_allowed_rtk_statuses",
+                default_value="RTK_FIXED,RTK_FIX,RTK_FLOAT,RTCM_OK",
+            ),
+            DeclareLaunchArgument(
+                "gps_course_heading_rtk_status_max_age_s",
+                default_value="2.5",
+            ),
+            DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status"),
+            DeclareLaunchArgument("gps_profile", default_value="f9p_rtk"),
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
@@ -200,7 +213,7 @@ def generate_launch_description():
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                         "gps_profile": gps_profile,
-                        "gps_rtk_status_topic": "/gps/rtk_status",
+                        "gps_rtk_status_topic": gps_rtk_status_topic,
                         # En simulacion global mantenemos el fix RTK congelado
                         # cuando el vehiculo esta quieto para que el EKF global
                         # no amplifique el jitter estacionario del GPS.
@@ -362,6 +375,14 @@ def generate_launch_description():
                         "hold_yaw_variance_multiplier": ParameterValue(
                             gps_course_heading_hold_yaw_variance_multiplier,
                             value_type=float,
+                        ),
+                        "rtk_status_topic": gps_rtk_status_topic,
+                        "require_rtk": ParameterValue(
+                            gps_course_heading_require_rtk, value_type=bool
+                        ),
+                        "allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses,
+                        "rtk_status_max_age_s": ParameterValue(
+                            gps_course_heading_rtk_status_max_age_s, value_type=float
                         ),
                     }
                 ],

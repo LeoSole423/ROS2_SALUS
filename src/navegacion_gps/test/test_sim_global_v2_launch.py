@@ -29,16 +29,16 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
         'DeclareLaunchArgument("enable_gps_course_heading", default_value="true")'
     )
     gps_heading_distance_arg = (
-        'DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="1.0")'
+        'DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0")'
     )
     gps_heading_speed_arg = (
-        'DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.4")'
+        'DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.8")'
     )
     gps_heading_steer_arg = (
         'DeclareLaunchArgument("gps_course_heading_max_abs_steer_deg", default_value="3.0")'
     )
     gps_heading_yaw_rate_arg = (
-        'DeclareLaunchArgument("gps_course_heading_max_abs_yaw_rate_rps", default_value="0.06")'
+        'DeclareLaunchArgument("gps_course_heading_max_abs_yaw_rate_rps", default_value="0.05")'
     )
     gps_heading_hold_arg = (
         'DeclareLaunchArgument("gps_course_heading_invalid_hold_s", default_value="0.8")'
@@ -47,7 +47,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
         'DeclareLaunchArgument("gps_course_heading_max_sample_dt_s", default_value="2.5")'
     )
     gps_heading_publish_arg = (
-        'DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="10.0")'
+        'DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0")'
     )
     gps_heading_variance_arg = (
         'DeclareLaunchArgument("gps_course_heading_yaw_variance_rad2", default_value="0.05")'
@@ -65,9 +65,12 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"fromll_frame": "map"' in launch_contents
     assert '"map_frame": "map"' in launch_contents
     assert '"approx_fromll_fallback_enabled": True' in launch_contents
-    assert 'DeclareLaunchArgument("datum_lat", default_value="-31.4858037")' in launch_contents
-    assert 'DeclareLaunchArgument("datum_lon", default_value="-64.2410570")' in launch_contents
-    assert 'DeclareLaunchArgument("datum_yaw_deg", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat))' in launch_contents
+    assert 'DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon))' in launch_contents
+    assert (
+        'DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg))'
+        in launch_contents
+    )
     assert map_gps_enable_arg in launch_contents
     assert map_gps_topic_arg in launch_contents
     assert map_gps_cov_arg in launch_contents
@@ -86,7 +89,10 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert gps_heading_publish_arg in launch_contents
     assert gps_heading_variance_arg in launch_contents
     assert gps_heading_hold_variance_arg in launch_contents
-    assert 'DeclareLaunchArgument("gps_profile", default_value="ideal")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True")' in launch_contents
+    assert 'default_value="RTK_FIXED,RTK_FIX,RTK_FLOAT,RTCM_OK"' in launch_contents
+    assert 'DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_profile", default_value="f9p_rtk")' in launch_contents
     assert 'executable="gps_course_heading"' in launch_contents
     assert '"gps_profile": gps_profile' in launch_contents
     assert approx_lat_arg in launch_contents
@@ -99,6 +105,10 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"max_sample_dt_s": ParameterValue(' in launch_contents
     assert '"publish_hz": ParameterValue(' in launch_contents
     assert '"hold_yaw_variance_multiplier": ParameterValue(' in launch_contents
+    assert '"rtk_status_topic": gps_rtk_status_topic' in launch_contents
+    assert '"require_rtk": ParameterValue(' in launch_contents
+    assert '"allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses' in launch_contents
+    assert '"rtk_status_max_age_s": ParameterValue(' in launch_contents
     assert "nav2_global_v2_sim_rolling_params.yaml" in launch_contents
     assert 'DeclareLaunchArgument("launch_web_app", default_value="True")' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
@@ -175,6 +185,8 @@ def test_sim_nav2_global_params_enable_rolling_global_costmap() -> None:
     assert "global_frame: map" in params_contents
     assert "width: 300" in params_contents
     assert "height: 300" in params_contents
+    assert 'filters: ["keepout_filter"]' in params_contents
+    assert "waypoint_follower:" in params_contents
 
 
 def test_rviz_global_config_and_launch_target_map() -> None:
@@ -194,6 +206,11 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert "sim_global_v2.launch.py" in launch_contents
     assert 'nav2_global_v2_sim_rolling_wifi_params.yaml' in launch_contents
     assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.8")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status")' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
@@ -229,3 +246,5 @@ def test_sim_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
     assert "publish_frequency: 0.5" in nav2_params_contents
     assert "publish_voxel_map: False" in nav2_params_contents
     assert "always_send_full_costmap: false" in nav2_params_contents
+    assert 'filters: ["keepout_filter"]' in nav2_params_contents
+    assert "waypoint_follower:" in nav2_params_contents

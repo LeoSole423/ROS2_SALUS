@@ -8,7 +8,8 @@ Fuente de verdad: `src/**/launch/*.launch.py` y `tools/*.sh`
 | Perfil | Launch | Helper | Destino | Estado |
 | --- | --- | --- | --- | --- |
 | Sim global Ackermann | `ros2 launch navegacion_gps sim_global_v2.launch.py` | `./tools/launch_sim_global_v2.sh` | contenedor | vigente |
-| Real global Ackermann | `ros2 launch navegacion_gps real_global_v2.launch.py` | `./tools/launch_real_global_v2.sh` | robot/contenedor | vigente, con perfil CycloneDDS Wi-Fi seguro y `global_costmap` rolling |
+| Real global Ackermann | `ros2 launch navegacion_gps real_global_v2.launch.py` | `./tools/launch_real_global_v2.sh` | robot/contenedor | vigente, perfil base no-WiFi |
+| Real global Ackermann WiFi | `ros2 launch navegacion_gps real_global_v2_wifi.launch.py` | `./tools/launch_real_global_v2_wifi.sh` | robot/contenedor | recomendado para operacion remota WiFi |
 | RViz real global V2 | `ros2 launch navegacion_gps rviz_real_global_v2.launch.py` | `./tools/launch_real_global_v2_rviz.sh` | PC local | vigente, con perfil CycloneDDS Wi-Fi seguro |
 | Replay offline localizacion global | `ros2 launch navegacion_gps replay_localization_global_v2.launch.py` | `./tools/run_localization_replay_compare.sh <bag_dir>` | contenedor | soporte |
 
@@ -42,7 +43,8 @@ En `real_global_v2` queda disponible `/scan_wifi_debug` como `LaserScan` reducid
 | --- | --- | --- |
 | Recompilar cambios de navegación/control | `./tools/compile-ros.sh controller_server navegacion_gps` | recompila dentro del contenedor |
 | Abrir shell del contenedor | `./tools/exec.sh` | usar si hace falta correr `colcon` o `ros2` a mano |
-| Lanzar `real_global_v2` | `./tools/launch_real_global_v2.sh` | wrapper corto sobre `ros2 launch navegacion_gps real_global_v2.launch.py`; hoy arranca con `use_keepout:=False` y `global_costmap` rolling por default |
+| Lanzar `real_global_v2` base | `./tools/launch_real_global_v2.sh` | wrapper corto no-WiFi sobre `ros2 launch navegacion_gps real_global_v2.launch.py`; mantiene compatibilidad con pruebas locales |
+| Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado para robot remoto por WiFi; usa `real_global_v2_wifi.launch.py` y params Nav2 con menor trafico |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
 ## Politica de datum
@@ -74,7 +76,8 @@ En `real_global_v2` queda disponible `/scan_wifi_debug` como `LaserScan` reducid
 | Heading startup | `./tools/check_startup_heading.sh` | soporte |
 
 ## Criterio de uso
-- Para navegacion real del robot, usar `real_global_v2`.
+- Para navegacion real remota por WiFi, usar `real_global_v2_wifi`.
+- Para navegacion real base/local, usar `real_global_v2`.
 - Para simulacion de la navegacion vigente, usar `sim_global_v2`.
 - Usar `real.launch.py` o `simulacion.launch.py` solo como material legacy.
 - Usar `real_local_v2` o `sim_local_v2` solo para validar/consultar la base local V2, no como perfil operativo final.

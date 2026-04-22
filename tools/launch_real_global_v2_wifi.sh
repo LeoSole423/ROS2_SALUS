@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Perfil recomendado para operacion remota del robot por WiFi.
 CYCLONEDDS_WIFI_URI="file:///ros2_ws/src/navegacion_gps/config/cyclonedds_wifi.xml"
 REAL_WIFI_LAUNCH="/ros2_ws/src/navegacion_gps/launch/real_global_v2_wifi.launch.py"
 

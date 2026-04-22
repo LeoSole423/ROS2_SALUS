@@ -1,6 +1,8 @@
 # ================================
 # BEHAVIOR TREE NAVIGATOR
 # ================================
+# Mantener este perfil en paridad semantica con real_global_v2 rolling.
+# Las diferencias deben limitarse a sim_time/sensores/hardware o WiFi.
 bt_navigator:
   ros__parameters:
     use_sim_time: true
@@ -177,6 +179,7 @@ local_costmap:
       footprint: "[[1.05,0.38],[1.05,-0.38],[-0.12,-0.38],[-0.12,0.38]]"
       footprint_padding: 0.0
       plugins: ["voxel_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
       track_unknown_space: false
 
       inflation_layer:
@@ -243,6 +246,7 @@ global_costmap:
       track_unknown_space: false
       use_maximum_static_value: true
       plugins: ["obstacle_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"

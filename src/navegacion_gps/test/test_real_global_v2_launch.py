@@ -68,7 +68,10 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert '"launch_route_executor": "false"' in launch_contents
     assert 'DeclareLaunchArgument("datum_lat"' in launch_contents
     assert 'DeclareLaunchArgument("datum_lon"' in launch_contents
-    assert 'DeclareLaunchArgument("datum_yaw_deg", default_value="0.0")' in launch_contents
+    assert (
+        'DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg))'
+        in launch_contents
+    )
     assert 'DeclareLaunchArgument("use_rviz", default_value="False")' in launch_contents
     assert 'DeclareLaunchArgument("rviz_config", default_value=default_rviz)' in launch_contents
     assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
@@ -189,6 +192,8 @@ def test_real_nav2_global_params_enable_rolling_global_costmap() -> None:
     assert "origin_x" not in params_contents
     assert "origin_y" not in params_contents
     assert 'filters: ["keepout_filter"]' in params_contents
+    assert "waypoint_follower:" in params_contents
+    assert 'plugin: "nav2_waypoint_follower::WaitAtWaypoint"' in params_contents
 
 
 def test_rviz_global_v2_prefers_wifi_debug_scan_for_remote_use() -> None:
@@ -236,3 +241,5 @@ def test_real_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
     assert "publish_voxel_map: False" in nav2_params_contents
     assert "always_send_full_costmap: true" in nav2_params_contents
     assert "always_send_full_costmap: false" in nav2_params_contents
+    assert 'filters: ["keepout_filter"]' in nav2_params_contents
+    assert "waypoint_follower:" in nav2_params_contents
