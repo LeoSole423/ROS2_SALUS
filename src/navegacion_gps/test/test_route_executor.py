@@ -103,6 +103,46 @@ def test_build_chunk_waypoints_wraps_for_loop_routes():
 
     assert chunk[0] == route[2]
     assert chunk[1] == route[0]
+    assert len(chunk) == 2
+    assert end_index == 0
+
+
+def test_build_chunk_waypoints_does_not_send_full_loop_cycle():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0008, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=0,
+        loop=True,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=5,
+    )
+
+    assert chunk == route[:4]
+    assert end_index == 3
+
+
+def test_build_chunk_waypoints_allows_single_target_for_two_point_loop():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=1,
+        loop=True,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=2,
+    )
+
+    assert chunk == [route[1]]
     assert end_index == 1
 
 

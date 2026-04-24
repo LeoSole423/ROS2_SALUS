@@ -461,6 +461,11 @@ def build_chunk_waypoints(
         return [], total
     start = requested_start % total if loop else requested_start
     max_points = max(1, int(chunk_max_waypoints))
+    if loop and total > 1:
+        # Do not send a full loop in one NavigateThroughPoses chunk. If the robot is
+        # already at the closure waypoint, Nav2 can report success immediately because
+        # the final pose is within goal tolerance.
+        max_points = min(max_points, max(1, total - 1))
     max_span_m = max(1.0, float(chunk_span_m))
 
     chunk = [route_list[start]]
@@ -494,7 +499,7 @@ def build_chunk_waypoints(
         if visited_steps >= max(0, total - 1):
             break
 
-    if len(chunk) == 1 and total > 1:
+    if len(chunk) == 1 and total > 1 and ((not loop) or max_points > 1):
         next_index = (start + 1) % total if loop else start + 1
         if next_index < total and next_index != start:
             chunk.append(route_list[next_index])
