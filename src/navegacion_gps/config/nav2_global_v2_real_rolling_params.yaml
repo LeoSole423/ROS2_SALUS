@@ -213,10 +213,10 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          # Marcamos obstaculos solo hasta 15 m para no convertir retornos
+          # Marcamos obstaculos solo hasta 10 m para no convertir retornos
           # bajos/rasantes del suelo lejano en obstaculos locales. Mantenemos
           # raytrace_max_range en 20 m para seguir limpiando espacio libre.
-          obstacle_max_range: 15.0
+          obstacle_max_range: 10.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
