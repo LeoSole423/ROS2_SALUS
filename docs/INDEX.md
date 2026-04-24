@@ -7,6 +7,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 ## Cómo leer este repo
 - Empezar por [README.md](/home/leo/codigo/ROS2_SALUS/README.md) para contexto general.
 - Usar [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md) para decidir qué perfil ejecutar.
+- Usar [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md) como regla de mantenimiento para mantener sincronizados simulacion y robot real.
 - Usar [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md) para entender el wiring runtime.
 - Usar [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md) para el contrato con la UI `cockpit`.
 
@@ -14,6 +15,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 - Raíz del monorepo:
   - [README.md](/home/leo/codigo/ROS2_SALUS/README.md)
   - [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
+  - [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
   - [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
   - [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md)
@@ -26,6 +28,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 
 ## Documentación de navegación vigente
 - Navegación global V2:
+  - [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
   - [src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md)
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
 - Base local V2 usada por Global V2:

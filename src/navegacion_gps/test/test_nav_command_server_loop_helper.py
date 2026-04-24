@@ -1,9 +1,13 @@
 import threading
+import time
 from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
 
-from navegacion_gps.nav_command_server import NavCommandServerNode
+from navegacion_gps.nav_command_server import (
+    NAV_FAILURE_HINT_SUMMARIES,
+    NavCommandServerNode,
+)
 
 
 def test_build_loop_segment_poses_for_many_items() -> None:
@@ -81,12 +85,15 @@ class _FakeLoopNode:
         self._loop_original_poses = [1, 2, 3]
         self._loop_segment_start_index = 0
         self.loop_segment_size = 2
+        self._suppress_success_brake = False
         self._manual_enabled = False
         self._is_navigating = True
         self._auto_mode = "loop"
         self._active_action = "navigate_through_poses"
         self._failure_code = ""
         self._failure_component = ""
+        self.nav_failure_hint_window_s = 25.0
+        self._recent_nav_failure_hints = []
 
         self._send_ok = True
         self._send_err = ""
@@ -96,13 +103,21 @@ class _FakeLoopNode:
         self.events = []
         self.logger = _FakeLogger()
 
-    def _send_nav_goal_for_poses(self, poses, loop_enabled, reason, details=None):
+    def _send_nav_goal_for_poses(
+        self,
+        poses,
+        loop_enabled,
+        reason,
+        details=None,
+        suppress_success_brake=False,
+    ):
         self.sent_calls.append(
             (
                 list(poses),
                 bool(loop_enabled),
                 str(reason),
                 dict(details or {}),
+                bool(suppress_success_brake),
             )
         )
         return bool(self._send_ok), str(self._send_err)
@@ -156,10 +171,11 @@ def test_result_callback_advances_to_next_loop_segment_on_success() -> None:
         _FakeResultFuture(GoalStatus.STATUS_SUCCEEDED),
     )
 
-    poses, loop_enabled, reason, details = node.sent_calls[0]
+    poses, loop_enabled, reason, details, suppress_success_brake = node.sent_calls[0]
     assert poses == [3, 4]
     assert loop_enabled is True
     assert reason == "loop_segment_advance"
+    assert suppress_success_brake is False
     assert details["loop_segment_start_index"] == 2
     assert details["loop_segment_size"] == 2
     assert details["loop_total_waypoints"] == 4
@@ -181,10 +197,11 @@ def test_result_callback_wraps_to_first_waypoint_after_last_segment() -> None:
         _FakeResultFuture(GoalStatus.STATUS_SUCCEEDED),
     )
 
-    poses, loop_enabled, reason, details = node.sent_calls[0]
+    poses, loop_enabled, reason, details, suppress_success_brake = node.sent_calls[0]
     assert poses == [1, 2]
     assert loop_enabled is True
     assert reason == "loop_segment_advance"
+    assert suppress_success_brake is False
     assert details["loop_segment_start_index"] == 0
     assert node._loop_segment_start_index == 0
     assert node._loop_waypoint_poses == [1, 2]
@@ -203,6 +220,44 @@ def test_result_callback_stops_loop_when_status_not_succeeded() -> None:
     assert node._is_navigating is False
     assert node._auto_mode == "idle"
     assert node._loop_enabled is False
+
+
+def test_classify_nav_failure_hint_no_valid_path() -> None:
+    code, summary = NavCommandServerNode._classify_nav_failure_hint(
+        "planner_server",
+        "GridBased: failed to create plan, no valid path found.",
+    )
+
+    assert code == "NO_VALID_PATH"
+    assert "ruta válida" in summary
+
+
+def test_abort_result_includes_recent_nav_failure_hint() -> None:
+    node = _FakeLoopNode()
+    node._loop_enabled = False
+    node._auto_mode = "point_to_point"
+    node._recent_nav_failure_hints = [
+        (
+            time.monotonic(),
+            "NO_VALID_PATH",
+            NAV_FAILURE_HINT_SUMMARIES["NO_VALID_PATH"],
+            "GridBased: failed to create plan, no valid path found.",
+        )
+    ]
+
+    NavCommandServerNode._on_nav_action_result_done(
+        node,
+        "NavigateThroughPoses",
+        _FakeResultFuture(GoalStatus.STATUS_ABORTED),
+    )
+
+    assert "no se encontró una ruta válida" in node._last_nav_result_text
+    result_events = [
+        event for event in node.events if event["code"] == "GOAL_RESULT_ABORTED"
+    ]
+    assert result_events
+    assert result_events[0]["details"]["failure_reason_code"] == "NO_VALID_PATH"
+    assert "obstáculos" in result_events[0]["message"]
 
 
 def test_result_callback_stops_loop_when_segment_send_fails() -> None:
@@ -242,6 +297,46 @@ def test_result_callback_point_to_point_stops_on_success() -> None:
     assert node.brake_calls == [100]
     assert node._is_navigating is False
     assert node._auto_mode == "idle"
+
+
+def test_result_callback_point_to_point_suppresses_brake_on_success() -> None:
+    node = _FakeLoopNode()
+    node._loop_enabled = False
+    node._auto_mode = "point_to_point"
+    node._suppress_success_brake = True
+    node._loop_original_poses = []
+    node._loop_waypoint_poses = []
+
+    NavCommandServerNode._on_nav_action_result_done(
+        node,
+        "NavigateThroughPoses",
+        _FakeResultFuture(GoalStatus.STATUS_SUCCEEDED),
+    )
+    assert node.sent_calls == []
+    assert node.brake_calls == []
+    assert node._is_navigating is False
+    assert node._auto_mode == "idle"
+    assert node._suppress_success_brake is False
+
+
+def test_result_callback_point_to_point_still_brakes_on_abort_when_suppressed() -> None:
+    node = _FakeLoopNode()
+    node._loop_enabled = False
+    node._auto_mode = "point_to_point"
+    node._suppress_success_brake = True
+    node._loop_original_poses = []
+    node._loop_waypoint_poses = []
+
+    NavCommandServerNode._on_nav_action_result_done(
+        node,
+        "NavigateThroughPoses",
+        _FakeResultFuture(GoalStatus.STATUS_ABORTED),
+    )
+    assert node.sent_calls == []
+    assert node.brake_calls == [100]
+    assert node._is_navigating is False
+    assert node._auto_mode == "idle"
+    assert node._suppress_success_brake is False
 
 
 def test_result_callback_point_to_point_manual_mode_does_not_brake() -> None:

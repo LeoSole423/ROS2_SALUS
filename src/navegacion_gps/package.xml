@@ -21,6 +21,7 @@
   <depend>mapviz_plugins</depend>
   <depend>tile_map</depend>
   <depend>rclpy</depend>
+  <depend>rcl_interfaces</depend>
   <depend>ament_index_python</depend>
   <depend>gazebo_ros</depend>
   <depend>sensor_msgs</depend>

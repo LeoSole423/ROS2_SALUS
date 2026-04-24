@@ -39,6 +39,25 @@ class _FakeSensorNode(_FakeNode):
     is_ui_control_locked = WebZoneServerNode.is_ui_control_locked
     get_ui_control_lock_reason = WebZoneServerNode.get_ui_control_lock_reason
 
+    def _build_datums_state_payload(self):
+        return {
+            "datums": [],
+            "selected_id": "",
+            "selected": None,
+            "runtime": {
+                "lat": self.fixed_datum_lat,
+                "lon": self.fixed_datum_lon,
+                "yaw_deg": self.fixed_datum_yaw_deg,
+                "source": self.fixed_datum_source,
+                "available": True,
+                "already_set": True,
+            },
+            "pending_restart": False,
+            "apply_mode": "next_restart",
+            "file_path": "",
+            "error": "",
+        }
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.fixed_datum_lat = -31.4858037

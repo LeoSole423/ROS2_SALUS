@@ -8,6 +8,7 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
 
 ## Documentación del paquete
 - Resumen de perfiles y launches: [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
+- Politica de paridad sim/real: [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
 - Arquitectura runtime: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
 - Base local V2 usada por Global V2:
   - [LOCAL_NAV_V2.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/LOCAL_NAV_V2.md)
@@ -26,9 +27,11 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
 ### Navegacion vigente
 - `ros2 launch navegacion_gps sim_global_v2.launch.py`
 - `ros2 launch navegacion_gps real_global_v2.launch.py`
+- `ros2 launch navegacion_gps real_global_v2_wifi.launch.py`
 - `ros2 launch navegacion_gps rviz_real_global_v2.launch.py`
 
-`real_global_v2` y `sim_global_v2` son las unicas navegaciones operativas vigentes del paquete.
+`real_global_v2_wifi` es el perfil recomendado para operacion remota del robot por WiFi; `real_global_v2` queda como perfil base no-WiFi compatible.
+`real_global_v2` y `sim_global_v2` son las navegaciones base vigentes del paquete.
 
 La V2 global agrega la capa `map -> odom` sobre la base local Ackermann, con `navsat_transform`, EKF global, datum configurable y goals LL en `map`.
 En los perfiles globales actuales, la corrección absoluta del EKF de `map` entra como `/gps/odometry_map` en frame `map` obtenido vía `fromLL`, y el heading global puede asistir al filtro mediante `/gps/course_heading`.
@@ -86,6 +89,7 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 ## Helpers del workspace
 - `./tools/launch_sim_global_v2.sh`
 - `./tools/launch_real_global_v2.sh`
+- `./tools/launch_real_global_v2_wifi.sh`
 - `./tools/record_nav_debug_bag.sh`
 - `./tools/run_nav_benchmark.sh`
 - `./tools/compare_nav_benchmarks.sh`

@@ -15,6 +15,8 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from navegacion_gps.datum_profile_resolver import resolve_selected_datum
+
 
 def _read_file(path: str) -> str:
     with open(path, "r", encoding="utf-8") as file_handle:
@@ -73,6 +75,9 @@ def generate_launch_description():
         gps_wpf_dir, "collision_monitor_v2.yaml"
     )
     default_keepout_mask = _resolve_config_file_path(gps_wpf_dir, "keepout_mask.yaml")
+    default_datum_lat, default_datum_lon, default_datum_yaw_deg, default_datums_file = (
+        resolve_selected_datum(gps_wpf_dir)
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     wheelbase_m = LaunchConfiguration("wheelbase_m")
@@ -149,6 +154,7 @@ def generate_launch_description():
     datum_lat = LaunchConfiguration("datum_lat")
     datum_lon = LaunchConfiguration("datum_lon")
     datum_yaw_deg = LaunchConfiguration("datum_yaw_deg")
+    datums_file = LaunchConfiguration("datums_file")
     effective_enable_rtk = PythonExpression(
         [
             "'true' if ('",
@@ -283,11 +289,12 @@ def generate_launch_description():
                 "gps_rtk_status_topic",
                 default_value="/gps/rtk_status_mavros",
             ),
-            DeclareLaunchArgument("datum_lat", default_value="-31.4858037"),
-            DeclareLaunchArgument("datum_lon", default_value="-64.2410570"),
+            DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat)),
+            DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon)),
             # Convencion fija operativa para `global v2`: por default el robot
             # arranca mirando al Este (`datum_yaw_deg = 0.0` en ROS ENU).
-            DeclareLaunchArgument("datum_yaw_deg", default_value="0.0"),
+            DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg)),
+            DeclareLaunchArgument("datums_file", default_value=default_datums_file),
             OpaqueFunction(function=_build_robot_state_publisher),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -558,6 +565,7 @@ def generate_launch_description():
                     "fixed_datum_lon": datum_lon,
                     "fixed_datum_yaw_deg": datum_yaw_deg,
                     "fixed_datum_source": "real_global_v2_fixed",
+                    "datums_file": datums_file,
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

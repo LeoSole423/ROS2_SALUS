@@ -10,6 +10,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from navegacion_gps.datum_profile_resolver import resolve_selected_datum
+
 
 def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
     package_share_path = Path(package_share_dir)
@@ -37,6 +39,9 @@ def generate_launch_description():
     default_global_localization_params_file = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
     )
+    default_datum_lat, default_datum_lon, default_datum_yaw_deg, default_datums_file = (
+        resolve_selected_datum(gps_wpf_dir)
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     wheelbase_m = LaunchConfiguration("wheelbase_m")
@@ -62,6 +67,7 @@ def generate_launch_description():
     datum_lat = LaunchConfiguration("datum_lat")
     datum_lon = LaunchConfiguration("datum_lon")
     datum_yaw_deg = LaunchConfiguration("datum_yaw_deg")
+    datums_file = LaunchConfiguration("datums_file")
     datum_setter = LaunchConfiguration("datum_setter")
     enable_map_gps_absolute_measurement = LaunchConfiguration(
         "enable_map_gps_absolute_measurement"
@@ -95,6 +101,14 @@ def generate_launch_description():
     gps_course_heading_hold_yaw_variance_multiplier = LaunchConfiguration(
         "gps_course_heading_hold_yaw_variance_multiplier"
     )
+    gps_course_heading_require_rtk = LaunchConfiguration("gps_course_heading_require_rtk")
+    gps_course_heading_allowed_rtk_statuses = LaunchConfiguration(
+        "gps_course_heading_allowed_rtk_statuses"
+    )
+    gps_course_heading_rtk_status_max_age_s = LaunchConfiguration(
+        "gps_course_heading_rtk_status_max_age_s"
+    )
+    gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
     gps_profile = LaunchConfiguration("gps_profile")
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
@@ -138,11 +152,12 @@ def generate_launch_description():
             DeclareLaunchArgument("twist_covariance_vx", default_value="0.05"),
             DeclareLaunchArgument("twist_covariance_vy", default_value="0.01"),
             DeclareLaunchArgument("twist_covariance_yaw_rate", default_value="0.1"),
-            DeclareLaunchArgument("datum_lat", default_value="-31.4858037"),
-            DeclareLaunchArgument("datum_lon", default_value="-64.2410570"),
+            DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat)),
+            DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon)),
             # Convencion fija operativa para `global v2`: por default el robot
             # arranca mirando al Este (`datum_yaw_deg = 0.0` en ROS ENU).
-            DeclareLaunchArgument("datum_yaw_deg", default_value="0.0"),
+            DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg)),
+            DeclareLaunchArgument("datums_file", default_value=default_datums_file),
             DeclareLaunchArgument("datum_setter", default_value="false"),
             DeclareLaunchArgument("enable_map_gps_absolute_measurement", default_value="true"),
             DeclareLaunchArgument("map_gps_absolute_topic", default_value="/gps/odometry_map"),
@@ -154,15 +169,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("map_gps_fromll_wait_timeout_s", default_value="0.2"),
             DeclareLaunchArgument("enable_gps_course_heading", default_value="true"),
-            # Con GPS RTK simulado podemos cerrar el heading por avance antes y
-            # con más confianza que con el perfil ideal/m8n anterior.
-            DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="1.0"),
-            DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.4"),
-            # En curvas el heading inferido por desplazamiento GPS deja de ser
-            # una buena referencia del cuerpo Ackermann. Endurecemos el gating
-            # en simulacion para aceptarlo solo en tramos claramente rectos.
+            # Mantener estos defaults alineados con real_global_v2 para que el
+            # heading GPS tenga el mismo gating en sim y real.
+            DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0"),
+            DeclareLaunchArgument("gps_course_heading_min_speed_mps", default_value="0.8"),
             DeclareLaunchArgument("gps_course_heading_max_abs_steer_deg", default_value="3.0"),
-            DeclareLaunchArgument("gps_course_heading_max_abs_yaw_rate_rps", default_value="0.06"),
+            DeclareLaunchArgument("gps_course_heading_max_abs_yaw_rate_rps", default_value="0.05"),
             # Cuando el vehiculo entra en una curva leve, dejar caer el heading
             # en un solo ciclo hace que el EKF global reoriente `map->odom`
             # demasiado brusco. Mantenemos el ultimo yaw valido por una ventana
@@ -172,15 +184,23 @@ def generate_launch_description():
             # el heading. En curvas largas, usar una cuerda demasiado antigua
             # reinyecta un yaw que ya no representa la tangente actual.
             DeclareLaunchArgument("gps_course_heading_max_sample_dt_s", default_value="2.5"),
-            DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="10.0"),
+            DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0"),
             DeclareLaunchArgument("gps_course_heading_yaw_variance_rad2", default_value="0.05"),
             DeclareLaunchArgument(
                 "gps_course_heading_hold_yaw_variance_multiplier",
                 default_value="4.0",
             ),
-            # Sim global defaults to the ideal profile so LL/map debugging is not
-            # polluted by GNSS noise unless the operator opts into RTK/M8N.
-            DeclareLaunchArgument("gps_profile", default_value="ideal"),
+            DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True"),
+            DeclareLaunchArgument(
+                "gps_course_heading_allowed_rtk_statuses",
+                default_value="RTK_FIXED,RTK_FIX,RTK_FLOAT,RTCM_OK",
+            ),
+            DeclareLaunchArgument(
+                "gps_course_heading_rtk_status_max_age_s",
+                default_value="2.5",
+            ),
+            DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status"),
+            DeclareLaunchArgument("gps_profile", default_value="f9p_rtk"),
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
@@ -193,7 +213,7 @@ def generate_launch_description():
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                         "gps_profile": gps_profile,
-                        "gps_rtk_status_topic": "/gps/rtk_status",
+                        "gps_rtk_status_topic": gps_rtk_status_topic,
                         # En simulacion global mantenemos el fix RTK congelado
                         # cuando el vehiculo esta quieto para que el EKF global
                         # no amplifique el jitter estacionario del GPS.
@@ -356,6 +376,14 @@ def generate_launch_description():
                             gps_course_heading_hold_yaw_variance_multiplier,
                             value_type=float,
                         ),
+                        "rtk_status_topic": gps_rtk_status_topic,
+                        "require_rtk": ParameterValue(
+                            gps_course_heading_require_rtk, value_type=bool
+                        ),
+                        "allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses,
+                        "rtk_status_max_age_s": ParameterValue(
+                            gps_course_heading_rtk_status_max_age_s, value_type=float
+                        ),
                     }
                 ],
             ),
@@ -428,6 +456,7 @@ def generate_launch_description():
                     "fixed_datum_lon": datum_lon,
                     "fixed_datum_yaw_deg": datum_yaw_deg,
                     "fixed_datum_source": "sim_global_v2_fixed",
+                    "datums_file": datums_file,
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

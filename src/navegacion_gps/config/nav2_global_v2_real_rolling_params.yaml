@@ -1,6 +1,8 @@
 # ================================
 # BT NAVIGATOR
 # ================================
+# Mantener este perfil en paridad semantica con sim_global_v2 rolling.
+# Las diferencias deben limitarse a sim_time/sensores/hardware o WiFi.
 bt_navigator:
   ros__parameters:
     use_sim_time: true
@@ -50,6 +52,20 @@ behavior_server:
     max_angular_deceleration: 1.0
 
 # ================================
+# WAYPOINT FOLLOWER
+# ================================
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: true
+    loop_rate: 20
+    stop_on_failure: true
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: false
+      waypoint_pause_duration: 0
+
+# ================================
 # PLANNER (Hybrid A*)
 # ================================
 planner_server:
@@ -66,7 +82,10 @@ planner_server:
       max_planning_time: 6.0
       max_iterations: 3000000
       motion_model_for_search: "DUBIN"
-      minimum_turning_radius: 2.2
+      # Radio fisico ideal con wheelbase=0.94m y steering_limit=30deg: ~1.63m.
+      # Usamos 1.9m como margen estable para aprovechar mejor el Ackermann sin
+      # planificar curvas pegadas al limite dinamico.
+      minimum_turning_radius: 1.9
       angle_quantization_bins: 64
       reverse_penalty: 2.8
       change_penalty: 1.8
@@ -95,7 +114,7 @@ smoother_server:
       path_upsampling_factor: 1
       keep_start_orientation: true
       keep_goal_orientation: true
-      minimum_turning_radius: 1.7
+      minimum_turning_radius: 1.9
       optimizer:
         max_iterations: 80
 
@@ -127,16 +146,16 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 1.2
-      lookahead_dist: 1.6
+      lookahead_dist: 1.4
       min_lookahead_dist: 1.0
-      max_lookahead_dist: 2.5
-      lookahead_time: 2.0
+      max_lookahead_dist: 2.2
+      lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 1.0
+      min_approach_linear_velocity: 0.7
       approach_velocity_scaling_dist: 1.0
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 2.4
+      regulated_linear_scaling_min_radius: 2.2
       regulated_linear_scaling_min_speed: 1.0
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 0.75
@@ -255,7 +274,7 @@ global_costmap:
           obstacle_max_range: 10.0
           obstacle_min_range: 0.0
           inf_is_valid: False
-          observation_persistence: 2.0
+          observation_persistence: 1.0
           expected_update_rate: 0.0
 
       inflation_layer:
