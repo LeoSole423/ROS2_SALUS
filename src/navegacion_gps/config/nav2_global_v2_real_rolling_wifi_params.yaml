@@ -277,7 +277,7 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 10.0
           obstacle_min_range: 0.0
-          inf_is_valid: False
+          inf_is_valid: True
           observation_persistence: 1.0
           expected_update_rate: 0.0
 
