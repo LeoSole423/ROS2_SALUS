@@ -4,6 +4,7 @@ from navegacion_gps.route_executor import (
     expand_route_waypoints,
     next_chunk_start_index,
     prepare_route_waypoints,
+    skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
 )
 
@@ -262,3 +263,62 @@ def test_prepare_route_waypoints_joins_nearest_segment_for_loop_routes():
     assert prepared.start_index == 1
     assert prepared.note == "loop joined nearest segment 1->2"
     assert prepared.waypoints == [route[1], route[2], route[0]]
+
+
+def test_skip_reached_chunk_start_advances_loop_chunk_from_current_pose():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=90.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=0,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 1
+    assert skipped == 1
+
+
+def test_skip_reached_chunk_start_wraps_past_reached_loop_closure():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=90.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=2,
+        loop=True,
+        robot_lat=0.001,
+        robot_lon=0.001,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 0
+    assert skipped == 1
+
+
+def test_skip_reached_chunk_start_does_not_skip_only_remaining_non_loop_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=1,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.001,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 1
+    assert skipped == 0
