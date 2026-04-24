@@ -12,6 +12,7 @@ from geographic_msgs.msg import GeoPoint
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist
 from nav2_msgs.action import FollowWaypoints, NavigateThroughPoses
 from nav2_msgs.msg import CollisionMonitorState
+from rcl_interfaces.msg import Log
 from rclpy.action import ActionClient
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
@@ -32,6 +33,27 @@ from interfaces.srv import (
     SetManualMode,
     SetNavGoalLL,
 )
+
+
+NAV_FAILURE_HINT_PRIORITY = {
+    "NO_VALID_PATH": 100,
+    "SMOOTHED_PATH_COLLISION": 90,
+    "CONTROLLER_COLLISION": 80,
+    "RECOVERY_OFF_GRID": 70,
+    "COSTMAP_CLEAR_TIMEOUT": 60,
+    "RECOVERY_FAILED": 50,
+    "CONTROLLER_HALTED": 40,
+}
+
+NAV_FAILURE_HINT_SUMMARIES = {
+    "NO_VALID_PATH": "no se encontró una ruta válida; probablemente está bloqueada por obstáculos/costmap",
+    "SMOOTHED_PATH_COLLISION": "la ruta suavizada quedó en colisión",
+    "CONTROLLER_COLLISION": "Nav2 detectó una posible colisión durante el movimiento",
+    "RECOVERY_OFF_GRID": "la recuperación saldría del costmap",
+    "COSTMAP_CLEAR_TIMEOUT": "Nav2 no pudo limpiar el costmap a tiempo",
+    "RECOVERY_FAILED": "falló una maniobra de recuperación",
+    "CONTROLLER_HALTED": "el seguimiento de trayectoria se detuvo durante el abort",
+}
 
 
 class NavCommandServerNode(Node):
@@ -81,6 +103,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("follow_waypoints_action", "follow_waypoints")
         self.declare_parameter("navigate_through_poses_action", "navigate_through_poses")
         self.declare_parameter("loop_segment_size", 2)
+        self.declare_parameter("nav_failure_hint_window_s", 25.0)
 
         self.fromll_service = str(self.get_parameter("fromll_service").value)
         self.fromll_service_fallback = str(
@@ -159,6 +182,9 @@ class NavCommandServerNode(Node):
             self.get_parameter("navigate_through_poses_action").value
         )
         self.loop_segment_size = max(2, int(self.get_parameter("loop_segment_size").value))
+        self.nav_failure_hint_window_s = max(
+            1.0, float(self.get_parameter("nav_failure_hint_window_s").value)
+        )
 
         self._lock = threading.Lock()
         self._current_goal_handle = None
@@ -185,6 +211,7 @@ class NavCommandServerNode(Node):
         self._active_action = "idle"
         self._failure_code = ""
         self._failure_component = ""
+        self._recent_nav_failure_hints: List[Tuple[float, str, str, str]] = []
         self._event_seq = 0
         self._last_collision_stop_active = False
 
@@ -275,6 +302,7 @@ class NavCommandServerNode(Node):
             self._on_collision_monitor_state,
             10,
         )
+        self._rosout_sub = self.create_subscription(Log, "/rosout", self._on_rosout, 100)
 
         self._manual_watchdog_timer = self.create_timer(
             1.0 / float(self.manual_watchdog_hz), self._manual_watchdog_tick
@@ -617,6 +645,98 @@ class NavCommandServerNode(Node):
         self._failure_code = str(code)
         self._failure_component = str(component)
 
+    @staticmethod
+    def _classify_nav_failure_hint(
+        node_name: str,
+        message: str,
+    ) -> Optional[Tuple[str, str]]:
+        text = str(message).lower()
+        node = str(node_name).lower()
+        if (
+            "failed to create plan" in text
+            or "no valid path found" in text
+            or "failed to generate a valid path" in text
+        ):
+            return "NO_VALID_PATH", NAV_FAILURE_HINT_SUMMARIES["NO_VALID_PATH"]
+        if "smoothed path leads to a collision" in text:
+            return (
+                "SMOOTHED_PATH_COLLISION",
+                NAV_FAILURE_HINT_SUMMARIES["SMOOTHED_PATH_COLLISION"],
+            )
+        if "pose goes off grid" in text:
+            return "RECOVERY_OFF_GRID", NAV_FAILURE_HINT_SUMMARIES["RECOVERY_OFF_GRID"]
+        if "clear_entirely_global_costmap" in text and "timed out" in text:
+            return (
+                "COSTMAP_CLEAR_TIMEOUT",
+                NAV_FAILURE_HINT_SUMMARIES["COSTMAP_CLEAR_TIMEOUT"],
+            )
+        if (
+            "collision ahead" in text
+            or ("collision" in text and ("controller_server" in node or "behavior_server" in node))
+        ):
+            return (
+                "CONTROLLER_COLLISION",
+                NAV_FAILURE_HINT_SUMMARIES["CONTROLLER_COLLISION"],
+            )
+        if "backup failed" in text or ("[backup]" in text and "aborting" in text):
+            return "RECOVERY_FAILED", NAV_FAILURE_HINT_SUMMARIES["RECOVERY_FAILED"]
+        if "failed to get result for follow_path" in text:
+            return "CONTROLLER_HALTED", NAV_FAILURE_HINT_SUMMARIES["CONTROLLER_HALTED"]
+        return None
+
+    def _prune_nav_failure_hints_locked(self, now: Optional[float] = None) -> None:
+        current_time = time.monotonic() if now is None else float(now)
+        window_s = max(1.0, float(getattr(self, "nav_failure_hint_window_s", 25.0)))
+        self._recent_nav_failure_hints = [
+            item
+            for item in list(getattr(self, "_recent_nav_failure_hints", []))
+            if current_time - float(item[0]) <= window_s
+        ]
+
+    def _clear_nav_failure_hints_locked(self) -> None:
+        self._recent_nav_failure_hints = []
+
+    def _record_nav_failure_hint_locked(
+        self,
+        code: str,
+        summary: str,
+        raw_message: str,
+        now: Optional[float] = None,
+    ) -> None:
+        current_time = time.monotonic() if now is None else float(now)
+        NavCommandServerNode._prune_nav_failure_hints_locked(self, current_time)
+        raw_text = str(raw_message)
+        for _, existing_code, _, existing_raw in getattr(self, "_recent_nav_failure_hints", []):
+            if existing_code == code and existing_raw == raw_text:
+                return
+        self._recent_nav_failure_hints.append(
+            (current_time, str(code), str(summary), raw_text)
+        )
+        self._recent_nav_failure_hints = self._recent_nav_failure_hints[-12:]
+
+    def _nav_failure_summary_locked(self) -> Tuple[str, Dict[str, Any]]:
+        NavCommandServerNode._prune_nav_failure_hints_locked(self)
+        hints = list(getattr(self, "_recent_nav_failure_hints", []))
+        if not hints:
+            return "", {}
+
+        by_code: Dict[str, Tuple[str, str]] = {}
+        for _, code, summary, raw_message in hints:
+            by_code[str(code)] = (str(summary), str(raw_message))
+
+        ordered = sorted(
+            by_code.items(),
+            key=lambda item: -NAV_FAILURE_HINT_PRIORITY.get(item[0], 0),
+        )
+        primary_code, (primary_summary, primary_raw) = ordered[0]
+        details: Dict[str, Any] = {
+            "failure_reason_code": primary_code,
+            "failure_reason": primary_summary,
+            "failure_hints": ",".join(code for code, _ in ordered[:4]),
+            "failure_hint_raw": primary_raw,
+        }
+        return primary_summary, details
+
     def _publish_event(
         self,
         severity: int,
@@ -923,6 +1043,25 @@ class NavCommandServerNode(Node):
             self._last_robot_pose = pose
             self._last_gps_fix_monotonic = time.monotonic()
         self._publish_telemetry(force=False)
+
+    def _on_rosout(self, msg: Log) -> None:
+        classified = NavCommandServerNode._classify_nav_failure_hint(
+            str(getattr(msg, "name", "")),
+            str(getattr(msg, "msg", "")),
+        )
+        if classified is None:
+            return
+
+        code, summary = classified
+        with self._lock:
+            if not self._is_navigating:
+                return
+            NavCommandServerNode._record_nav_failure_hint_locked(
+                self,
+                code,
+                summary,
+                str(getattr(msg, "msg", "")),
+            )
 
     def _on_cmd_vel_safe(self, msg: Twist) -> None:
         with self._lock:
@@ -1277,6 +1416,7 @@ class NavCommandServerNode(Node):
 
         with self._lock:
             self._clear_loop_config_locked()
+            NavCommandServerNode._clear_nav_failure_hints_locked(self)
             self._is_navigating = False
             self._auto_mode = "idle"
             self._active_action = "idle"
@@ -1473,12 +1613,19 @@ class NavCommandServerNode(Node):
                     details={"error": err},
                 )
         else:
+            event_details: Dict[str, Any] = {"missed_waypoints": missed_waypoints}
             with self._lock:
                 self._suppress_success_brake = False
                 if status_code == int(GoalStatus.STATUS_SUCCEEDED):
                     self._set_failure_locked("", "")
                 elif status_code == int(GoalStatus.STATUS_ABORTED):
                     self._set_failure_locked("GOAL_RESULT_ABORTED", action_name.lower())
+                    failure_reason, failure_details = (
+                        NavCommandServerNode._nav_failure_summary_locked(self)
+                    )
+                    if failure_reason:
+                        result_text = f"{result_text} ({failure_reason})"
+                        event_details.update(failure_details)
                 elif status_code == int(GoalStatus.STATUS_CANCELED):
                     self._set_failure_locked("", "")
                 NavCommandServerNode._set_nav_result_locked(
@@ -1501,7 +1648,7 @@ class NavCommandServerNode(Node):
                 action_name.lower(),
                 event_code,
                 result_text,
-                details={"missed_waypoints": missed_waypoints},
+                details=event_details,
             )
 
         if force_brake:

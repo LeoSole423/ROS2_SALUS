@@ -1,9 +1,13 @@
 import threading
+import time
 from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
 
-from navegacion_gps.nav_command_server import NavCommandServerNode
+from navegacion_gps.nav_command_server import (
+    NAV_FAILURE_HINT_SUMMARIES,
+    NavCommandServerNode,
+)
 
 
 def test_build_loop_segment_poses_for_many_items() -> None:
@@ -88,6 +92,8 @@ class _FakeLoopNode:
         self._active_action = "navigate_through_poses"
         self._failure_code = ""
         self._failure_component = ""
+        self.nav_failure_hint_window_s = 25.0
+        self._recent_nav_failure_hints = []
 
         self._send_ok = True
         self._send_err = ""
@@ -214,6 +220,44 @@ def test_result_callback_stops_loop_when_status_not_succeeded() -> None:
     assert node._is_navigating is False
     assert node._auto_mode == "idle"
     assert node._loop_enabled is False
+
+
+def test_classify_nav_failure_hint_no_valid_path() -> None:
+    code, summary = NavCommandServerNode._classify_nav_failure_hint(
+        "planner_server",
+        "GridBased: failed to create plan, no valid path found.",
+    )
+
+    assert code == "NO_VALID_PATH"
+    assert "ruta válida" in summary
+
+
+def test_abort_result_includes_recent_nav_failure_hint() -> None:
+    node = _FakeLoopNode()
+    node._loop_enabled = False
+    node._auto_mode = "point_to_point"
+    node._recent_nav_failure_hints = [
+        (
+            time.monotonic(),
+            "NO_VALID_PATH",
+            NAV_FAILURE_HINT_SUMMARIES["NO_VALID_PATH"],
+            "GridBased: failed to create plan, no valid path found.",
+        )
+    ]
+
+    NavCommandServerNode._on_nav_action_result_done(
+        node,
+        "NavigateThroughPoses",
+        _FakeResultFuture(GoalStatus.STATUS_ABORTED),
+    )
+
+    assert "no se encontró una ruta válida" in node._last_nav_result_text
+    result_events = [
+        event for event in node.events if event["code"] == "GOAL_RESULT_ABORTED"
+    ]
+    assert result_events
+    assert result_events[0]["details"]["failure_reason_code"] == "NO_VALID_PATH"
+    assert "obstáculos" in result_events[0]["message"]
 
 
 def test_result_callback_stops_loop_when_segment_send_fails() -> None:
