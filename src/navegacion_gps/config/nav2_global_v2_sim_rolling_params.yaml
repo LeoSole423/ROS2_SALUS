@@ -207,7 +207,10 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          obstacle_max_range: 20.0
+          # Mantener paridad con real_global_v2: marcamos obstaculos locales
+          # hasta 10 m, pero conservamos raytrace_max_range en 20 m para
+          # limpiar espacio libre y detectar regresiones comparables.
+          obstacle_max_range: 10.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
@@ -265,7 +268,9 @@ global_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 10.0
+          # Mantener paridad con real_global_v2: el global marca hasta 8 m y
+          # limpia hasta 20 m para no acumular obstaculos lejanos espurios.
+          obstacle_max_range: 8.0
           obstacle_min_range: 0.0
           inf_is_valid: False
           observation_persistence: 1.0

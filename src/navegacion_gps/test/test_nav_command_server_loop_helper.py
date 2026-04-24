@@ -41,6 +41,55 @@ def test_next_loop_segment_start_index_handles_short_loops() -> None:
     assert NavCommandServerNode._next_loop_segment_start_index(poses, 2, 2) == 1
 
 
+def test_drop_duplicate_loop_closure_waypoint_removes_repeated_first_point() -> None:
+    waypoints = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.001, 0.0),
+        (0.0, 0.0, 180.0),
+    ]
+
+    normalized, dropped = NavCommandServerNode._drop_duplicate_loop_closure_waypoint(
+        waypoints,
+        closure_tolerance_m=1.2,
+    )
+
+    assert dropped is True
+    assert normalized == waypoints[:2]
+
+
+def test_rotate_loop_waypoints_after_reached_first_anchor() -> None:
+    waypoints = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.001, 0.0),
+        (0.001, 0.001, 90.0),
+    ]
+
+    rotated, start_index = NavCommandServerNode._rotate_loop_waypoints_after_reached_anchor(
+        waypoints,
+        robot_pose={"lat": 0.0, "lon": 0.0},
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start_index == 1
+    assert rotated == [waypoints[1], waypoints[2], waypoints[0]]
+
+
+def test_trim_reached_waypoint_prefix_keeps_last_point_to_avoid_empty_goal() -> None:
+    waypoints = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.001, 0.0),
+    ]
+
+    trimmed, skipped = NavCommandServerNode._trim_reached_waypoint_prefix(
+        waypoints,
+        robot_pose={"lat": 0.0, "lon": 0.0},
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert skipped == 1
+    assert trimmed == [waypoints[1]]
+
+
 class _FakeLogger:
     def __init__(self) -> None:
         self.info_msgs = []

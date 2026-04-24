@@ -225,6 +225,23 @@ def expand_route_waypoints(
     return expanded
 
 
+def drop_duplicate_loop_closure(
+    base_waypoints: Sequence[RouteWaypoint],
+    *,
+    loop: bool,
+    closure_tolerance_m: float,
+) -> Tuple[List[RouteWaypoint], bool]:
+    route = list(base_waypoints)
+    if (not loop) or len(route) <= 2:
+        return route, False
+
+    tolerance_m = max(0.05, float(closure_tolerance_m))
+    if _distance_m(route[0].lat, route[0].lon, route[-1].lat, route[-1].lon) > tolerance_m:
+        return route, False
+
+    return route[:-1], True
+
+
 def prepare_route_waypoints(
     base_waypoints: Sequence[RouteWaypoint],
     *,
@@ -375,6 +392,57 @@ def prepare_route_waypoints(
     )
 
 
+def skip_reached_chunk_start(
+    route: Sequence[RouteWaypoint],
+    *,
+    start_index: int,
+    loop: bool,
+    robot_lat: Optional[float],
+    robot_lon: Optional[float],
+    waypoint_reached_tolerance_m: float,
+) -> Tuple[Optional[int], int]:
+    route_list = list(route)
+    if not route_list:
+        return None, 0
+
+    total = len(route_list)
+    requested_start = max(0, int(start_index))
+    if (not loop) and requested_start >= total:
+        return None, 0
+
+    start = requested_start % total if loop else requested_start
+    if (
+        robot_lat is None
+        or robot_lon is None
+        or (not np.isfinite(float(robot_lat)))
+        or (not np.isfinite(float(robot_lon)))
+    ):
+        return start, 0
+
+    tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+    max_skips = max(0, total - 1)
+    skipped = 0
+    current = start
+    while skipped < max_skips:
+        distance_m = _distance_m(
+            float(robot_lat),
+            float(robot_lon),
+            route_list[current].lat,
+            route_list[current].lon,
+        )
+        if distance_m > tolerance_m:
+            break
+        next_index = current + 1
+        if loop:
+            next_index %= total
+        elif next_index >= total:
+            break
+        current = next_index
+        skipped += 1
+
+    return current, skipped
+
+
 def build_chunk_waypoints(
     route: Sequence[RouteWaypoint],
     *,
@@ -393,6 +461,11 @@ def build_chunk_waypoints(
         return [], total
     start = requested_start % total if loop else requested_start
     max_points = max(1, int(chunk_max_waypoints))
+    if loop and total > 1:
+        # Do not send a full loop in one NavigateThroughPoses chunk. If the robot is
+        # already at the closure waypoint, Nav2 can report success immediately because
+        # the final pose is within goal tolerance.
+        max_points = min(max_points, max(1, total - 1))
     max_span_m = max(1.0, float(chunk_span_m))
 
     chunk = [route_list[start]]
@@ -426,7 +499,7 @@ def build_chunk_waypoints(
         if visited_steps >= max(0, total - 1):
             break
 
-    if len(chunk) == 1 and total > 1:
+    if len(chunk) == 1 and total > 1 and ((not loop) or max_points > 1):
         next_index = (start + 1) % total if loop else start + 1
         if next_index < total and next_index != start:
             chunk.append(route_list[next_index])
@@ -627,10 +700,30 @@ class RouteExecutorNode(Node):
             loop_enabled = bool(self._mission_loop)
             chunk_span_m = float(self._chunk_span_m)
             chunk_max_waypoints = int(self._chunk_max_waypoints)
+            robot_pose = self._last_robot_pose
+
+        resolved_start_index, skipped_start_waypoints = skip_reached_chunk_start(
+            route,
+            start_index=start_index,
+            loop=loop_enabled,
+            robot_lat=None if robot_pose is None else float(robot_pose[0]),
+            robot_lon=None if robot_pose is None else float(robot_pose[1]),
+            waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+        )
+        if resolved_start_index is None:
+            return False, "empty route chunk"
+        if skipped_start_waypoints > 0:
+            self.get_logger().info(
+                "Skipped reached chunk waypoint"
+                f"{'s' if skipped_start_waypoints != 1 else ''} "
+                f"(requested_start={start_index}, "
+                f"resolved_start={resolved_start_index}, "
+                f"skipped={skipped_start_waypoints})"
+            )
 
         chunk, end_index = build_chunk_waypoints(
             route,
-            start_index=start_index,
+            start_index=resolved_start_index,
             loop=loop_enabled,
             chunk_span_m=chunk_span_m,
             chunk_max_waypoints=chunk_max_waypoints,
@@ -659,14 +752,15 @@ class RouteExecutorNode(Node):
 
         with self._lock:
             self._active_chunk = chunk
-            self._current_start_index = int(start_index)
+            self._current_start_index = int(resolved_start_index)
             self._current_target_index = int(end_index)
             self._awaiting_chunk_result = True
             self._mission_status = self._status_with_note_locked(
                 f"route active ({self._current_start_index + 1}->{self._current_target_index + 1})"
             )
         self.get_logger().info(
-            f"Route chunk dispatched (start={start_index}, end={end_index}, size={len(chunk)})"
+            "Route chunk dispatched "
+            f"(start={resolved_start_index}, end={end_index}, size={len(chunk)})"
         )
         return True, ""
 
@@ -829,6 +923,12 @@ class RouteExecutorNode(Node):
             response.error = error
             return response
 
+        route_input, dropped_loop_closure = drop_duplicate_loop_closure(
+            route_input,
+            loop=loop_enabled,
+            closure_tolerance_m=self.route_waypoint_reached_tolerance_m,
+        )
+
         with self._lock:
             robot_pose = self._last_robot_pose
         prepared, prepare_error = prepare_route_waypoints(
@@ -845,6 +945,14 @@ class RouteExecutorNode(Node):
             response.input_waypoint_count = 0
             response.expanded_waypoint_count = 0
             return response
+
+        mission_note = str(prepared.note)
+        if dropped_loop_closure:
+            mission_note = (
+                f"{mission_note}; dropped duplicate loop closure"
+                if mission_note
+                else "dropped duplicate loop closure"
+            )
 
         expanded = expand_route_waypoints(
             prepared.waypoints,
@@ -864,7 +972,7 @@ class RouteExecutorNode(Node):
             self._mission_active = True
             self._mission_paused = False
             self._mission_loop = bool(loop_enabled)
-            self._mission_note = str(prepared.note)
+            self._mission_note = mission_note
             self._mission_status = self._status_with_note_locked("route starting")
             self._leg_spacing_m = float(leg_spacing_m)
             self._chunk_span_m = float(chunk_span_m)

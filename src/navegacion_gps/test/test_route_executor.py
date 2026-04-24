@@ -1,9 +1,11 @@
 from navegacion_gps.route_executor import (
     RouteWaypoint,
     build_chunk_waypoints,
+    drop_duplicate_loop_closure,
     expand_route_waypoints,
     next_chunk_start_index,
     prepare_route_waypoints,
+    skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
 )
 
@@ -33,6 +35,23 @@ def test_expand_route_waypoints_handles_loop_closure_without_duplicating_start()
     assert expanded[0] == base[0]
     assert len(expanded) > len(base)
     assert expanded.count(base[0]) == 1
+
+
+def test_drop_duplicate_loop_closure_removes_repeated_first_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=180.0),
+    ]
+
+    normalized, dropped = drop_duplicate_loop_closure(
+        route,
+        loop=True,
+        closure_tolerance_m=1.2,
+    )
+
+    assert dropped is True
+    assert normalized == route[:2]
 
 
 def test_build_chunk_waypoints_limits_chunk_by_span_and_advances_after_target():
@@ -84,6 +103,46 @@ def test_build_chunk_waypoints_wraps_for_loop_routes():
 
     assert chunk[0] == route[2]
     assert chunk[1] == route[0]
+    assert len(chunk) == 2
+    assert end_index == 0
+
+
+def test_build_chunk_waypoints_does_not_send_full_loop_cycle():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0008, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=0,
+        loop=True,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=5,
+    )
+
+    assert chunk == route[:4]
+    assert end_index == 3
+
+
+def test_build_chunk_waypoints_allows_single_target_for_two_point_loop():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=1,
+        loop=True,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=2,
+    )
+
+    assert chunk == [route[1]]
     assert end_index == 1
 
 
@@ -262,3 +321,62 @@ def test_prepare_route_waypoints_joins_nearest_segment_for_loop_routes():
     assert prepared.start_index == 1
     assert prepared.note == "loop joined nearest segment 1->2"
     assert prepared.waypoints == [route[1], route[2], route[0]]
+
+
+def test_skip_reached_chunk_start_advances_loop_chunk_from_current_pose():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=90.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=0,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 1
+    assert skipped == 1
+
+
+def test_skip_reached_chunk_start_wraps_past_reached_loop_closure():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=90.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=2,
+        loop=True,
+        robot_lat=0.001,
+        robot_lon=0.001,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 0
+    assert skipped == 1
+
+
+def test_skip_reached_chunk_start_does_not_skip_only_remaining_non_loop_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=1,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.001,
+        waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 1
+    assert skipped == 0
