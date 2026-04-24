@@ -103,6 +103,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("follow_waypoints_action", "follow_waypoints")
         self.declare_parameter("navigate_through_poses_action", "navigate_through_poses")
         self.declare_parameter("loop_segment_size", 2)
+        self.declare_parameter("waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("nav_failure_hint_window_s", 25.0)
 
         self.fromll_service = str(self.get_parameter("fromll_service").value)
@@ -182,6 +183,9 @@ class NavCommandServerNode(Node):
             self.get_parameter("navigate_through_poses_action").value
         )
         self.loop_segment_size = max(2, int(self.get_parameter("loop_segment_size").value))
+        self.waypoint_reached_tolerance_m = max(
+            0.05, float(self.get_parameter("waypoint_reached_tolerance_m").value)
+        )
         self.nav_failure_hint_window_s = max(
             1.0, float(self.get_parameter("nav_failure_hint_window_s").value)
         )
@@ -1176,6 +1180,130 @@ class NavCommandServerNode(Node):
         return poses, ""
 
     @staticmethod
+    def _distance_ll_m(
+        start_lat: float,
+        start_lon: float,
+        end_lat: float,
+        end_lon: float,
+    ) -> float:
+        meters_per_deg_lat = 111_320.0
+        avg_lat_rad = math.radians((float(start_lat) + float(end_lat)) * 0.5)
+        meters_per_deg_lon = meters_per_deg_lat * max(1.0e-6, abs(math.cos(avg_lat_rad)))
+        north_m = (float(end_lat) - float(start_lat)) * meters_per_deg_lat
+        east_m = (float(end_lon) - float(start_lon)) * meters_per_deg_lon
+        return float(math.hypot(north_m, east_m))
+
+    @staticmethod
+    def _drop_duplicate_loop_closure_waypoint(
+        waypoints: Sequence[Tuple[float, float, float]],
+        *,
+        closure_tolerance_m: float,
+    ) -> Tuple[List[Tuple[float, float, float]], bool]:
+        waypoint_list = list(waypoints)
+        if len(waypoint_list) <= 2:
+            return waypoint_list, False
+
+        first = waypoint_list[0]
+        last = waypoint_list[-1]
+        tolerance_m = max(0.05, float(closure_tolerance_m))
+        distance_m = NavCommandServerNode._distance_ll_m(
+            first[0],
+            first[1],
+            last[0],
+            last[1],
+        )
+        if distance_m > tolerance_m:
+            return waypoint_list, False
+
+        return waypoint_list[:-1], True
+
+    @staticmethod
+    def _trim_reached_waypoint_prefix(
+        waypoints: Sequence[Tuple[float, float, float]],
+        *,
+        robot_pose: Optional[Dict[str, float]],
+        waypoint_reached_tolerance_m: float,
+    ) -> Tuple[List[Tuple[float, float, float]], int]:
+        waypoint_list = list(waypoints)
+        if len(waypoint_list) <= 1 or robot_pose is None:
+            return waypoint_list, 0
+
+        robot_lat = robot_pose.get("lat")
+        robot_lon = robot_pose.get("lon")
+        if (
+            robot_lat is None
+            or robot_lon is None
+            or (not np.isfinite(float(robot_lat)))
+            or (not np.isfinite(float(robot_lon)))
+        ):
+            return waypoint_list, 0
+
+        tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+        skipped = 0
+        while len(waypoint_list) > 1:
+            first = waypoint_list[0]
+            distance_m = NavCommandServerNode._distance_ll_m(
+                float(robot_lat),
+                float(robot_lon),
+                first[0],
+                first[1],
+            )
+            if distance_m > tolerance_m:
+                break
+            waypoint_list = waypoint_list[1:]
+            skipped += 1
+
+        return waypoint_list, skipped
+
+    @staticmethod
+    def _rotate_loop_waypoints_after_reached_anchor(
+        waypoints: Sequence[Tuple[float, float, float]],
+        *,
+        robot_pose: Optional[Dict[str, float]],
+        waypoint_reached_tolerance_m: float,
+    ) -> Tuple[List[Tuple[float, float, float]], int]:
+        waypoint_list = list(waypoints)
+        if len(waypoint_list) <= 1 or robot_pose is None:
+            return waypoint_list, 0
+
+        robot_lat = robot_pose.get("lat")
+        robot_lon = robot_pose.get("lon")
+        if (
+            robot_lat is None
+            or robot_lon is None
+            or (not np.isfinite(float(robot_lat)))
+            or (not np.isfinite(float(robot_lon)))
+        ):
+            return waypoint_list, 0
+
+        tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+        distances_m = [
+            NavCommandServerNode._distance_ll_m(
+                float(robot_lat),
+                float(robot_lon),
+                waypoint[0],
+                waypoint[1],
+            )
+            for waypoint in waypoint_list
+        ]
+        reached_indexes = [
+            idx for idx, distance_m in enumerate(distances_m) if distance_m <= tolerance_m
+        ]
+        if not reached_indexes:
+            return waypoint_list, 0
+
+        anchor_index = min(reached_indexes, key=lambda idx: (distances_m[idx], idx))
+        start_index = anchor_index
+        for _ in range(len(waypoint_list)):
+            if distances_m[start_index] > tolerance_m:
+                break
+            start_index = (start_index + 1) % len(waypoint_list)
+
+        if start_index == 0:
+            return waypoint_list, 0
+        return waypoint_list[start_index:] + waypoint_list[:start_index], int(start_index)
+
+    @staticmethod
     def _build_loop_segment_poses(
         poses: Sequence[PoseStamped],
         start_index: int,
@@ -1433,7 +1561,57 @@ class NavCommandServerNode(Node):
                 "suppress_success_brake": bool(suppress_success_brake),
             },
         )
-        poses, err = self._convert_waypoints_to_poses(waypoints)
+        normalized_waypoints = list(waypoints)
+        normalization_details: Dict[str, Any] = {}
+        with self._lock:
+            robot_pose = self._last_robot_pose
+
+        if loop_enabled:
+            normalized_waypoints, dropped_loop_closure = (
+                self._drop_duplicate_loop_closure_waypoint(
+                    normalized_waypoints,
+                    closure_tolerance_m=self.waypoint_reached_tolerance_m,
+                )
+            )
+            if dropped_loop_closure:
+                normalization_details["dropped_duplicate_loop_closure"] = True
+
+            normalized_waypoints, rotated_start_index = (
+                self._rotate_loop_waypoints_after_reached_anchor(
+                    normalized_waypoints,
+                    robot_pose=robot_pose,
+                    waypoint_reached_tolerance_m=self.waypoint_reached_tolerance_m,
+                )
+            )
+            if rotated_start_index > 0:
+                normalization_details["rotated_loop_start_index"] = int(rotated_start_index)
+        else:
+            normalized_waypoints, skipped_prefix_count = self._trim_reached_waypoint_prefix(
+                normalized_waypoints,
+                robot_pose=robot_pose,
+                waypoint_reached_tolerance_m=self.waypoint_reached_tolerance_m,
+            )
+            if skipped_prefix_count > 0:
+                normalization_details["skipped_reached_waypoint_prefix"] = int(
+                    skipped_prefix_count
+                )
+
+        if not normalized_waypoints:
+            return False, "all waypoint poses were already reached"
+        if normalization_details:
+            self._publish_event(
+                DiagnosticStatus.OK,
+                "nav_command_server",
+                "GOAL_NORMALIZED",
+                "Navigation waypoints normalized before sending to Nav2",
+                details=normalization_details,
+            )
+            self.get_logger().info(
+                "Navigation waypoints normalized before Nav2 send "
+                f"({normalization_details})"
+            )
+
+        poses, err = self._convert_waypoints_to_poses(normalized_waypoints)
         if poses is None:
             return False, err
         if loop_enabled and (len(poses) > 1):
@@ -1450,6 +1628,7 @@ class NavCommandServerNode(Node):
                     "loop_total_waypoints": len(poses),
                     "loop_segment_start_index": 0,
                     "loop_segment_size": len(loop_segment_poses),
+                    **normalization_details,
                 },
                 suppress_success_brake=False,
             )

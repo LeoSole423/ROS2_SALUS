@@ -225,6 +225,23 @@ def expand_route_waypoints(
     return expanded
 
 
+def drop_duplicate_loop_closure(
+    base_waypoints: Sequence[RouteWaypoint],
+    *,
+    loop: bool,
+    closure_tolerance_m: float,
+) -> Tuple[List[RouteWaypoint], bool]:
+    route = list(base_waypoints)
+    if (not loop) or len(route) <= 2:
+        return route, False
+
+    tolerance_m = max(0.05, float(closure_tolerance_m))
+    if _distance_m(route[0].lat, route[0].lon, route[-1].lat, route[-1].lon) > tolerance_m:
+        return route, False
+
+    return route[:-1], True
+
+
 def prepare_route_waypoints(
     base_waypoints: Sequence[RouteWaypoint],
     *,
@@ -901,6 +918,12 @@ class RouteExecutorNode(Node):
             response.error = error
             return response
 
+        route_input, dropped_loop_closure = drop_duplicate_loop_closure(
+            route_input,
+            loop=loop_enabled,
+            closure_tolerance_m=self.route_waypoint_reached_tolerance_m,
+        )
+
         with self._lock:
             robot_pose = self._last_robot_pose
         prepared, prepare_error = prepare_route_waypoints(
@@ -917,6 +940,14 @@ class RouteExecutorNode(Node):
             response.input_waypoint_count = 0
             response.expanded_waypoint_count = 0
             return response
+
+        mission_note = str(prepared.note)
+        if dropped_loop_closure:
+            mission_note = (
+                f"{mission_note}; dropped duplicate loop closure"
+                if mission_note
+                else "dropped duplicate loop closure"
+            )
 
         expanded = expand_route_waypoints(
             prepared.waypoints,
@@ -936,7 +967,7 @@ class RouteExecutorNode(Node):
             self._mission_active = True
             self._mission_paused = False
             self._mission_loop = bool(loop_enabled)
-            self._mission_note = str(prepared.note)
+            self._mission_note = mission_note
             self._mission_status = self._status_with_note_locked("route starting")
             self._leg_spacing_m = float(leg_spacing_m)
             self._chunk_span_m = float(chunk_span_m)

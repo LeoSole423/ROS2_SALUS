@@ -1,6 +1,7 @@
 from navegacion_gps.route_executor import (
     RouteWaypoint,
     build_chunk_waypoints,
+    drop_duplicate_loop_closure,
     expand_route_waypoints,
     next_chunk_start_index,
     prepare_route_waypoints,
@@ -34,6 +35,23 @@ def test_expand_route_waypoints_handles_loop_closure_without_duplicating_start()
     assert expanded[0] == base[0]
     assert len(expanded) > len(base)
     assert expanded.count(base[0]) == 1
+
+
+def test_drop_duplicate_loop_closure_removes_repeated_first_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=180.0),
+    ]
+
+    normalized, dropped = drop_duplicate_loop_closure(
+        route,
+        loop=True,
+        closure_tolerance_m=1.2,
+    )
+
+    assert dropped is True
+    assert normalized == route[:2]
 
 
 def test_build_chunk_waypoints_limits_chunk_by_span_and_advances_after_target():
