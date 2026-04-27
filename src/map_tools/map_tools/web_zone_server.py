@@ -636,6 +636,12 @@ class WebZoneServerNode(Node):
             "leg_spacing_m": 0.0,
             "chunk_span_m": 0.0,
             "chunk_max_waypoints": 0,
+            "blocked_state": "",
+            "blocked_reason_code": "",
+            "blocked_reason_text": "",
+            "blocked_retry_attempt": 0,
+            "blocked_retry_max_attempts": 0,
+            "blocked_wait_remaining_s": 0.0,
             "mission_waypoints": [],
             "active_chunk_waypoints": [],
         }
@@ -680,6 +686,16 @@ class WebZoneServerNode(Node):
             "leg_spacing_m": float(response.leg_spacing_m),
             "chunk_span_m": float(response.chunk_span_m),
             "chunk_max_waypoints": int(response.chunk_max_waypoints),
+            "blocked_state": str(getattr(response, "blocked_state", "")),
+            "blocked_reason_code": str(getattr(response, "blocked_reason_code", "")),
+            "blocked_reason_text": str(getattr(response, "blocked_reason_text", "")),
+            "blocked_retry_attempt": int(getattr(response, "blocked_retry_attempt", 0)),
+            "blocked_retry_max_attempts": int(
+                getattr(response, "blocked_retry_max_attempts", 0)
+            ),
+            "blocked_wait_remaining_s": float(
+                getattr(response, "blocked_wait_remaining_s", 0.0)
+            ),
             "mission_waypoints": self._route_waypoints_from_state(
                 response.mission_lats, response.mission_lons, response.mission_yaws_deg
             ),

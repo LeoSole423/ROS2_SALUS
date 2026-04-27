@@ -30,7 +30,7 @@
       <ReactiveFallback name="FallbackRecoveries">
         <GoalUpdated />
         <Sequence name="WaitAndReplan">
-          <BackUp backup_dist="2.0" backup_speed="1.2" />
+          <BackUp backup_dist="0.8" backup_speed="1.2" />
           <Wait name="WaitRecovery" wait_duration="5" />
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
         </Sequence>

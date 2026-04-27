@@ -90,6 +90,9 @@ class NavCommandServerNode(Node):
         self.declare_parameter("teleop_cmd_topic", "/cmd_vel_teleop")
         self.declare_parameter("brake_publish_count", 5)
         self.declare_parameter("brake_publish_interval_s", 0.1)
+        self.declare_parameter("critical_slow_brake_enabled", True)
+        self.declare_parameter("critical_slow_polygon_name", "critical_slow_zone")
+        self.declare_parameter("critical_slow_brake_pct", 100)
         self.declare_parameter("manual_cmd_timeout_s", 0.4)
         self.declare_parameter("manual_watchdog_hz", 10.0)
         self.declare_parameter("nav_telemetry_hz", 5.0)
@@ -160,6 +163,15 @@ class NavCommandServerNode(Node):
         self.brake_publish_interval_s = max(
             0.0, float(self.get_parameter("brake_publish_interval_s").value)
         )
+        self.critical_slow_brake_enabled = bool(
+            self.get_parameter("critical_slow_brake_enabled").value
+        )
+        self.critical_slow_polygon_name = str(
+            self.get_parameter("critical_slow_polygon_name").value
+        )
+        self.critical_slow_brake_pct = int(
+            max(0, min(100, int(self.get_parameter("critical_slow_brake_pct").value)))
+        )
         self.manual_cmd_timeout_s = max(
             0.1, float(self.get_parameter("manual_cmd_timeout_s").value)
         )
@@ -200,6 +212,7 @@ class NavCommandServerNode(Node):
         self._is_navigating = False
         self._auto_mode = "idle"
         self._collision_stop_active = False
+        self._critical_slow_brake_active = False
         self._last_robot_pose: Optional[Dict[str, float]] = None
         self._last_gps_fix_monotonic: Optional[float] = None
         self._last_telemetry_sent: Optional[float] = None
@@ -218,6 +231,7 @@ class NavCommandServerNode(Node):
         self._recent_nav_failure_hints: List[Tuple[float, str, str, str]] = []
         self._event_seq = 0
         self._last_collision_stop_active = False
+        self._last_critical_slow_brake_active = False
 
         # Service callbacks are mutually exclusive; clients/actions are reentrant to avoid
         # deadlocks when a service callback waits for a client future.
@@ -1074,6 +1088,7 @@ class NavCommandServerNode(Node):
             manual_enabled = bool(self._manual_enabled)
             is_navigating = bool(self._is_navigating)
             collision_stop_active = bool(self._collision_stop_active)
+            critical_slow_brake_active = bool(self._critical_slow_brake_active)
             forward_without_goal = bool(self.forward_cmd_vel_safe_without_goal)
 
         if manual_enabled or ((not is_navigating) and (not forward_without_goal)):
@@ -1082,6 +1097,15 @@ class NavCommandServerNode(Node):
 
         if collision_stop_active:
             self._publish_stop(brake_pct=100)
+            self._publish_telemetry(force=False)
+            return
+
+        if (
+            critical_slow_brake_active
+            and self.critical_slow_brake_pct > 0
+            and float(msg.linear.x) > 0.0
+        ):
+            self._publish_stop(brake_pct=self.critical_slow_brake_pct)
             self._publish_telemetry(force=False)
             return
 
@@ -1096,14 +1120,30 @@ class NavCommandServerNode(Node):
 
     def _on_collision_monitor_state(self, msg: CollisionMonitorState) -> None:
         stop_active = int(msg.action_type) == int(CollisionMonitorState.STOP)
+        critical_slow_active = (
+            bool(self.critical_slow_brake_enabled)
+            and int(msg.action_type) == int(CollisionMonitorState.SLOWDOWN)
+            and str(getattr(msg, "polygon_name", "")) == self.critical_slow_polygon_name
+        )
         with self._lock:
             was_stop_active = bool(self._last_collision_stop_active)
             self._collision_stop_active = stop_active
             self._last_collision_stop_active = stop_active
+            was_critical_slow_active = bool(self._last_critical_slow_brake_active)
+            self._critical_slow_brake_active = critical_slow_active
+            self._last_critical_slow_brake_active = critical_slow_active
             manual_enabled = bool(self._manual_enabled)
             is_navigating = bool(self._is_navigating)
         if (not manual_enabled) and is_navigating and stop_active:
             self._publish_brake_sequence(brake_pct=100)
+        if (
+            (not manual_enabled)
+            and is_navigating
+            and critical_slow_active
+            and (not was_critical_slow_active)
+            and self.critical_slow_brake_pct > 0
+        ):
+            self._publish_brake_sequence(brake_pct=self.critical_slow_brake_pct)
         if stop_active and not was_stop_active:
             with self._lock:
                 self._set_failure_locked("COLLISION_STOP_ACTIVE", "collision_monitor")
@@ -1113,6 +1153,18 @@ class NavCommandServerNode(Node):
                 "COLLISION_STOP_ACTIVE",
                 "Collision monitor requested STOP",
                 details={"action_type": int(msg.action_type)},
+            )
+        if critical_slow_active and not was_critical_slow_active:
+            self._publish_event(
+                DiagnosticStatus.WARN,
+                "collision_monitor",
+                "CRITICAL_SLOW_BRAKE_ACTIVE",
+                "Collision monitor critical slow zone requested braking",
+                details={
+                    "action_type": int(msg.action_type),
+                    "polygon_name": str(getattr(msg, "polygon_name", "")),
+                    "brake_pct": int(self.critical_slow_brake_pct),
+                },
             )
         self._publish_telemetry(force=False)
 

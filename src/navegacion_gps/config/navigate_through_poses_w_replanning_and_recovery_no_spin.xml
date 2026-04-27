@@ -38,7 +38,7 @@
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
           <Wait wait_duration="5"/>
-          <BackUp backup_dist="2.0" backup_speed="1.2"/>
+          <BackUp backup_dist="0.8" backup_speed="1.2"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

@@ -1,4 +1,5 @@
 import threading
+from types import SimpleNamespace
 
 from diagnostic_msgs.msg import DiagnosticStatus
 import pytest
@@ -111,6 +112,18 @@ class _FakeWaypointYawNode(_FakeNode):
         self._lock = threading.Lock()
         self._last_robot_pose = None
         self._last_robot_heading_deg = None
+
+
+class _FakeRouteStateNode(_FakeNode):
+    _build_default_route_mission_payload = staticmethod(
+        WebZoneServerNode._build_default_route_mission_payload
+    )
+    _route_waypoints_from_state = staticmethod(WebZoneServerNode._route_waypoints_from_state)
+    _update_route_state = WebZoneServerNode._update_route_state
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._route_mission = self._build_default_route_mission_payload()
 
 
 def test_should_surface_diagnostic_accepts_navigation_errors():
@@ -255,3 +268,53 @@ def test_resolve_waypoint_yaws_preserves_manual_and_uses_robot_for_single_auto()
     assert node._resolve_waypoint_yaws([{"lat": -30.999, "lon": -64.0}], loop=False) == [90.0]
     assert node._resolve_waypoint_yaws([{"lat": -31.0, "lon": -64.0}], loop=False) == [42.0]
     assert node._resolve_waypoint_yaws([{"lat": -31.0, "lon": -64.0, "yaw_deg": 181.0}], loop=False) == [-179.0]
+
+
+def test_default_route_mission_payload_includes_blocked_fields():
+    payload = _FakeRouteStateNode._build_default_route_mission_payload()
+
+    assert payload["blocked_state"] == ""
+    assert payload["blocked_reason_code"] == ""
+    assert payload["blocked_reason_text"] == ""
+    assert payload["blocked_retry_attempt"] == 0
+    assert payload["blocked_retry_max_attempts"] == 0
+    assert payload["blocked_wait_remaining_s"] == 0.0
+
+
+def test_update_route_state_exposes_blocked_fields_for_websocket_payload():
+    node = _FakeRouteStateNode()
+    response = SimpleNamespace(
+        active=True,
+        paused=False,
+        loop=False,
+        input_waypoint_count=2,
+        expanded_waypoint_count=3,
+        current_start_index=1,
+        current_target_index=2,
+        active_chunk_size=2,
+        leg_spacing_m=30.0,
+        chunk_span_m=80.0,
+        chunk_max_waypoints=4,
+        status="route blocked: waiting",
+        blocked_state="BLOCKED_WAITING",
+        blocked_reason_code="NO_VALID_PATH",
+        blocked_reason_text="no valid path found",
+        blocked_retry_attempt=1,
+        blocked_retry_max_attempts=3,
+        blocked_wait_remaining_s=7.5,
+        mission_lats=[-31.0, -31.001],
+        mission_lons=[-64.0, -64.001],
+        mission_yaws_deg=[0.0, 90.0],
+        active_lats=[-31.001],
+        active_lons=[-64.001],
+        active_yaws_deg=[90.0],
+    )
+
+    node._update_route_state(response)
+
+    assert node._route_mission["blocked_state"] == "BLOCKED_WAITING"
+    assert node._route_mission["blocked_reason_code"] == "NO_VALID_PATH"
+    assert node._route_mission["blocked_reason_text"] == "no valid path found"
+    assert node._route_mission["blocked_retry_attempt"] == 1
+    assert node._route_mission["blocked_retry_max_attempts"] == 3
+    assert node._route_mission["blocked_wait_remaining_s"] == pytest.approx(7.5)

@@ -205,6 +205,30 @@ def generate_launch_description():
                 ],
             ),
             Node(
+                package="navegacion_gps",
+                executable="polygon_stamped_republisher",
+                name="critical_slow_zone_republisher",
+                output="screen",
+                parameters=[
+                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
+                    {"input_topic": "/critical_slow_zone_raw"},
+                    {"output_topic": "/critical_slow_zone"},
+                    {"republish_period_s": 1.0},
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
+                executable="polygon_stamped_republisher",
+                name="slow_zone_republisher",
+                output="screen",
+                parameters=[
+                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
+                    {"input_topic": "/slow_zone_raw"},
+                    {"output_topic": "/slow_zone"},
+                    {"republish_period_s": 1.0},
+                ],
+            ),
+            Node(
                 package="nav2_lifecycle_manager",
                 executable="lifecycle_manager",
                 name="lifecycle_manager_global_navigation_v2",

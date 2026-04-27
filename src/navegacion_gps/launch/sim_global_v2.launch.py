@@ -335,6 +335,15 @@ def generate_launch_description():
             ),
             Node(
                 package="navegacion_gps",
+                executable="nav_observability",
+                name="nav_observability",
+                output="screen",
+                parameters=[
+                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)}
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
                 executable="gps_course_heading",
                 name="gps_course_heading",
                 output="screen",

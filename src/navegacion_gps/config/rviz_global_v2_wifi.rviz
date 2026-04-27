@@ -245,6 +245,39 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /stop_zone
       Value: true
+    - Class: rviz_default_plugins/Polygon
+      Color: 255; 120; 220
+      Enabled: true
+      Name: Critical Slow Zone
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /critical_slow_zone
+      Value: true
+    - Class: rviz_default_plugins/Polygon
+      Color: 255; 180; 0
+      Enabled: true
+      Name: Slow Zone
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /slow_zone
+      Value: true
+    - Class: rviz_default_plugins/Polygon
+      Color: 160; 160; 160
+      Enabled: false
+      Name: Collision Monitor Polygons
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /collision_monitor/polygons
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

@@ -496,6 +496,15 @@ def generate_launch_description():
                     }
                 ],
             ),
+            Node(
+                package="navegacion_gps",
+                executable="nav_observability",
+                name="nav_observability",
+                output="screen",
+                parameters=[
+                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)}
+                ],
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(gps_wpf_dir, "launch", "localization_global_v2.launch.py")
