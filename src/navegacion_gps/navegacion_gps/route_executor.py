@@ -7,9 +7,17 @@ from typing import Any, List, Optional, Sequence, Tuple
 import numpy as np
 import rclpy
 from action_msgs.msg import GoalStatus
+from geographic_msgs.msg import GeoPoint
+from geometry_msgs.msg import PoseStamped, Quaternion
+from nav_msgs.msg import Path
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.time import Time
+from robot_localization.srv import FromLL
+import tf2_geometry_msgs  # noqa: F401
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from interfaces.msg import NavTelemetry
 from interfaces.srv import (
@@ -52,6 +60,28 @@ def _normalize_yaw_deg(yaw_deg: float) -> float:
     while yaw > 180.0:
         yaw -= 360.0
     return float(yaw)
+
+
+def _yaw_to_quaternion(yaw_deg: float) -> Quaternion:
+    yaw_rad = math.radians(float(yaw_deg))
+    half_yaw = yaw_rad / 2.0
+    return Quaternion(x=0.0, y=0.0, z=math.sin(half_yaw), w=math.cos(half_yaw))
+
+
+def _poses_to_debug_path(
+    poses: Sequence[PoseStamped],
+    *,
+    frame_id: str,
+    stamp: Any,
+) -> Path:
+    path = Path()
+    path.header.frame_id = str(frame_id)
+    path.header.stamp = stamp
+    path.poses = list(poses)
+    for pose in path.poses:
+        pose.header.frame_id = str(frame_id)
+        pose.header.stamp = stamp
+    return path
 
 
 def _distance_m(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> float:
@@ -546,6 +576,15 @@ class RouteExecutorNode(Node):
         self.declare_parameter("set_route_service", "/route_executor/set_route_ll")
         self.declare_parameter("cancel_route_service", "/route_executor/cancel_route")
         self.declare_parameter("get_state_service", "/route_executor/get_state")
+        self.declare_parameter("mission_path_topic", "/route_executor/mission_path")
+        self.declare_parameter("active_chunk_path_topic", "/route_executor/active_chunk_path")
+        self.declare_parameter("path_frame", "map")
+        self.declare_parameter("fromll_service", "/fromLL")
+        self.declare_parameter("fromll_service_fallback", "/navsat_transform/fromLL")
+        self.declare_parameter("fromll_frame", "odom")
+        self.declare_parameter("fromll_wait_timeout_s", 0.2)
+        self.declare_parameter("fromll_call_timeout_s", 1.0)
+        self.declare_parameter("tf_lookup_timeout_s", 0.5)
         self.declare_parameter("request_timeout_s", 8.0)
         self.declare_parameter("default_leg_spacing_m", 35.0)
         self.declare_parameter("default_chunk_span_m", 120.0)
@@ -562,6 +601,19 @@ class RouteExecutorNode(Node):
         self.set_route_service = str(self.get_parameter("set_route_service").value)
         self.cancel_route_service = str(self.get_parameter("cancel_route_service").value)
         self.get_state_service = str(self.get_parameter("get_state_service").value)
+        self.mission_path_topic = str(self.get_parameter("mission_path_topic").value)
+        self.active_chunk_path_topic = str(self.get_parameter("active_chunk_path_topic").value)
+        self.path_frame = str(self.get_parameter("path_frame").value).strip() or "map"
+        self.fromll_service = str(self.get_parameter("fromll_service").value)
+        self.fromll_service_fallback = str(self.get_parameter("fromll_service_fallback").value)
+        self.fromll_frame = str(self.get_parameter("fromll_frame").value).strip() or "odom"
+        self.fromll_wait_timeout_s = max(
+            0.01, float(self.get_parameter("fromll_wait_timeout_s").value)
+        )
+        self.fromll_call_timeout_s = max(
+            0.05, float(self.get_parameter("fromll_call_timeout_s").value)
+        )
+        self.tf_lookup_timeout_s = max(0.0, float(self.get_parameter("tf_lookup_timeout_s").value))
         self.request_timeout_s = max(0.5, float(self.get_parameter("request_timeout_s").value))
         self.default_leg_spacing_m = max(1.0, float(self.get_parameter("default_leg_spacing_m").value))
         self.default_chunk_span_m = max(5.0, float(self.get_parameter("default_chunk_span_m").value))
@@ -615,6 +667,30 @@ class RouteExecutorNode(Node):
             self.nav_cancel_goal_service,
             callback_group=self._client_group,
         )
+        self._fromll_client = self.create_client(
+            FromLL, self.fromll_service, callback_group=self._client_group
+        )
+        self._fromll_fallback_client = None
+        if self.fromll_service_fallback and (
+            self.fromll_service_fallback != self.fromll_service
+        ):
+            self._fromll_fallback_client = self.create_client(
+                FromLL,
+                self.fromll_service_fallback,
+                callback_group=self._client_group,
+            )
+        self._active_fromll_name: Optional[str] = None
+        self._active_fromll_client: Optional[Any] = None
+        self._last_fromll_error: Optional[str] = None
+        self._fromll_unavailable_until = 0.0
+        self._tf_unavailable_until = 0.0
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
+
+        self._mission_path_pub = self.create_publisher(Path, self.mission_path_topic, 10)
+        self._active_chunk_path_pub = self.create_publisher(
+            Path, self.active_chunk_path_topic, 10
+        )
 
         self._set_route_srv = self.create_service(
             SetRouteMissionLL,
@@ -645,7 +721,9 @@ class RouteExecutorNode(Node):
         self.get_logger().info(
             "Route executor ready "
             f"(set_route={self.set_route_service}, cancel={self.cancel_route_service}, "
-            f"get_state={self.get_state_service}, nav_goal={self.nav_set_goal_service})"
+            f"get_state={self.get_state_service}, nav_goal={self.nav_set_goal_service}, "
+            f"mission_path={self.mission_path_topic}, "
+            f"active_chunk_path={self.active_chunk_path_topic})"
         )
 
     @staticmethod
@@ -665,6 +743,207 @@ class RouteExecutorNode(Node):
             return None
         future = client.call_async(request)
         return self._wait_for_future(future, timeout_s)
+
+    def _resolve_fromll_client(self) -> Optional[Any]:
+        if time.monotonic() < self._fromll_unavailable_until:
+            self._last_fromll_error = "fromLL service unavailable"
+            return None
+
+        candidates: List[Tuple[Any, str, float]] = []
+        if self._active_fromll_client is not None and self._active_fromll_name is not None:
+            candidates.append((self._active_fromll_client, self._active_fromll_name, 0.01))
+
+        candidates.append((self._fromll_client, self.fromll_service, self.fromll_wait_timeout_s))
+        if self._fromll_fallback_client is not None:
+            candidates.append(
+                (
+                    self._fromll_fallback_client,
+                    self.fromll_service_fallback,
+                    self.fromll_wait_timeout_s,
+                )
+            )
+
+        seen = set()
+        for client, service_name, wait_s in candidates:
+            key = (id(client), service_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            if client.wait_for_service(timeout_sec=wait_s):
+                if self._active_fromll_name != service_name:
+                    self.get_logger().info(
+                        f"Using fromLL service for route debug paths: {service_name}"
+                    )
+                self._active_fromll_client = client
+                self._active_fromll_name = service_name
+                self._last_fromll_error = None
+                self._fromll_unavailable_until = 0.0
+                return client
+
+        self._last_fromll_error = "fromLL service unavailable"
+        self._fromll_unavailable_until = time.monotonic() + 1.0
+        return None
+
+    def _call_from_ll(self, lat: float, lon: float) -> Optional[Tuple[float, float, float]]:
+        fromll_client = self._resolve_fromll_client()
+        if fromll_client is None:
+            return None
+
+        req = FromLL.Request()
+        req.ll_point = GeoPoint(latitude=float(lat), longitude=float(lon), altitude=0.0)
+        future = fromll_client.call_async(req)
+        try:
+            res = self._wait_for_future(future, self.fromll_call_timeout_s)
+        except Exception as exc:
+            self._last_fromll_error = str(exc)
+            self._active_fromll_client = None
+            self._active_fromll_name = None
+            self._fromll_unavailable_until = time.monotonic() + 1.0
+            return None
+        if res is None:
+            self._last_fromll_error = "timeout waiting fromLL response"
+            self._active_fromll_client = None
+            self._active_fromll_name = None
+            self._fromll_unavailable_until = time.monotonic() + 1.0
+            return None
+        self._last_fromll_error = None
+        return (
+            float(res.map_point.x),
+            float(res.map_point.y),
+            float(res.map_point.z),
+        )
+
+    @staticmethod
+    def _north_east_m_to_ll(
+        lat: float,
+        lon: float,
+        north_m: float,
+        east_m: float,
+    ) -> Tuple[float, float]:
+        meters_per_deg_lat = 111_320.0
+        cos_lat = max(1.0e-6, abs(math.cos(math.radians(float(lat)))))
+        meters_per_deg_lon = meters_per_deg_lat * cos_lat
+        out_lat = float(lat) + float(north_m) / meters_per_deg_lat
+        out_lon = float(lon) + float(east_m) / meters_per_deg_lon
+        return out_lat, out_lon
+
+    def _project_geographic_yaw_to_fromll(
+        self,
+        lat: float,
+        lon: float,
+        yaw_deg: float,
+        origin_xyz: Tuple[float, float, float],
+        projection_distance_m: float = 1.0,
+    ) -> float:
+        heading_rad = math.radians(float(yaw_deg))
+        north_m = float(projection_distance_m) * math.sin(heading_rad)
+        east_m = float(projection_distance_m) * math.cos(heading_rad)
+        tip_lat, tip_lon = self._north_east_m_to_ll(lat, lon, north_m, east_m)
+        tip_xyz = self._call_from_ll(tip_lat, tip_lon)
+        if tip_xyz is None:
+            return _normalize_yaw_deg(yaw_deg)
+
+        dx = float(tip_xyz[0]) - float(origin_xyz[0])
+        dy = float(tip_xyz[1]) - float(origin_xyz[1])
+        if math.hypot(dx, dy) <= 1.0e-6:
+            return _normalize_yaw_deg(yaw_deg)
+        return _normalize_yaw_deg(math.degrees(math.atan2(dy, dx)))
+
+    def _transform_pose_to_path_frame(self, pose: PoseStamped) -> Optional[PoseStamped]:
+        if pose.header.frame_id == self.path_frame:
+            pose.header.stamp = self.get_clock().now().to_msg()
+            return pose
+        if time.monotonic() < self._tf_unavailable_until:
+            self._last_fromll_error = (
+                f"tf transform unavailable ({pose.header.frame_id}->{self.path_frame})"
+            )
+            return None
+
+        try:
+            transformed = self._tf_buffer.transform(
+                pose,
+                self.path_frame,
+                timeout=Duration(seconds=self.tf_lookup_timeout_s),
+            )
+        except TransformException as exc:
+            self._last_fromll_error = (
+                f"tf transform failed ({pose.header.frame_id}->{self.path_frame}): {exc}"
+            )
+            self._tf_unavailable_until = time.monotonic() + 1.0
+            return None
+
+        self._tf_unavailable_until = 0.0
+        transformed.header.stamp = self.get_clock().now().to_msg()
+        return transformed
+
+    def _build_debug_pose_from_ll(self, waypoint: RouteWaypoint) -> Optional[PoseStamped]:
+        converted = self._call_from_ll(float(waypoint.lat), float(waypoint.lon))
+        if converted is None:
+            return None
+
+        yaw_deg = self._project_geographic_yaw_to_fromll(
+            float(waypoint.lat),
+            float(waypoint.lon),
+            float(waypoint.yaw_deg),
+            converted,
+        )
+
+        pose = PoseStamped()
+        pose.header.frame_id = self.fromll_frame
+        pose.header.stamp = Time().to_msg()
+        pose.pose.position.x = float(converted[0])
+        pose.pose.position.y = float(converted[1])
+        pose.pose.position.z = float(converted[2])
+        pose.pose.orientation = _yaw_to_quaternion(yaw_deg)
+        return self._transform_pose_to_path_frame(pose)
+
+    def _build_debug_path_from_route(
+        self,
+        route: Sequence[RouteWaypoint],
+        *,
+        label: str,
+    ) -> Path:
+        stamp = self.get_clock().now().to_msg()
+        poses: List[PoseStamped] = []
+        warned = False
+        for idx, waypoint in enumerate(route):
+            pose = self._build_debug_pose_from_ll(waypoint)
+            if pose is None:
+                if not warned:
+                    self.get_logger().warning(
+                        f"Could not convert {label} debug path waypoint {idx + 1}; "
+                        f"publishing partial path "
+                        f"(reason={self._last_fromll_error or 'unknown'})"
+                    )
+                    warned = True
+                continue
+            poses.append(pose)
+        return _poses_to_debug_path(poses, frame_id=self.path_frame, stamp=stamp)
+
+    def _publish_route_debug_path(
+        self,
+        publisher: Any,
+        route: Sequence[RouteWaypoint],
+        *,
+        label: str,
+    ) -> None:
+        publisher.publish(self._build_debug_path_from_route(route, label=label))
+
+    def _publish_empty_path(self, publisher: Any) -> None:
+        publisher.publish(
+            _poses_to_debug_path(
+                [],
+                frame_id=self.path_frame,
+                stamp=self.get_clock().now().to_msg(),
+            )
+        )
+
+    def _publish_empty_route_paths(self) -> None:
+        self._publish_empty_path(self._mission_path_pub)
+        self._publish_empty_path(self._active_chunk_path_pub)
+
+    def _publish_empty_active_chunk_path(self) -> None:
+        self._publish_empty_path(self._active_chunk_path_pub)
 
     def _reset_mission_locked(self, status: str = "idle") -> None:
         self._route_input = []
@@ -762,9 +1041,16 @@ class RouteExecutorNode(Node):
             "Route chunk dispatched "
             f"(start={resolved_start_index}, end={end_index}, size={len(chunk)})"
         )
+        self._publish_route_debug_path(
+            self._active_chunk_path_pub,
+            chunk,
+            label="active chunk",
+        )
         return True, ""
 
     def _start_next_chunk_after_success(self) -> None:
+        should_clear_paths = False
+        next_start_index = 0
         with self._lock:
             if not self._mission_active or self._mission_paused:
                 return
@@ -772,20 +1058,25 @@ class RouteExecutorNode(Node):
             loop_enabled = bool(self._mission_loop)
             if expanded_count == 0:
                 self._reset_mission_locked("route failed: empty expanded route")
-                return
-            next_start_index = next_chunk_start_index(
-                current_target_index=self._current_target_index,
-                route_size=expanded_count,
-                loop=loop_enabled,
-            )
-            reached_end = next_start_index >= expanded_count
-            if reached_end and (not loop_enabled):
-                self._mission_active = False
-                self._mission_paused = False
-                self._awaiting_chunk_result = False
-                self._active_chunk = []
-                self._mission_status = self._status_with_note_locked("route completed")
-                return
+                should_clear_paths = True
+            else:
+                next_start_index = next_chunk_start_index(
+                    current_target_index=self._current_target_index,
+                    route_size=expanded_count,
+                    loop=loop_enabled,
+                )
+                reached_end = next_start_index >= expanded_count
+                if reached_end and (not loop_enabled):
+                    self._mission_active = False
+                    self._mission_paused = False
+                    self._awaiting_chunk_result = False
+                    self._active_chunk = []
+                    self._mission_status = self._status_with_note_locked("route completed")
+                    should_clear_paths = True
+
+        if should_clear_paths:
+            self._publish_empty_route_paths()
+            return
 
         ok, err = self._send_chunk(start_index=next_start_index)
         if ok:
@@ -796,6 +1087,7 @@ class RouteExecutorNode(Node):
             self._awaiting_chunk_result = False
             self._active_chunk = []
             self._mission_status = self._status_with_note_locked(f"route failed: {err}")
+        self._publish_empty_route_paths()
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
         should_pause = False
@@ -861,12 +1153,14 @@ class RouteExecutorNode(Node):
 
         if should_pause:
             self.get_logger().warning("Route mission paused by manual takeover")
+            self._publish_empty_active_chunk_path()
             return
         if should_advance:
             self._start_next_chunk_after_success()
             return
         if should_stop:
             self.get_logger().warning(f"Route mission stopped ({stop_reason})")
+            self._publish_empty_route_paths()
 
     def _validate_set_route_request(
         self, request: SetRouteMissionLL.Request
@@ -987,12 +1281,19 @@ class RouteExecutorNode(Node):
         response.expanded_waypoint_count = int(len(expanded))
         response.ok = bool(ok)
         response.error = "" if ok else str(err)
-        if not ok:
+        if ok:
+            self._publish_route_debug_path(
+                self._mission_path_pub,
+                expanded,
+                label="mission",
+            )
+        else:
             with self._lock:
                 self._mission_active = False
                 self._mission_paused = False
                 self._active_chunk = []
                 self._mission_status = self._status_with_note_locked(f"route failed: {err}")
+            self._publish_empty_route_paths()
         return response
 
     def _on_cancel_route(
@@ -1001,6 +1302,7 @@ class RouteExecutorNode(Node):
         cancel_ok, cancel_err = self._cancel_nav_goal()
         with self._lock:
             self._reset_mission_locked("route cancelled")
+        self._publish_empty_route_paths()
         response.ok = bool(cancel_ok or cancel_err == "cancel_goal timeout")
         response.error = "" if response.ok else str(cancel_err)
         return response

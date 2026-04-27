@@ -1,5 +1,11 @@
+import pytest
+from builtin_interfaces.msg import Time
+from geometry_msgs.msg import PoseStamped
+
 from navegacion_gps.route_executor import (
     RouteWaypoint,
+    _poses_to_debug_path,
+    _yaw_to_quaternion,
     build_chunk_waypoints,
     drop_duplicate_loop_closure,
     expand_route_waypoints,
@@ -8,6 +14,57 @@ from navegacion_gps.route_executor import (
     skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
 )
+
+
+def _converted_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
+    pose = PoseStamped()
+    pose.header.frame_id = "map"
+    pose.pose.position.x = float(x)
+    pose.pose.position.y = float(y)
+    pose.pose.orientation = _yaw_to_quaternion(yaw_deg)
+    return pose
+
+
+def test_debug_path_preserves_converted_waypoints_and_orientations():
+    stamp = Time(sec=12, nanosec=34)
+    poses = [
+        _converted_pose(1.0, 2.0, 0.0),
+        _converted_pose(3.0, 4.0, 90.0),
+    ]
+
+    path = _poses_to_debug_path(poses, frame_id="map", stamp=stamp)
+
+    assert path.header.frame_id == "map"
+    assert path.header.stamp == stamp
+    assert len(path.poses) == 2
+    assert path.poses[0].pose.position.x == pytest.approx(1.0)
+    assert path.poses[1].pose.position.y == pytest.approx(4.0)
+    assert path.poses[1].pose.orientation.z == pytest.approx(0.70710678, abs=1.0e-6)
+    assert path.poses[1].pose.orientation.w == pytest.approx(0.70710678, abs=1.0e-6)
+
+
+def test_debug_path_is_empty_without_converted_waypoints():
+    path = _poses_to_debug_path([], frame_id="map", stamp=Time(sec=1))
+
+    assert path.header.frame_id == "map"
+    assert path.poses == []
+
+
+def test_debug_mission_and_active_chunk_paths_have_expected_scopes():
+    stamp = Time(sec=5)
+    mission_poses = [
+        _converted_pose(0.0, 0.0, 0.0),
+        _converted_pose(10.0, 0.0, 0.0),
+        _converted_pose(20.0, 0.0, 0.0),
+    ]
+    active_chunk_poses = mission_poses[1:]
+
+    mission_path = _poses_to_debug_path(mission_poses, frame_id="map", stamp=stamp)
+    active_chunk_path = _poses_to_debug_path(active_chunk_poses, frame_id="map", stamp=stamp)
+
+    assert len(mission_path.poses) == 3
+    assert len(active_chunk_path.poses) == 2
+    assert active_chunk_path.poses[0].pose.position.x == pytest.approx(10.0)
 
 
 def test_expand_route_waypoints_inserts_intermediate_points_for_long_legs():
