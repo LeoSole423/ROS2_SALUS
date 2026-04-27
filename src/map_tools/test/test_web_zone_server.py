@@ -1,6 +1,7 @@
 import threading
 
 from diagnostic_msgs.msg import DiagnosticStatus
+import pytest
 
 from map_tools.web_zone_server import ROSBAG_TOPIC_PROFILES, WebZoneServerNode
 
@@ -98,6 +99,18 @@ class _FakeSensorNode(_FakeNode):
             "diagnostics": {"yaw_delta_deg": 1.7},
         }
         self._datum_snapshot = self._build_default_datum_snapshot()
+
+
+class _FakeWaypointYawNode(_FakeNode):
+    _normalize_yaw_deg = staticmethod(WebZoneServerNode._normalize_yaw_deg)
+    _bearing_deg_between_ll = staticmethod(WebZoneServerNode._bearing_deg_between_ll)
+    _route_tangent_bearing_deg = staticmethod(WebZoneServerNode._route_tangent_bearing_deg)
+    _resolve_waypoint_yaws = WebZoneServerNode._resolve_waypoint_yaws
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_robot_pose = None
+        self._last_robot_heading_deg = None
 
 
 def test_should_surface_diagnostic_accepts_navigation_errors():
@@ -205,3 +218,40 @@ def test_build_sensor_info_message_reports_bridge_errors_for_pixhawk_tab():
     assert payload["implemented"] is True
     assert payload["ok"] is False
     assert payload["error"] == "bridge offline"
+
+
+def test_resolve_waypoint_yaws_uses_route_tangent_for_auto_points():
+    node = _FakeWaypointYawNode()
+    waypoints = [
+        {"lat": -31.0, "lon": -64.0},
+        {"lat": -30.999, "lon": -64.0},
+        {"lat": -30.999, "lon": -63.999},
+    ]
+
+    yaws = node._resolve_waypoint_yaws(waypoints, loop=False)
+
+    assert yaws[0] == pytest.approx(90.0)
+    assert yaws[1] == pytest.approx(45.0)
+    assert yaws[2] == pytest.approx(0.0)
+
+
+def test_resolve_waypoint_yaws_uses_loop_bearing_for_last_auto_point():
+    node = _FakeWaypointYawNode()
+    waypoints = [
+        {"lat": -31.0, "lon": -64.0},
+        {"lat": -30.999, "lon": -64.0},
+    ]
+
+    yaws = node._resolve_waypoint_yaws(waypoints, loop=True)
+
+    assert yaws[0] == 90.0
+    assert yaws[1] == -90.0
+
+
+def test_resolve_waypoint_yaws_preserves_manual_and_uses_robot_for_single_auto():
+    node = _FakeWaypointYawNode()
+    node._last_robot_pose = {"lat": -31.0, "lon": -64.0, "heading_deg": 42.0}
+
+    assert node._resolve_waypoint_yaws([{"lat": -30.999, "lon": -64.0}], loop=False) == [90.0]
+    assert node._resolve_waypoint_yaws([{"lat": -31.0, "lon": -64.0}], loop=False) == [42.0]
+    assert node._resolve_waypoint_yaws([{"lat": -31.0, "lon": -64.0, "yaw_deg": 181.0}], loop=False) == [-179.0]

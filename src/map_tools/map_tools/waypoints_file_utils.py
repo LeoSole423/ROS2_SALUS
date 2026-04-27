@@ -21,11 +21,17 @@ def normalize_waypoint(item: Any, index: int) -> Tuple[Optional[Dict[str, float]
 
     lat = _to_finite_float(item.get("lat", item.get("latitude")))
     lon = _to_finite_float(item.get("lon", item.get("longitude")))
-    yaw = _to_finite_float(item.get("yaw_deg", item.get("yaw", 0.0)))
+    yaw_raw = item.get("yaw_deg", item.get("yaw", None))
+    yaw = _to_finite_float(yaw_raw) if yaw_raw is not None else None
 
-    if lat is None or lon is None or yaw is None:
+    if lat is None or lon is None:
         return None, f"invalid waypoint[{index}] values"
-    return {"lat": lat, "lon": lon, "yaw_deg": yaw}, ""
+    if yaw_raw is not None and yaw is None:
+        return None, f"invalid waypoint[{index}] values"
+    waypoint = {"lat": lat, "lon": lon}
+    if yaw is not None:
+        waypoint["yaw_deg"] = yaw
+    return waypoint, ""
 
 
 def normalize_waypoints(waypoints_raw: Any) -> Tuple[Optional[List[Dict[str, float]]], str]:
@@ -43,15 +49,19 @@ def normalize_waypoints(waypoints_raw: Any) -> Tuple[Optional[List[Dict[str, flo
 
 def build_waypoints_yaml_doc(waypoints: List[Dict[str, float]]) -> Dict[str, Any]:
     return {
-        "waypoints": [
-            {
-                "latitude": float(wp["lat"]),
-                "longitude": float(wp["lon"]),
-                "yaw": float(wp.get("yaw_deg", 0.0)),
-            }
-            for wp in waypoints
-        ]
+        "waypoints": [_build_waypoint_yaml_entry(wp) for wp in waypoints]
     }
+
+
+def _build_waypoint_yaml_entry(wp: Dict[str, float]) -> Dict[str, float]:
+    entry = {
+        "latitude": float(wp["lat"]),
+        "longitude": float(wp["lon"]),
+    }
+    yaw_deg = wp.get("yaw_deg", None)
+    if yaw_deg is not None:
+        entry["yaw"] = float(yaw_deg)
+    return entry
 
 
 def parse_waypoints_yaml_text(yaml_text: str) -> Tuple[Optional[List[Dict[str, float]]], str]:
