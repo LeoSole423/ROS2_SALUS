@@ -80,6 +80,15 @@ class RouteSegmentMatch:
     ratio: float
 
 
+@dataclass(frozen=True)
+class BlockedRetryStartResolution:
+    requested_start_index: int
+    resolved_start_index: int
+    reanchored: bool
+    reason: str
+    match_distance_m: float
+
+
 def _normalize_yaw_deg(yaw_deg: float) -> float:
     yaw = float(yaw_deg)
     while yaw <= -180.0:
@@ -500,6 +509,94 @@ def skip_reached_chunk_start(
     return current, skipped
 
 
+def resolve_blocked_retry_start(
+    route: Sequence[RouteWaypoint],
+    *,
+    current_start_index: int,
+    loop: bool,
+    robot_lat: Optional[float],
+    robot_lon: Optional[float],
+    waypoint_reached_tolerance_m: float,
+    segment_start_tolerance_m: float,
+    reanchor_enabled: bool,
+) -> BlockedRetryStartResolution:
+    route_list = list(route)
+    total = len(route_list)
+    requested_start = max(0, int(current_start_index))
+    if total <= 0:
+        return BlockedRetryStartResolution(
+            requested_start,
+            requested_start,
+            False,
+            "empty_route",
+            math.inf,
+        )
+
+    current = requested_start % total if loop else min(requested_start, total - 1)
+    if not reanchor_enabled:
+        return BlockedRetryStartResolution(current, current, False, "disabled", math.inf)
+    if (
+        robot_lat is None
+        or robot_lon is None
+        or (not np.isfinite(float(robot_lat)))
+        or (not np.isfinite(float(robot_lon)))
+    ):
+        return BlockedRetryStartResolution(current, current, False, "pose_unavailable", math.inf)
+
+    tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+    segment_tolerance_m = max(tolerance_m, float(segment_start_tolerance_m))
+    distances_m = [
+        _distance_m(float(robot_lat), float(robot_lon), waypoint.lat, waypoint.lon)
+        for waypoint in route_list
+    ]
+    nearest_index = min(range(total), key=lambda idx: (distances_m[idx], idx))
+    nearest_distance_m = float(distances_m[nearest_index])
+
+    candidate: Optional[int] = None
+    reason = ""
+    match_distance_m = math.inf
+    if nearest_distance_m <= tolerance_m:
+        candidate = int(nearest_index)
+        max_steps = max(0, total - 1)
+        steps = 0
+        while steps < max_steps and distances_m[candidate] <= tolerance_m:
+            next_index = candidate + 1
+            if loop:
+                next_index %= total
+            elif next_index >= total:
+                break
+            candidate = next_index
+            steps += 1
+        reason = "nearest_reached_waypoint"
+        match_distance_m = nearest_distance_m
+    else:
+        match = _closest_route_segment(
+            route_list,
+            robot_lat=float(robot_lat),
+            robot_lon=float(robot_lon),
+            loop=loop,
+        )
+        if _is_usable_segment_match(match, segment_tolerance_m=segment_tolerance_m):
+            if match is not None:
+                candidate = int(match.next_index)
+                reason = "nearest_segment"
+                match_distance_m = float(match.distance_m)
+
+    if candidate is None:
+        return BlockedRetryStartResolution(current, current, False, "no_match", nearest_distance_m)
+
+    resolved = candidate % total if loop else max(current, min(candidate, total - 1))
+    if resolved == current:
+        return BlockedRetryStartResolution(
+            current,
+            current,
+            False,
+            "no_forward_reanchor" if (not loop) and candidate < current else reason,
+            match_distance_m,
+        )
+    return BlockedRetryStartResolution(current, resolved, True, reason, match_distance_m)
+
+
 def build_chunk_waypoints(
     route: Sequence[RouteWaypoint],
     *,
@@ -622,7 +719,9 @@ class RouteExecutorNode(Node):
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
-        self.declare_parameter("blocked_retry_wait_s", 10.0)
+        self.declare_parameter("blocked_retry_wait_s", 5.0)
+        self.declare_parameter("blocked_retry_reanchor_on_current_pose", True)
+        self.declare_parameter("blocked_retry_reanchor_tolerance_m", 8.0)
         self.declare_parameter("collision_stop_persistent_s", 3.0)
         self.declare_parameter("clear_costmaps_before_blocked_retry", True)
         self.declare_parameter("blocked_retry_tick_hz", 2.0)
@@ -679,6 +778,13 @@ class RouteExecutorNode(Node):
         )
         self.blocked_retry_wait_s = max(
             0.0, float(self.get_parameter("blocked_retry_wait_s").value)
+        )
+        self.blocked_retry_reanchor_on_current_pose = bool(
+            self.get_parameter("blocked_retry_reanchor_on_current_pose").value
+        )
+        self.blocked_retry_reanchor_tolerance_m = max(
+            self.route_waypoint_reached_tolerance_m,
+            float(self.get_parameter("blocked_retry_reanchor_tolerance_m").value),
         )
         self.collision_stop_persistent_s = max(
             0.0, float(self.get_parameter("collision_stop_persistent_s").value)
@@ -1074,10 +1180,25 @@ class RouteExecutorNode(Node):
 
     def _run_blocked_retry(self) -> None:
         with self._lock:
-            start_index = int(self._current_start_index)
+            requested_start_index = int(self._current_start_index)
+            route = list(self._route_expanded)
+            loop_enabled = bool(self._mission_loop)
+            robot_pose = self._last_robot_pose
             reason_code = str(self._blocked_reason_code)
             reason_text = str(self._blocked_reason_text)
             retry_attempt = int(self._blocked_retry_attempt)
+
+        resolution = resolve_blocked_retry_start(
+            route,
+            current_start_index=requested_start_index,
+            loop=loop_enabled,
+            robot_lat=None if robot_pose is None else float(robot_pose[0]),
+            robot_lon=None if robot_pose is None else float(robot_pose[1]),
+            waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+            segment_start_tolerance_m=self.blocked_retry_reanchor_tolerance_m,
+            reanchor_enabled=self.blocked_retry_reanchor_on_current_pose,
+        )
+        start_index = int(resolution.resolved_start_index)
 
         self._publish_route_event(
             DiagnosticStatus.WARN,
@@ -1088,7 +1209,11 @@ class RouteExecutorNode(Node):
                 "blocked_reason_text": reason_text,
                 "retry_attempt": retry_attempt,
                 "retry_max_attempts": self.blocked_retry_max_attempts,
-                "start_index": start_index,
+                "requested_start_index": requested_start_index,
+                "resolved_start_index": start_index,
+                "reanchored": bool(resolution.reanchored),
+                "reanchor_reason": resolution.reason,
+                "reanchor_match_distance_m": f"{resolution.match_distance_m:.3f}",
             },
         )
         self._clear_costmaps_for_retry()
@@ -1114,7 +1239,12 @@ class RouteExecutorNode(Node):
                 DiagnosticStatus.OK,
                 "ROUTE_BLOCKED_CLEARED",
                 "Blocked route retry accepted",
-                details={"retry_attempt": retry_attempt, "start_index": start_index},
+                details={
+                    "retry_attempt": retry_attempt,
+                    "requested_start_index": requested_start_index,
+                    "resolved_start_index": start_index,
+                    "reanchored": bool(resolution.reanchored),
+                },
             )
             return
 

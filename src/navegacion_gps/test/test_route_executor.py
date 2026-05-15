@@ -21,6 +21,7 @@ from navegacion_gps.route_executor import (
     expand_route_waypoints,
     next_chunk_start_index,
     prepare_route_waypoints,
+    resolve_blocked_retry_start,
     skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
 )
@@ -83,8 +84,11 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node._blocked_wait_until = None
     node._blocked_retry_inflight = False
     node.blocked_retry_max_attempts = 3
-    node.blocked_retry_wait_s = 10.0
+    node.blocked_retry_wait_s = 5.0
+    node.blocked_retry_reanchor_on_current_pose = True
+    node.blocked_retry_reanchor_tolerance_m = 8.0
     node.collision_stop_persistent_s = 3.0
+    node.route_waypoint_reached_tolerance_m = 1.2
     node.clear_costmaps_before_blocked_retry = True
     node.request_timeout_s = 0.01
     node.events = []
@@ -612,7 +616,97 @@ def test_blocked_retry_clears_costmaps_and_resends_same_chunk():
     assert node._blocked_state == BLOCKED_STATE_NONE
     assert node._blocked_retry_inflight is False
     assert node.events[0][1] == "ROUTE_BLOCKED_RETRYING"
+    assert node.events[0][3]["requested_start_index"] == 1
+    assert node.events[0][3]["resolved_start_index"] == 1
     assert node.events[-1][1] == "ROUTE_BLOCKED_CLEARED"
+
+
+def test_blocked_retry_reanchors_to_current_route_segment():
+    node = _fake_blocking_node()
+    node._route_expanded = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+    node._blocked_state = BLOCKED_STATE_RETRYING
+    node._blocked_reason_code = "RECOVERY_FAILED"
+    node._blocked_reason_text = "recovery failed"
+    node._blocked_retry_attempt = 1
+    node._blocked_retry_inflight = True
+    node._current_start_index = 0
+    node._last_robot_pose = (0.0, 0.00015)
+
+    RouteExecutorNode._run_blocked_retry(node)
+
+    assert node.sent_chunk_starts == [2]
+    retry_details = node.events[0][3]
+    assert retry_details["requested_start_index"] == 0
+    assert retry_details["resolved_start_index"] == 2
+    assert retry_details["reanchored"] is True
+    assert retry_details["reanchor_reason"] == "nearest_segment"
+    cleared_details = node.events[-1][3]
+    assert cleared_details["requested_start_index"] == 0
+    assert cleared_details["resolved_start_index"] == 2
+    assert cleared_details["reanchored"] is True
+
+
+def test_blocked_retry_reanchor_never_moves_non_loop_route_backwards():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+
+    resolution = resolve_blocked_retry_start(
+        route,
+        current_start_index=2,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.00005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=8.0,
+        reanchor_enabled=True,
+    )
+
+    assert resolution.requested_start_index == 2
+    assert resolution.resolved_start_index == 2
+    assert resolution.reanchored is False
+    assert resolution.reason == "no_forward_reanchor"
+
+
+def test_blocked_retry_reanchor_falls_back_without_pose_or_match():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+    ]
+
+    without_pose = resolve_blocked_retry_start(
+        route,
+        current_start_index=1,
+        loop=False,
+        robot_lat=None,
+        robot_lon=None,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=8.0,
+        reanchor_enabled=True,
+    )
+    far_away = resolve_blocked_retry_start(
+        route,
+        current_start_index=1,
+        loop=False,
+        robot_lat=1.0,
+        robot_lon=1.0,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=8.0,
+        reanchor_enabled=True,
+    )
+
+    assert without_pose.resolved_start_index == 1
+    assert without_pose.reanchored is False
+    assert without_pose.reason == "pose_unavailable"
+    assert far_away.resolved_start_index == 1
+    assert far_away.reanchored is False
+    assert far_away.reason == "no_match"
 
 
 def test_exhausted_blocked_retries_hold_mission_for_operator():

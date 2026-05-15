@@ -23,9 +23,11 @@ collision_monitor:
 
     stop_zone:
       type: "polygon"
-      action_type: "stop"
+      action_type: "approach"
       min_points: 3
       points: [2.05, 0.68, 2.05, -0.68, -0.30, -0.68, -0.30, 0.68]
+      time_before_collision: 2.0
+      simulation_time_step: 0.1
       polygon_pub_topic: "/stop_zone_raw"
       visualize: true
       enabled: true

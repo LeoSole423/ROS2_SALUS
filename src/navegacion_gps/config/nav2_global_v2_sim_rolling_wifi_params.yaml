@@ -90,7 +90,7 @@ behavior_server:
     behavior_plugins: ["backup", "drive_on_heading", "wait"]
     backup:
       plugin: "nav2_behaviors/BackUp"
-      simulate_ahead_time: 7.0
+      simulate_ahead_time: 2.0
       stall_timeout: 3.0
     drive_on_heading:
       simulate_ahead_time: 2.0
@@ -145,10 +145,10 @@ controller_server:
       # bajan de 1.2 m/s para conservar empuje en terreno irregular; las
       # reducciones criticas quedan en 0.7 m/s via aproximacion/monitor.
       desired_linear_vel: 1.6
-      lookahead_dist: 1.4
-      min_lookahead_dist: 1.0
-      max_lookahead_dist: 2.2
-      lookahead_time: 1.5
+      lookahead_dist: 2.4
+      min_lookahead_dist: 1.6
+      max_lookahead_dist: 3.5
+      lookahead_time: 2.0
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.7
       approach_velocity_scaling_dist: 1.0
@@ -180,8 +180,8 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 20
-      height: 20
+      width: 30
+      height: 30
       resolution: 0.1
       transform_tolerance: 1.0
       footprint: "[[1.05,0.38],[1.05,-0.38],[-0.12,-0.38],[-0.12,0.38]]"
@@ -212,10 +212,10 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          # Mantener paridad con real_global_v2: marcamos obstaculos locales
-          # hasta 10 m, pero conservamos raytrace_max_range en 20 m para
-          # limpiar espacio libre y detectar regresiones comparables.
-          obstacle_max_range: 10.0
+          # Mantener paridad con real_global_v2: la ventana local WiFi cubre
+          # ~15 m utiles hacia adelante, con raytrace a 20 m para limpiar
+          # espacio libre y detectar regresiones comparables.
+          obstacle_max_range: 15.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
@@ -277,9 +277,9 @@ global_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
-          # Mantener paridad con real_global_v2: el global marca hasta 10 m y
+          # Mantener paridad con real_global_v2: el global marca hasta 15 m y
           # limpia hasta 20 m para no acumular obstaculos lejanos espurios.
-          obstacle_max_range: 10.0
+          obstacle_max_range: 15.0
           obstacle_min_range: 0.0
           inf_is_valid: False
           observation_persistence: 1.0

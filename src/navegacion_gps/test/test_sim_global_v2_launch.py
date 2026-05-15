@@ -248,3 +248,42 @@ def test_sim_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
     assert "always_send_full_costmap: false" in nav2_params_contents
     assert 'filters: ["keepout_filter"]' in nav2_params_contents
     assert "waypoint_follower:" in nav2_params_contents
+
+
+def test_collision_monitor_v2_keeps_contact_stop_and_uses_approach_zone() -> None:
+    params_contents = _read("config/collision_monitor_v2.yaml")
+
+    assert "footprint:" in params_contents
+    assert 'action_type: "stop"' in params_contents
+    assert "stop_zone:" in params_contents
+    assert 'action_type: "approach"' in params_contents
+    assert "time_before_collision: 2.0" in params_contents
+    assert "simulation_time_step: 0.1" in params_contents
+    assert "critical_slow_zone:" in params_contents
+    assert "slow_zone:" in params_contents
+    assert 'action_type: "slowdown"' in params_contents
+
+
+def test_recovery_behavior_uses_intermediate_ackermann_backup() -> None:
+    through_poses_bt = _read("config/navigate_through_poses_w_replanning_and_recovery_no_spin.xml")
+    to_pose_bt = _read("config/navigate_to_pose_w_replanning_and_recovery_no_spin.xml")
+    real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
+    sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
+
+    assert '<BackUp backup_dist="1.0" backup_speed="0.7"/>' in through_poses_bt
+    assert '<BackUp backup_dist="1.0" backup_speed="0.7" />' in to_pose_bt
+    assert "spin" not in through_poses_bt.lower()
+    assert "spin" not in to_pose_bt.lower()
+    assert "simulate_ahead_time: 2.0" in real_wifi_params
+    assert "simulate_ahead_time: 2.0" in sim_wifi_params
+
+
+def test_wifi_nav2_costmaps_keep_longer_lidar_forward_vision() -> None:
+    real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
+    sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
+
+    for params_contents in (real_wifi_params, sim_wifi_params):
+        assert "width: 30" in params_contents
+        assert "height: 30" in params_contents
+        assert params_contents.count("obstacle_max_range: 15.0") >= 2
+        assert "raytrace_max_range: 20.0" in params_contents

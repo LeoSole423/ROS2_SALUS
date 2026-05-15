@@ -493,6 +493,9 @@ def generate_launch_description():
                         "set_route_service": "/route_executor/set_route_ll",
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",
+                        "blocked_retry_wait_s": 5.0,
+                        "blocked_retry_reanchor_on_current_pose": True,
+                        "blocked_retry_reanchor_tolerance_m": 8.0,
                     }
                 ],
             ),
