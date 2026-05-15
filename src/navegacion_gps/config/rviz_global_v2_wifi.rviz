@@ -3,23 +3,13 @@ Panels:
     Help Height: 0
     Name: Displays
     Property Tree Widget:
-      Expanded:
-        - /TF1
-        - /RobotModel1
-        - /LaserScan1
-        - /Local Costmap1
-        - /Global Costmap1
-        - /Odometry1
-        - /Plan1
-        - /Stop Zone1
+      Expanded: []
       Splitter Ratio: 0.5
     Tree Height: 360
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
-    Expanded:
-      - /2D Pose Estimate1
-      - /2D Goal Pose1
+    Expanded: []
     Name: Tool Properties
     Splitter Ratio: 0.5
 Visualization Manager:
@@ -190,6 +180,60 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /plan
       Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 0; 180; 255
+      Enabled: true
+      Head Diameter: 0.18
+      Head Length: 0.12
+      Length: 0.12
+      Line Style: Lines
+      Line Width: 0.06
+      Name: Mission Route
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0.06
+      Pose Color: 0; 180; 255
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.06
+      Shaft Length: 0.1
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /route_executor/mission_path
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 255; 180; 0
+      Enabled: true
+      Head Diameter: 0.18
+      Head Length: 0.12
+      Length: 0.12
+      Line Style: Lines
+      Line Width: 0.08
+      Name: Active Chunk
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0.09
+      Pose Color: 255; 180; 0
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.06
+      Shaft Length: 0.1
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /route_executor/active_chunk_path
+      Value: true
     - Class: rviz_default_plugins/Polygon
       Color: 255; 0; 0
       Enabled: true
@@ -201,6 +245,39 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /stop_zone
       Value: true
+    - Class: rviz_default_plugins/Polygon
+      Color: 255; 120; 220
+      Enabled: true
+      Name: Critical Slow Zone
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /critical_slow_zone
+      Value: true
+    - Class: rviz_default_plugins/Polygon
+      Color: 255; 180; 0
+      Enabled: true
+      Name: Slow Zone
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /slow_zone
+      Value: true
+    - Class: rviz_default_plugins/Polygon
+      Color: 160; 160; 160
+      Enabled: false
+      Name: Collision Monitor Polygons
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /collision_monitor/polygons
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

@@ -37,6 +37,17 @@ waypoints:
     assert waypoints == [{"lat": -31.2, "lon": -64.2, "yaw_deg": 30.0}]
 
 
+def test_parse_waypoints_yaml_text_accepts_auto_yaw():
+    text = """
+waypoints:
+  - latitude: -31.2
+    longitude: -64.2
+"""
+    waypoints, err = parse_waypoints_yaml_text(text)
+    assert err == ""
+    assert waypoints == [{"lat": -31.2, "lon": -64.2}]
+
+
 def test_parse_waypoints_yaml_text_invalid():
     waypoints, err = parse_waypoints_yaml_text("waypoints: [")
     assert waypoints is None
@@ -63,6 +74,28 @@ def test_save_and_load_waypoints_yaml_file(tmp_path: Path):
     assert "latitude" in raw_text
     assert "longitude" in raw_text
     assert "yaw" in raw_text
+
+
+def test_save_and_load_waypoints_yaml_file_preserves_auto_yaw(tmp_path: Path):
+    file_path = tmp_path / "saved_waypoints.yaml"
+    src = [
+        {"lat": -31.4, "lon": -64.4},
+        {"lat": -31.5, "lon": -64.5, "yaw_deg": -15.0},
+    ]
+    ok_save, err_save, count = save_waypoints_yaml_file(file_path, src)
+    assert ok_save
+    assert err_save == ""
+    assert count == 2
+
+    raw_text = file_path.read_text(encoding="utf-8")
+    first_entry = raw_text.split("- latitude:", maxsplit=2)[1]
+    assert "yaw" not in first_entry
+    assert "yaw: -15.0" in raw_text
+
+    ok_load, err_load, loaded = load_waypoints_yaml_file(file_path)
+    assert ok_load
+    assert err_load == ""
+    assert loaded == src
 
 
 def test_load_waypoints_yaml_file_missing(tmp_path: Path):

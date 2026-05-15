@@ -21,7 +21,9 @@ class _FakeArbNode:
         self._current_goal_handle = None
         self._last_cmd_vel_safe = None
         self._collision_stop_active = False
+        self._critical_slow_brake_active = False
         self._last_collision_stop_active = False
+        self._last_critical_slow_brake_active = False
         self._last_manual_cmd = CmdVelFinal()
         self._last_manual_cmd_time = None
         self._manual_watchdog_stop_sent = False
@@ -30,6 +32,9 @@ class _FakeArbNode:
         self.manual_cmd_timeout_s = 0.1
         self.brake_publish_count = 1
         self.brake_publish_interval_s = 0.0
+        self.critical_slow_brake_enabled = True
+        self.critical_slow_polygon_name = "critical_slow_zone"
+        self.critical_slow_brake_pct = 100
 
         self.published = []
         self.telemetry_forced = []
@@ -49,6 +54,9 @@ class _FakeArbNode:
         self._publish_cmd_vel_final(
             NavCommandServerNode._build_cmd_vel_final(0.0, 0.0, int(brake_pct))
         )
+
+    def _publish_brake_sequence(self, brake_pct: int) -> None:
+        self._publish_stop(brake_pct=brake_pct)
 
     def _publish_manual_cmd(self, linear_x: float, angular_z: float, brake_pct: int) -> None:
         self._publish_cmd_vel_final(
@@ -134,6 +142,34 @@ def test_on_cmd_vel_safe_publishes_auto_when_passthrough_enabled_without_goal() 
     assert node.published == [(0.6, 0.15, 0)]
 
 
+def test_on_cmd_vel_safe_brakes_forward_in_critical_slow_zone() -> None:
+    node = _FakeArbNode()
+    node._manual_enabled = False
+    node._is_navigating = True
+    node._critical_slow_brake_active = True
+
+    msg = Twist()
+    msg.linear.x = 0.7
+    msg.angular.z = 0.1
+    NavCommandServerNode._on_cmd_vel_safe(node, msg)
+
+    assert node.published == [(0.0, 0.0, 100)]
+
+
+def test_on_cmd_vel_safe_allows_reverse_in_critical_slow_zone_for_backup() -> None:
+    node = _FakeArbNode()
+    node._manual_enabled = False
+    node._is_navigating = True
+    node._critical_slow_brake_active = True
+
+    msg = Twist()
+    msg.linear.x = -1.2
+    msg.angular.z = 0.0
+    NavCommandServerNode._on_cmd_vel_safe(node, msg)
+
+    assert node.published == [(-1.2, 0.0, 0)]
+
+
 def test_on_collision_monitor_state_stop_ignored_in_manual() -> None:
     node = _FakeArbNode()
     node._manual_enabled = True
@@ -144,6 +180,22 @@ def test_on_collision_monitor_state_stop_ignored_in_manual() -> None:
     NavCommandServerNode._on_collision_monitor_state(node, msg)
 
     assert node.published == []
+
+
+def test_on_collision_monitor_state_critical_slow_brakes_once_and_emits_event() -> None:
+    node = _FakeArbNode()
+    node._manual_enabled = False
+    node._is_navigating = True
+
+    msg = CollisionMonitorState()
+    msg.action_type = CollisionMonitorState.SLOWDOWN
+    msg.polygon_name = "critical_slow_zone"
+    NavCommandServerNode._on_collision_monitor_state(node, msg)
+    NavCommandServerNode._on_collision_monitor_state(node, msg)
+
+    assert node._critical_slow_brake_active is True
+    assert node.published == [(0.0, 0.0, 100)]
+    assert [event["code"] for event in node.events] == ["CRITICAL_SLOW_BRAKE_ACTIVE"]
 
 
 def test_manual_watchdog_sends_single_stop() -> None:

@@ -636,6 +636,12 @@ class WebZoneServerNode(Node):
             "leg_spacing_m": 0.0,
             "chunk_span_m": 0.0,
             "chunk_max_waypoints": 0,
+            "blocked_state": "",
+            "blocked_reason_code": "",
+            "blocked_reason_text": "",
+            "blocked_retry_attempt": 0,
+            "blocked_retry_max_attempts": 0,
+            "blocked_wait_remaining_s": 0.0,
             "mission_waypoints": [],
             "active_chunk_waypoints": [],
         }
@@ -680,6 +686,16 @@ class WebZoneServerNode(Node):
             "leg_spacing_m": float(response.leg_spacing_m),
             "chunk_span_m": float(response.chunk_span_m),
             "chunk_max_waypoints": int(response.chunk_max_waypoints),
+            "blocked_state": str(getattr(response, "blocked_state", "")),
+            "blocked_reason_code": str(getattr(response, "blocked_reason_code", "")),
+            "blocked_reason_text": str(getattr(response, "blocked_reason_text", "")),
+            "blocked_retry_attempt": int(getattr(response, "blocked_retry_attempt", 0)),
+            "blocked_retry_max_attempts": int(
+                getattr(response, "blocked_retry_max_attempts", 0)
+            ),
+            "blocked_wait_remaining_s": float(
+                getattr(response, "blocked_wait_remaining_s", 0.0)
+            ),
             "mission_waypoints": self._route_waypoints_from_state(
                 response.mission_lats, response.mission_lons, response.mission_yaws_deg
             ),
@@ -1795,6 +1811,23 @@ class WebZoneServerNode(Node):
             return None
         return WebZoneServerNode._normalize_yaw_deg(math.degrees(math.atan2(north_m, east_m)))
 
+    @staticmethod
+    def _route_tangent_bearing_deg(
+        incoming_bearing_deg: Optional[float], outgoing_bearing_deg: Optional[float]
+    ) -> Optional[float]:
+        if incoming_bearing_deg is None:
+            return outgoing_bearing_deg
+        if outgoing_bearing_deg is None:
+            return incoming_bearing_deg
+
+        incoming_rad = math.radians(float(incoming_bearing_deg))
+        outgoing_rad = math.radians(float(outgoing_bearing_deg))
+        east = math.cos(incoming_rad) + math.cos(outgoing_rad)
+        north = math.sin(incoming_rad) + math.sin(outgoing_rad)
+        if math.hypot(east, north) <= 1.0e-6:
+            return outgoing_bearing_deg
+        return WebZoneServerNode._normalize_yaw_deg(math.degrees(math.atan2(north, east)))
+
     def _resolve_waypoint_yaws(
         self, waypoints: List[Dict[str, Any]], loop: bool
     ) -> List[float]:
@@ -1820,24 +1853,31 @@ class WebZoneServerNode(Node):
             elif loop and len(waypoints) > 1:
                 next_idx = 0
 
-            if next_idx is not None:
-                next_wp = waypoints[next_idx]
-                bearing = self._bearing_deg_between_ll(
-                    lat, lon, float(next_wp["lat"]), float(next_wp["lon"])
-                )
-                if bearing is not None:
-                    resolved[idx] = bearing
-                    continue
+            prev_idx: Optional[int] = None
+            if idx > 0:
+                prev_idx = idx - 1
+            elif loop and len(waypoints) > 1:
+                prev_idx = len(waypoints) - 1
 
-            prev_idx = idx - 1
-            if prev_idx >= 0:
+            incoming_bearing: Optional[float] = None
+            outgoing_bearing: Optional[float] = None
+            if prev_idx is not None:
                 prev_wp = waypoints[prev_idx]
-                bearing = self._bearing_deg_between_ll(
+                incoming_bearing = self._bearing_deg_between_ll(
                     float(prev_wp["lat"]), float(prev_wp["lon"]), lat, lon
                 )
-                if bearing is not None:
-                    resolved[idx] = bearing
-                    continue
+            if next_idx is not None:
+                next_wp = waypoints[next_idx]
+                outgoing_bearing = self._bearing_deg_between_ll(
+                    lat, lon, float(next_wp["lat"]), float(next_wp["lon"])
+                )
+
+            tangent_bearing = self._route_tangent_bearing_deg(
+                incoming_bearing, outgoing_bearing
+            )
+            if tangent_bearing is not None:
+                resolved[idx] = tangent_bearing
+                continue
 
             if robot_pose is not None:
                 bearing = self._bearing_deg_between_ll(

@@ -2,23 +2,58 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import rclpy
 from action_msgs.msg import GoalStatus
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from geographic_msgs.msg import GeoPoint
+from geometry_msgs.msg import PoseStamped, Quaternion
+from nav2_msgs.srv import ClearEntireCostmap
+from nav_msgs.msg import Path
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.time import Time
+from robot_localization.srv import FromLL
+import tf2_geometry_msgs  # noqa: F401
+from tf2_ros import Buffer, TransformException, TransformListener
 
-from interfaces.msg import NavTelemetry
+from interfaces.msg import NavEvent, NavTelemetry
 from interfaces.srv import (
+    BrakeNav,
     CancelNavGoal,
     CancelRouteMission,
     GetRouteMissionState,
     SetNavGoalLL,
     SetRouteMissionLL,
 )
+
+
+BLOCKED_STATE_NONE = ""
+BLOCKED_STATE_WAITING = "BLOCKED_WAITING"
+BLOCKED_STATE_RETRYING = "BLOCKED_RETRYING"
+BLOCKED_STATE_NEEDS_OPERATOR = "BLOCKED_NEEDS_OPERATOR"
+
+BLOCKING_FAILURE_CODES = {
+    "NO_VALID_PATH",
+    "CONTROLLER_COLLISION",
+    "COLLISION_STOP_ACTIVE",
+    "SMOOTHED_PATH_COLLISION",
+    "RECOVERY_FAILED",
+    "RECOVERY_OFF_GRID",
+}
+
+BLOCKING_REASON_TEXT = {
+    "NO_VALID_PATH": "no valid path found",
+    "CONTROLLER_COLLISION": "controller predicted or detected collision",
+    "COLLISION_STOP_ACTIVE": "collision monitor stop persisted",
+    "SMOOTHED_PATH_COLLISION": "smoothed path leads to collision",
+    "RECOVERY_FAILED": "recovery behavior failed",
+    "RECOVERY_OFF_GRID": "recovery would leave costmap",
+}
 
 
 @dataclass(frozen=True)
@@ -45,6 +80,15 @@ class RouteSegmentMatch:
     ratio: float
 
 
+@dataclass(frozen=True)
+class BlockedRetryStartResolution:
+    requested_start_index: int
+    resolved_start_index: int
+    reanchored: bool
+    reason: str
+    match_distance_m: float
+
+
 def _normalize_yaw_deg(yaw_deg: float) -> float:
     yaw = float(yaw_deg)
     while yaw <= -180.0:
@@ -52,6 +96,28 @@ def _normalize_yaw_deg(yaw_deg: float) -> float:
     while yaw > 180.0:
         yaw -= 360.0
     return float(yaw)
+
+
+def _yaw_to_quaternion(yaw_deg: float) -> Quaternion:
+    yaw_rad = math.radians(float(yaw_deg))
+    half_yaw = yaw_rad / 2.0
+    return Quaternion(x=0.0, y=0.0, z=math.sin(half_yaw), w=math.cos(half_yaw))
+
+
+def _poses_to_debug_path(
+    poses: Sequence[PoseStamped],
+    *,
+    frame_id: str,
+    stamp: Any,
+) -> Path:
+    path = Path()
+    path.header.frame_id = str(frame_id)
+    path.header.stamp = stamp
+    path.poses = list(poses)
+    for pose in path.poses:
+        pose.header.frame_id = str(frame_id)
+        pose.header.stamp = stamp
+    return path
 
 
 def _distance_m(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> float:
@@ -443,6 +509,94 @@ def skip_reached_chunk_start(
     return current, skipped
 
 
+def resolve_blocked_retry_start(
+    route: Sequence[RouteWaypoint],
+    *,
+    current_start_index: int,
+    loop: bool,
+    robot_lat: Optional[float],
+    robot_lon: Optional[float],
+    waypoint_reached_tolerance_m: float,
+    segment_start_tolerance_m: float,
+    reanchor_enabled: bool,
+) -> BlockedRetryStartResolution:
+    route_list = list(route)
+    total = len(route_list)
+    requested_start = max(0, int(current_start_index))
+    if total <= 0:
+        return BlockedRetryStartResolution(
+            requested_start,
+            requested_start,
+            False,
+            "empty_route",
+            math.inf,
+        )
+
+    current = requested_start % total if loop else min(requested_start, total - 1)
+    if not reanchor_enabled:
+        return BlockedRetryStartResolution(current, current, False, "disabled", math.inf)
+    if (
+        robot_lat is None
+        or robot_lon is None
+        or (not np.isfinite(float(robot_lat)))
+        or (not np.isfinite(float(robot_lon)))
+    ):
+        return BlockedRetryStartResolution(current, current, False, "pose_unavailable", math.inf)
+
+    tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
+    segment_tolerance_m = max(tolerance_m, float(segment_start_tolerance_m))
+    distances_m = [
+        _distance_m(float(robot_lat), float(robot_lon), waypoint.lat, waypoint.lon)
+        for waypoint in route_list
+    ]
+    nearest_index = min(range(total), key=lambda idx: (distances_m[idx], idx))
+    nearest_distance_m = float(distances_m[nearest_index])
+
+    candidate: Optional[int] = None
+    reason = ""
+    match_distance_m = math.inf
+    if nearest_distance_m <= tolerance_m:
+        candidate = int(nearest_index)
+        max_steps = max(0, total - 1)
+        steps = 0
+        while steps < max_steps and distances_m[candidate] <= tolerance_m:
+            next_index = candidate + 1
+            if loop:
+                next_index %= total
+            elif next_index >= total:
+                break
+            candidate = next_index
+            steps += 1
+        reason = "nearest_reached_waypoint"
+        match_distance_m = nearest_distance_m
+    else:
+        match = _closest_route_segment(
+            route_list,
+            robot_lat=float(robot_lat),
+            robot_lon=float(robot_lon),
+            loop=loop,
+        )
+        if _is_usable_segment_match(match, segment_tolerance_m=segment_tolerance_m):
+            if match is not None:
+                candidate = int(match.next_index)
+                reason = "nearest_segment"
+                match_distance_m = float(match.distance_m)
+
+    if candidate is None:
+        return BlockedRetryStartResolution(current, current, False, "no_match", nearest_distance_m)
+
+    resolved = candidate % total if loop else max(current, min(candidate, total - 1))
+    if resolved == current:
+        return BlockedRetryStartResolution(
+            current,
+            current,
+            False,
+            "no_forward_reanchor" if (not loop) and candidate < current else reason,
+            match_distance_m,
+        )
+    return BlockedRetryStartResolution(current, resolved, True, reason, match_distance_m)
+
+
 def build_chunk_waypoints(
     route: Sequence[RouteWaypoint],
     *,
@@ -546,6 +700,15 @@ class RouteExecutorNode(Node):
         self.declare_parameter("set_route_service", "/route_executor/set_route_ll")
         self.declare_parameter("cancel_route_service", "/route_executor/cancel_route")
         self.declare_parameter("get_state_service", "/route_executor/get_state")
+        self.declare_parameter("mission_path_topic", "/route_executor/mission_path")
+        self.declare_parameter("active_chunk_path_topic", "/route_executor/active_chunk_path")
+        self.declare_parameter("path_frame", "map")
+        self.declare_parameter("fromll_service", "/fromLL")
+        self.declare_parameter("fromll_service_fallback", "/navsat_transform/fromLL")
+        self.declare_parameter("fromll_frame", "odom")
+        self.declare_parameter("fromll_wait_timeout_s", 0.2)
+        self.declare_parameter("fromll_call_timeout_s", 1.0)
+        self.declare_parameter("tf_lookup_timeout_s", 0.5)
         self.declare_parameter("request_timeout_s", 8.0)
         self.declare_parameter("default_leg_spacing_m", 35.0)
         self.declare_parameter("default_chunk_span_m", 120.0)
@@ -555,6 +718,23 @@ class RouteExecutorNode(Node):
         self.declare_parameter("min_chunk_max_waypoints", 2)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
+        self.declare_parameter("blocked_retry_max_attempts", 3)
+        self.declare_parameter("blocked_retry_wait_s", 5.0)
+        self.declare_parameter("blocked_retry_reanchor_on_current_pose", True)
+        self.declare_parameter("blocked_retry_reanchor_tolerance_m", 8.0)
+        self.declare_parameter("collision_stop_persistent_s", 3.0)
+        self.declare_parameter("clear_costmaps_before_blocked_retry", True)
+        self.declare_parameter("blocked_retry_tick_hz", 2.0)
+        self.declare_parameter("nav_event_topic", "/nav_command_server/events")
+        self.declare_parameter("nav_brake_service", "/nav_command_server/brake")
+        self.declare_parameter(
+            "clear_local_costmap_service",
+            "/local_costmap/clear_entirely_local_costmap",
+        )
+        self.declare_parameter(
+            "clear_global_costmap_service",
+            "/global_costmap/clear_entirely_global_costmap",
+        )
 
         self.nav_set_goal_service = str(self.get_parameter("nav_set_goal_service").value)
         self.nav_cancel_goal_service = str(self.get_parameter("nav_cancel_goal_service").value)
@@ -562,6 +742,19 @@ class RouteExecutorNode(Node):
         self.set_route_service = str(self.get_parameter("set_route_service").value)
         self.cancel_route_service = str(self.get_parameter("cancel_route_service").value)
         self.get_state_service = str(self.get_parameter("get_state_service").value)
+        self.mission_path_topic = str(self.get_parameter("mission_path_topic").value)
+        self.active_chunk_path_topic = str(self.get_parameter("active_chunk_path_topic").value)
+        self.path_frame = str(self.get_parameter("path_frame").value).strip() or "map"
+        self.fromll_service = str(self.get_parameter("fromll_service").value)
+        self.fromll_service_fallback = str(self.get_parameter("fromll_service_fallback").value)
+        self.fromll_frame = str(self.get_parameter("fromll_frame").value).strip() or "odom"
+        self.fromll_wait_timeout_s = max(
+            0.01, float(self.get_parameter("fromll_wait_timeout_s").value)
+        )
+        self.fromll_call_timeout_s = max(
+            0.05, float(self.get_parameter("fromll_call_timeout_s").value)
+        )
+        self.tf_lookup_timeout_s = max(0.0, float(self.get_parameter("tf_lookup_timeout_s").value))
         self.request_timeout_s = max(0.5, float(self.get_parameter("request_timeout_s").value))
         self.default_leg_spacing_m = max(1.0, float(self.get_parameter("default_leg_spacing_m").value))
         self.default_chunk_span_m = max(5.0, float(self.get_parameter("default_chunk_span_m").value))
@@ -579,6 +772,36 @@ class RouteExecutorNode(Node):
         self.route_segment_start_tolerance_m = max(
             self.route_waypoint_reached_tolerance_m,
             float(self.get_parameter("route_segment_start_tolerance_m").value),
+        )
+        self.blocked_retry_max_attempts = max(
+            0, int(self.get_parameter("blocked_retry_max_attempts").value)
+        )
+        self.blocked_retry_wait_s = max(
+            0.0, float(self.get_parameter("blocked_retry_wait_s").value)
+        )
+        self.blocked_retry_reanchor_on_current_pose = bool(
+            self.get_parameter("blocked_retry_reanchor_on_current_pose").value
+        )
+        self.blocked_retry_reanchor_tolerance_m = max(
+            self.route_waypoint_reached_tolerance_m,
+            float(self.get_parameter("blocked_retry_reanchor_tolerance_m").value),
+        )
+        self.collision_stop_persistent_s = max(
+            0.0, float(self.get_parameter("collision_stop_persistent_s").value)
+        )
+        self.clear_costmaps_before_blocked_retry = bool(
+            self.get_parameter("clear_costmaps_before_blocked_retry").value
+        )
+        self.blocked_retry_tick_hz = max(
+            0.5, float(self.get_parameter("blocked_retry_tick_hz").value)
+        )
+        self.nav_event_topic = str(self.get_parameter("nav_event_topic").value)
+        self.nav_brake_service = str(self.get_parameter("nav_brake_service").value)
+        self.clear_local_costmap_service = str(
+            self.get_parameter("clear_local_costmap_service").value
+        )
+        self.clear_global_costmap_service = str(
+            self.get_parameter("clear_global_costmap_service").value
         )
 
         self._lock = threading.Lock()
@@ -601,6 +824,17 @@ class RouteExecutorNode(Node):
         self._last_nav_result_status = int(GoalStatus.STATUS_UNKNOWN)
         self._last_nav_result_event_id = 0
         self._last_handled_nav_result_event_id = 0
+        self._blocked_state = BLOCKED_STATE_NONE
+        self._blocked_reason_code = ""
+        self._blocked_reason_text = ""
+        self._blocked_retry_attempt = 0
+        self._blocked_wait_until: Optional[float] = None
+        self._blocked_retry_inflight = False
+        self._last_blocking_nav_event_code = ""
+        self._last_blocking_nav_event_text = ""
+        self._last_collision_stop_started: Optional[float] = None
+        self._last_collision_stop_handled = False
+        self._event_seq = 0
 
         self._service_group = MutuallyExclusiveCallbackGroup()
         self._client_group = ReentrantCallbackGroup()
@@ -615,6 +849,46 @@ class RouteExecutorNode(Node):
             self.nav_cancel_goal_service,
             callback_group=self._client_group,
         )
+        self._nav_brake_client = self.create_client(
+            BrakeNav,
+            self.nav_brake_service,
+            callback_group=self._client_group,
+        )
+        self._clear_local_costmap_client = self.create_client(
+            ClearEntireCostmap,
+            self.clear_local_costmap_service,
+            callback_group=self._client_group,
+        )
+        self._clear_global_costmap_client = self.create_client(
+            ClearEntireCostmap,
+            self.clear_global_costmap_service,
+            callback_group=self._client_group,
+        )
+        self._fromll_client = self.create_client(
+            FromLL, self.fromll_service, callback_group=self._client_group
+        )
+        self._fromll_fallback_client = None
+        if self.fromll_service_fallback and (
+            self.fromll_service_fallback != self.fromll_service
+        ):
+            self._fromll_fallback_client = self.create_client(
+                FromLL,
+                self.fromll_service_fallback,
+                callback_group=self._client_group,
+            )
+        self._active_fromll_name: Optional[str] = None
+        self._active_fromll_client: Optional[Any] = None
+        self._last_fromll_error: Optional[str] = None
+        self._fromll_unavailable_until = 0.0
+        self._tf_unavailable_until = 0.0
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
+
+        self._mission_path_pub = self.create_publisher(Path, self.mission_path_topic, 10)
+        self._active_chunk_path_pub = self.create_publisher(
+            Path, self.active_chunk_path_topic, 10
+        )
+        self._nav_event_pub = self.create_publisher(NavEvent, self.nav_event_topic, 10)
 
         self._set_route_srv = self.create_service(
             SetRouteMissionLL,
@@ -641,11 +915,27 @@ class RouteExecutorNode(Node):
             10,
             callback_group=self._client_group,
         )
+        self._nav_event_sub = self.create_subscription(
+            NavEvent,
+            self.nav_event_topic,
+            self._on_nav_event,
+            10,
+            callback_group=self._client_group,
+        )
+        self._blocked_retry_timer = self.create_timer(
+            1.0 / float(self.blocked_retry_tick_hz),
+            self._blocked_retry_tick,
+            callback_group=self._client_group,
+        )
 
         self.get_logger().info(
             "Route executor ready "
             f"(set_route={self.set_route_service}, cancel={self.cancel_route_service}, "
-            f"get_state={self.get_state_service}, nav_goal={self.nav_set_goal_service})"
+            f"get_state={self.get_state_service}, nav_goal={self.nav_set_goal_service}, "
+            f"mission_path={self.mission_path_topic}, "
+            f"active_chunk_path={self.active_chunk_path_topic}, "
+            f"blocked_retry_max_attempts={self.blocked_retry_max_attempts}, "
+            f"blocked_retry_wait_s={self.blocked_retry_wait_s:.1f})"
         )
 
     @staticmethod
@@ -666,6 +956,502 @@ class RouteExecutorNode(Node):
         future = client.call_async(request)
         return self._wait_for_future(future, timeout_s)
 
+    @staticmethod
+    def _diag_level_value(value: Any) -> int:
+        if isinstance(value, (bytes, bytearray)):
+            return int.from_bytes(value, byteorder="little", signed=False)
+        return int(value)
+
+    @staticmethod
+    def _details_to_key_values(details: Optional[Dict[str, Any]]) -> List[KeyValue]:
+        if not details:
+            return []
+        values: List[KeyValue] = []
+        for key, value in details.items():
+            item = KeyValue()
+            item.key = str(key)
+            item.value = str(value)
+            values.append(item)
+        return values
+
+    @staticmethod
+    def _nav_event_details_to_dict(msg: NavEvent) -> Dict[str, str]:
+        details: Dict[str, str] = {}
+        for item in getattr(msg, "details", []) or []:
+            key = str(getattr(item, "key", "") or "")
+            if key:
+                details[key] = str(getattr(item, "value", "") or "")
+        return details
+
+    @staticmethod
+    def _blocking_reason_text(code: str, fallback: str = "") -> str:
+        normalized = str(code or "")
+        return str(fallback or BLOCKING_REASON_TEXT.get(normalized) or normalized)
+
+    @staticmethod
+    def _is_blocking_reason(code: str) -> bool:
+        return str(code or "") in BLOCKING_FAILURE_CODES
+
+    def _publish_route_event(
+        self,
+        severity: int,
+        code: str,
+        message: str,
+        *,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        with self._lock:
+            self._event_seq += 1
+            event_id = int(self._event_seq)
+        event = NavEvent()
+        event.stamp = self.get_clock().now().to_msg()
+        event.severity = self._diag_level_value(severity)
+        event.component = "route_executor"
+        event.code = str(code)
+        event.message = str(message)
+        event.event_id = event_id
+        event.details = self._details_to_key_values(details)
+        self._nav_event_pub.publish(event)
+
+        if event.severity >= self._diag_level_value(DiagnosticStatus.ERROR):
+            self.get_logger().error(f"{message} code={code} details={details or {}}")
+        elif event.severity >= self._diag_level_value(DiagnosticStatus.WARN):
+            self.get_logger().warning(f"{message} code={code} details={details or {}}")
+        else:
+            self.get_logger().info(f"{message} code={code} details={details or {}}")
+        return event_id
+
+    def _clear_blocked_state_locked(self) -> bool:
+        was_blocked = bool(self._blocked_state)
+        self._blocked_state = BLOCKED_STATE_NONE
+        self._blocked_reason_code = ""
+        self._blocked_reason_text = ""
+        self._blocked_retry_attempt = 0
+        self._blocked_wait_until = None
+        self._blocked_retry_inflight = False
+        self._last_blocking_nav_event_code = ""
+        self._last_blocking_nav_event_text = ""
+        self._last_collision_stop_started = None
+        self._last_collision_stop_handled = False
+        return was_blocked
+
+    def _blocked_wait_remaining_s_locked(self) -> float:
+        if self._blocked_state != BLOCKED_STATE_WAITING or self._blocked_wait_until is None:
+            return 0.0
+        return max(0.0, float(self._blocked_wait_until) - time.monotonic())
+
+    def _blocked_status_locked(self) -> str:
+        if not self._blocked_state:
+            return self._mission_status
+        remaining_s = self._blocked_wait_remaining_s_locked()
+        if self._blocked_state == BLOCKED_STATE_WAITING:
+            return (
+                "route blocked: waiting "
+                f"({self._blocked_reason_code}, retry "
+                f"{self._blocked_retry_attempt + 1}/{self.blocked_retry_max_attempts}, "
+                f"{remaining_s:.1f}s)"
+            )
+        if self._blocked_state == BLOCKED_STATE_RETRYING:
+            return (
+                "route blocked: retrying "
+                f"({self._blocked_reason_code}, attempt "
+                f"{self._blocked_retry_attempt}/{self.blocked_retry_max_attempts})"
+            )
+        if self._blocked_state == BLOCKED_STATE_NEEDS_OPERATOR:
+            return f"route blocked: needs operator ({self._blocked_reason_code})"
+        return self._mission_status
+
+    def _apply_brake(self) -> None:
+        res = self._call_service(
+            self._nav_brake_client,
+            BrakeNav.Request(),
+            min(self.request_timeout_s, 3.0),
+        )
+        if res is None:
+            self.get_logger().warning("Brake service timeout while handling blocked route")
+        elif not bool(getattr(res, "ok", False)):
+            self.get_logger().warning(
+                f"Brake service failed while handling blocked route: {getattr(res, 'error', '')}"
+            )
+
+    def _clear_costmaps_for_retry(self) -> None:
+        if not self.clear_costmaps_before_blocked_retry:
+            return
+        for label, client in (
+            ("local", self._clear_local_costmap_client),
+            ("global", self._clear_global_costmap_client),
+        ):
+            res = self._call_service(
+                client,
+                ClearEntireCostmap.Request(),
+                min(self.request_timeout_s, 3.0),
+            )
+            if res is None:
+                self.get_logger().warning(f"{label} costmap clear timeout before blocked retry")
+
+    def _enter_blocked_waiting(
+        self,
+        reason_code: str,
+        reason_text: str = "",
+        *,
+        cancel_goal: bool = False,
+        brake: bool = True,
+    ) -> None:
+        if brake:
+            self._apply_brake()
+        if cancel_goal:
+            self._cancel_nav_goal()
+
+        normalized_reason = str(reason_code or "")
+        normalized_text = self._blocking_reason_text(normalized_reason, reason_text)
+        needs_operator = False
+        with self._lock:
+            if not self._mission_active:
+                return
+            if self._blocked_state == BLOCKED_STATE_NEEDS_OPERATOR:
+                return
+            if self._blocked_retry_attempt >= self.blocked_retry_max_attempts:
+                self._blocked_state = BLOCKED_STATE_NEEDS_OPERATOR
+                self._blocked_reason_code = normalized_reason
+                self._blocked_reason_text = normalized_text
+                self._blocked_wait_until = None
+                self._awaiting_chunk_result = False
+                self._mission_status = self._blocked_status_locked()
+                needs_operator = True
+            else:
+                self._blocked_state = BLOCKED_STATE_WAITING
+                self._blocked_reason_code = normalized_reason
+                self._blocked_reason_text = normalized_text
+                self._blocked_wait_until = time.monotonic() + float(self.blocked_retry_wait_s)
+                self._blocked_retry_inflight = False
+                self._awaiting_chunk_result = False
+                self._mission_status = self._blocked_status_locked()
+
+        if needs_operator:
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "ROUTE_BLOCKED_NEEDS_OPERATOR",
+                "Route blocked and needs operator intervention",
+                details={
+                    "blocked_reason_code": normalized_reason,
+                    "blocked_reason_text": normalized_text,
+                    "retry_attempts": self.blocked_retry_max_attempts,
+                },
+            )
+        else:
+            self._publish_route_event(
+                DiagnosticStatus.WARN,
+                "ROUTE_BLOCKED_WAITING",
+                "Route blocked; waiting before retry",
+                details={
+                    "blocked_reason_code": normalized_reason,
+                    "blocked_reason_text": normalized_text,
+                    "retry_attempt": self._blocked_retry_attempt + 1,
+                    "retry_max_attempts": self.blocked_retry_max_attempts,
+                    "wait_s": self.blocked_retry_wait_s,
+                },
+            )
+
+    def _blocked_retry_tick(self) -> None:
+        should_retry = False
+        with self._lock:
+            if (
+                self._mission_active
+                and self._blocked_state == BLOCKED_STATE_WAITING
+                and not self._blocked_retry_inflight
+                and self._blocked_wait_until is not None
+                and time.monotonic() >= float(self._blocked_wait_until)
+            ):
+                self._blocked_state = BLOCKED_STATE_RETRYING
+                self._blocked_retry_inflight = True
+                self._blocked_retry_attempt += 1
+                self._mission_status = self._blocked_status_locked()
+                should_retry = True
+
+        if not should_retry:
+            return
+
+        thread = threading.Thread(
+            target=self._run_blocked_retry,
+            daemon=True,
+            name="route_blocked_retry",
+        )
+        thread.start()
+
+    def _run_blocked_retry(self) -> None:
+        with self._lock:
+            requested_start_index = int(self._current_start_index)
+            route = list(self._route_expanded)
+            loop_enabled = bool(self._mission_loop)
+            robot_pose = self._last_robot_pose
+            reason_code = str(self._blocked_reason_code)
+            reason_text = str(self._blocked_reason_text)
+            retry_attempt = int(self._blocked_retry_attempt)
+
+        resolution = resolve_blocked_retry_start(
+            route,
+            current_start_index=requested_start_index,
+            loop=loop_enabled,
+            robot_lat=None if robot_pose is None else float(robot_pose[0]),
+            robot_lon=None if robot_pose is None else float(robot_pose[1]),
+            waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+            segment_start_tolerance_m=self.blocked_retry_reanchor_tolerance_m,
+            reanchor_enabled=self.blocked_retry_reanchor_on_current_pose,
+        )
+        start_index = int(resolution.resolved_start_index)
+
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "ROUTE_BLOCKED_RETRYING",
+            "Retrying blocked route chunk",
+            details={
+                "blocked_reason_code": reason_code,
+                "blocked_reason_text": reason_text,
+                "retry_attempt": retry_attempt,
+                "retry_max_attempts": self.blocked_retry_max_attempts,
+                "requested_start_index": requested_start_index,
+                "resolved_start_index": start_index,
+                "reanchored": bool(resolution.reanchored),
+                "reanchor_reason": resolution.reason,
+                "reanchor_match_distance_m": f"{resolution.match_distance_m:.3f}",
+            },
+        )
+        self._clear_costmaps_for_retry()
+        ok, err = self._send_chunk(start_index=start_index)
+
+        with self._lock:
+            if ok:
+                self._blocked_state = BLOCKED_STATE_NONE
+                self._blocked_reason_code = ""
+                self._blocked_reason_text = ""
+                self._blocked_wait_until = None
+                self._blocked_retry_inflight = False
+                self._last_collision_stop_started = None
+                self._last_collision_stop_handled = False
+                self._mission_status = self._status_with_note_locked(
+                    f"route active ({self._current_start_index + 1}->{self._current_target_index + 1})"
+                )
+            else:
+                self._blocked_retry_inflight = False
+
+        if ok:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "ROUTE_BLOCKED_CLEARED",
+                "Blocked route retry accepted",
+                details={
+                    "retry_attempt": retry_attempt,
+                    "requested_start_index": requested_start_index,
+                    "resolved_start_index": start_index,
+                    "reanchored": bool(resolution.reanchored),
+                },
+            )
+            return
+
+        self.get_logger().warning(f"Blocked route retry failed to dispatch: {err}")
+        self._enter_blocked_waiting(reason_code, reason_text, brake=True)
+
+    def _resolve_fromll_client(self) -> Optional[Any]:
+        if time.monotonic() < self._fromll_unavailable_until:
+            self._last_fromll_error = "fromLL service unavailable"
+            return None
+
+        candidates: List[Tuple[Any, str, float]] = []
+        if self._active_fromll_client is not None and self._active_fromll_name is not None:
+            candidates.append((self._active_fromll_client, self._active_fromll_name, 0.01))
+
+        candidates.append((self._fromll_client, self.fromll_service, self.fromll_wait_timeout_s))
+        if self._fromll_fallback_client is not None:
+            candidates.append(
+                (
+                    self._fromll_fallback_client,
+                    self.fromll_service_fallback,
+                    self.fromll_wait_timeout_s,
+                )
+            )
+
+        seen = set()
+        for client, service_name, wait_s in candidates:
+            key = (id(client), service_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            if client.wait_for_service(timeout_sec=wait_s):
+                if self._active_fromll_name != service_name:
+                    self.get_logger().info(
+                        f"Using fromLL service for route debug paths: {service_name}"
+                    )
+                self._active_fromll_client = client
+                self._active_fromll_name = service_name
+                self._last_fromll_error = None
+                self._fromll_unavailable_until = 0.0
+                return client
+
+        self._last_fromll_error = "fromLL service unavailable"
+        self._fromll_unavailable_until = time.monotonic() + 1.0
+        return None
+
+    def _call_from_ll(self, lat: float, lon: float) -> Optional[Tuple[float, float, float]]:
+        fromll_client = self._resolve_fromll_client()
+        if fromll_client is None:
+            return None
+
+        req = FromLL.Request()
+        req.ll_point = GeoPoint(latitude=float(lat), longitude=float(lon), altitude=0.0)
+        future = fromll_client.call_async(req)
+        try:
+            res = self._wait_for_future(future, self.fromll_call_timeout_s)
+        except Exception as exc:
+            self._last_fromll_error = str(exc)
+            self._active_fromll_client = None
+            self._active_fromll_name = None
+            self._fromll_unavailable_until = time.monotonic() + 1.0
+            return None
+        if res is None:
+            self._last_fromll_error = "timeout waiting fromLL response"
+            self._active_fromll_client = None
+            self._active_fromll_name = None
+            self._fromll_unavailable_until = time.monotonic() + 1.0
+            return None
+        self._last_fromll_error = None
+        return (
+            float(res.map_point.x),
+            float(res.map_point.y),
+            float(res.map_point.z),
+        )
+
+    @staticmethod
+    def _north_east_m_to_ll(
+        lat: float,
+        lon: float,
+        north_m: float,
+        east_m: float,
+    ) -> Tuple[float, float]:
+        meters_per_deg_lat = 111_320.0
+        cos_lat = max(1.0e-6, abs(math.cos(math.radians(float(lat)))))
+        meters_per_deg_lon = meters_per_deg_lat * cos_lat
+        out_lat = float(lat) + float(north_m) / meters_per_deg_lat
+        out_lon = float(lon) + float(east_m) / meters_per_deg_lon
+        return out_lat, out_lon
+
+    def _project_geographic_yaw_to_fromll(
+        self,
+        lat: float,
+        lon: float,
+        yaw_deg: float,
+        origin_xyz: Tuple[float, float, float],
+        projection_distance_m: float = 1.0,
+    ) -> float:
+        heading_rad = math.radians(float(yaw_deg))
+        north_m = float(projection_distance_m) * math.sin(heading_rad)
+        east_m = float(projection_distance_m) * math.cos(heading_rad)
+        tip_lat, tip_lon = self._north_east_m_to_ll(lat, lon, north_m, east_m)
+        tip_xyz = self._call_from_ll(tip_lat, tip_lon)
+        if tip_xyz is None:
+            return _normalize_yaw_deg(yaw_deg)
+
+        dx = float(tip_xyz[0]) - float(origin_xyz[0])
+        dy = float(tip_xyz[1]) - float(origin_xyz[1])
+        if math.hypot(dx, dy) <= 1.0e-6:
+            return _normalize_yaw_deg(yaw_deg)
+        return _normalize_yaw_deg(math.degrees(math.atan2(dy, dx)))
+
+    def _transform_pose_to_path_frame(self, pose: PoseStamped) -> Optional[PoseStamped]:
+        if pose.header.frame_id == self.path_frame:
+            pose.header.stamp = self.get_clock().now().to_msg()
+            return pose
+        if time.monotonic() < self._tf_unavailable_until:
+            self._last_fromll_error = (
+                f"tf transform unavailable ({pose.header.frame_id}->{self.path_frame})"
+            )
+            return None
+
+        try:
+            transformed = self._tf_buffer.transform(
+                pose,
+                self.path_frame,
+                timeout=Duration(seconds=self.tf_lookup_timeout_s),
+            )
+        except TransformException as exc:
+            self._last_fromll_error = (
+                f"tf transform failed ({pose.header.frame_id}->{self.path_frame}): {exc}"
+            )
+            self._tf_unavailable_until = time.monotonic() + 1.0
+            return None
+
+        self._tf_unavailable_until = 0.0
+        transformed.header.stamp = self.get_clock().now().to_msg()
+        return transformed
+
+    def _build_debug_pose_from_ll(self, waypoint: RouteWaypoint) -> Optional[PoseStamped]:
+        converted = self._call_from_ll(float(waypoint.lat), float(waypoint.lon))
+        if converted is None:
+            return None
+
+        yaw_deg = self._project_geographic_yaw_to_fromll(
+            float(waypoint.lat),
+            float(waypoint.lon),
+            float(waypoint.yaw_deg),
+            converted,
+        )
+
+        pose = PoseStamped()
+        pose.header.frame_id = self.fromll_frame
+        pose.header.stamp = Time().to_msg()
+        pose.pose.position.x = float(converted[0])
+        pose.pose.position.y = float(converted[1])
+        pose.pose.position.z = float(converted[2])
+        pose.pose.orientation = _yaw_to_quaternion(yaw_deg)
+        return self._transform_pose_to_path_frame(pose)
+
+    def _build_debug_path_from_route(
+        self,
+        route: Sequence[RouteWaypoint],
+        *,
+        label: str,
+    ) -> Path:
+        stamp = self.get_clock().now().to_msg()
+        poses: List[PoseStamped] = []
+        warned = False
+        for idx, waypoint in enumerate(route):
+            pose = self._build_debug_pose_from_ll(waypoint)
+            if pose is None:
+                if not warned:
+                    self.get_logger().warning(
+                        f"Could not convert {label} debug path waypoint {idx + 1}; "
+                        f"publishing partial path "
+                        f"(reason={self._last_fromll_error or 'unknown'})"
+                    )
+                    warned = True
+                continue
+            poses.append(pose)
+        return _poses_to_debug_path(poses, frame_id=self.path_frame, stamp=stamp)
+
+    def _publish_route_debug_path(
+        self,
+        publisher: Any,
+        route: Sequence[RouteWaypoint],
+        *,
+        label: str,
+    ) -> None:
+        publisher.publish(self._build_debug_path_from_route(route, label=label))
+
+    def _publish_empty_path(self, publisher: Any) -> None:
+        publisher.publish(
+            _poses_to_debug_path(
+                [],
+                frame_id=self.path_frame,
+                stamp=self.get_clock().now().to_msg(),
+            )
+        )
+
+    def _publish_empty_route_paths(self) -> None:
+        self._publish_empty_path(self._mission_path_pub)
+        self._publish_empty_path(self._active_chunk_path_pub)
+
+    def _publish_empty_active_chunk_path(self) -> None:
+        self._publish_empty_path(self._active_chunk_path_pub)
+
     def _reset_mission_locked(self, status: str = "idle") -> None:
         self._route_input = []
         self._route_expanded = []
@@ -679,12 +1465,65 @@ class RouteExecutorNode(Node):
         self._current_target_index = 0
         self._awaiting_chunk_result = False
         self._last_handled_nav_result_event_id = self._last_nav_result_event_id
+        self._clear_blocked_state_locked()
 
     def _status_with_note_locked(self, status: str) -> str:
         note = str(self._mission_note).strip()
         if not note:
             return str(status)
         return f"{status} [{note}]"
+
+    def _blocking_reason_from_text(self, text: str) -> Tuple[str, str]:
+        normalized = str(text or "").lower()
+        if (
+            "no valid path" in normalized
+            or "no se encontró una ruta válida" in normalized
+            or "failed to create plan" in normalized
+            or "failed to generate a valid path" in normalized
+        ):
+            return "NO_VALID_PATH", self._blocking_reason_text("NO_VALID_PATH", text)
+        if "smoothed path" in normalized and "collision" in normalized:
+            return (
+                "SMOOTHED_PATH_COLLISION",
+                self._blocking_reason_text("SMOOTHED_PATH_COLLISION", text),
+            )
+        if "collision" in normalized or "colisión" in normalized:
+            return "CONTROLLER_COLLISION", self._blocking_reason_text("CONTROLLER_COLLISION", text)
+        if "backup failed" in normalized or "recovery" in normalized:
+            return "RECOVERY_FAILED", self._blocking_reason_text("RECOVERY_FAILED", text)
+        if "off grid" in normalized or "pose goes off grid" in normalized:
+            return "RECOVERY_OFF_GRID", self._blocking_reason_text("RECOVERY_OFF_GRID", text)
+        return "", ""
+
+    def _blocking_reason_from_nav_telemetry_locked(
+        self, msg: NavTelemetry
+    ) -> Tuple[str, str]:
+        if self._is_blocking_reason(self._last_blocking_nav_event_code):
+            return self._last_blocking_nav_event_code, self._last_blocking_nav_event_text
+        failure_code = str(getattr(msg, "failure_code", "") or "")
+        if self._is_blocking_reason(failure_code):
+            return failure_code, self._blocking_reason_text(failure_code, msg.nav_result_text)
+        return self._blocking_reason_from_text(str(getattr(msg, "nav_result_text", "") or ""))
+
+    def _on_nav_event(self, msg: NavEvent) -> None:
+        component = str(getattr(msg, "component", "") or "")
+        if component == "route_executor":
+            return
+        details = self._nav_event_details_to_dict(msg)
+        event_code = str(getattr(msg, "code", "") or "")
+        reason_code = str(details.get("failure_reason_code") or "")
+        reason_text = str(details.get("failure_reason") or getattr(msg, "message", "") or "")
+        if event_code == "COLLISION_STOP_ACTIVE":
+            reason_code = "COLLISION_STOP_ACTIVE"
+            reason_text = self._blocking_reason_text(reason_code, reason_text)
+        if not self._is_blocking_reason(reason_code):
+            return
+        with self._lock:
+            self._last_blocking_nav_event_code = reason_code
+            self._last_blocking_nav_event_text = self._blocking_reason_text(
+                reason_code,
+                reason_text,
+            )
 
     def _cancel_nav_goal(self) -> Tuple[bool, str]:
         res = self._call_service(
@@ -762,9 +1601,16 @@ class RouteExecutorNode(Node):
             "Route chunk dispatched "
             f"(start={resolved_start_index}, end={end_index}, size={len(chunk)})"
         )
+        self._publish_route_debug_path(
+            self._active_chunk_path_pub,
+            chunk,
+            label="active chunk",
+        )
         return True, ""
 
     def _start_next_chunk_after_success(self) -> None:
+        should_clear_paths = False
+        next_start_index = 0
         with self._lock:
             if not self._mission_active or self._mission_paused:
                 return
@@ -772,20 +1618,25 @@ class RouteExecutorNode(Node):
             loop_enabled = bool(self._mission_loop)
             if expanded_count == 0:
                 self._reset_mission_locked("route failed: empty expanded route")
-                return
-            next_start_index = next_chunk_start_index(
-                current_target_index=self._current_target_index,
-                route_size=expanded_count,
-                loop=loop_enabled,
-            )
-            reached_end = next_start_index >= expanded_count
-            if reached_end and (not loop_enabled):
-                self._mission_active = False
-                self._mission_paused = False
-                self._awaiting_chunk_result = False
-                self._active_chunk = []
-                self._mission_status = self._status_with_note_locked("route completed")
-                return
+                should_clear_paths = True
+            else:
+                next_start_index = next_chunk_start_index(
+                    current_target_index=self._current_target_index,
+                    route_size=expanded_count,
+                    loop=loop_enabled,
+                )
+                reached_end = next_start_index >= expanded_count
+                if reached_end and (not loop_enabled):
+                    self._mission_active = False
+                    self._mission_paused = False
+                    self._awaiting_chunk_result = False
+                    self._active_chunk = []
+                    self._mission_status = self._status_with_note_locked("route completed")
+                    should_clear_paths = True
+
+        if should_clear_paths:
+            self._publish_empty_route_paths()
+            return
 
         ok, err = self._send_chunk(start_index=next_start_index)
         if ok:
@@ -796,11 +1647,16 @@ class RouteExecutorNode(Node):
             self._awaiting_chunk_result = False
             self._active_chunk = []
             self._mission_status = self._status_with_note_locked(f"route failed: {err}")
+        self._publish_empty_route_paths()
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
         should_pause = False
         should_advance = False
         should_stop = False
+        should_enter_blocked = False
+        blocked_reason_code = ""
+        blocked_reason_text = ""
+        blocked_cancel_goal = False
         stop_reason = ""
 
         with self._lock:
@@ -813,10 +1669,31 @@ class RouteExecutorNode(Node):
             if not self._mission_active:
                 return
 
+            now = time.monotonic()
+            if bool(msg.collision_stop_active) and bool(msg.goal_active):
+                if self._last_collision_stop_started is None:
+                    self._last_collision_stop_started = now
+                    self._last_collision_stop_handled = False
+                elif (
+                    not self._last_collision_stop_handled
+                    and not self._blocked_state
+                    and (now - float(self._last_collision_stop_started))
+                    >= self.collision_stop_persistent_s
+                ):
+                    self._last_collision_stop_handled = True
+                    should_enter_blocked = True
+                    blocked_reason_code = "COLLISION_STOP_ACTIVE"
+                    blocked_reason_text = self._blocking_reason_text(blocked_reason_code)
+                    blocked_cancel_goal = True
+            else:
+                self._last_collision_stop_started = None
+                self._last_collision_stop_handled = False
+
             if bool(msg.manual_enabled) and (not self._mission_paused):
                 self._mission_paused = True
                 self._awaiting_chunk_result = False
                 self._active_chunk = []
+                self._clear_blocked_state_locked()
                 self._mission_status = self._status_with_note_locked(
                     "route paused by manual takeover"
                 )
@@ -837,36 +1714,58 @@ class RouteExecutorNode(Node):
                 )
             )
             if not terminal_result:
-                return
-
-            self._last_handled_nav_result_event_id = int(msg.nav_result_event_id)
-            self._awaiting_chunk_result = False
-            status = int(msg.nav_result_status)
-            if status == int(GoalStatus.STATUS_SUCCEEDED):
-                should_advance = True
-            elif status == int(GoalStatus.STATUS_CANCELED):
-                self._mission_active = False
-                self._active_chunk = []
-                self._mission_status = self._status_with_note_locked("route cancelled")
-                should_stop = True
-                stop_reason = "cancelled"
+                if not should_pause and not should_enter_blocked:
+                    return
             else:
-                self._mission_active = False
-                self._active_chunk = []
-                self._mission_status = self._status_with_note_locked(
-                    f"route failed: {str(msg.nav_result_text)}"
-                )
-                should_stop = True
-                stop_reason = str(msg.nav_result_text)
+                self._last_handled_nav_result_event_id = int(msg.nav_result_event_id)
+                self._awaiting_chunk_result = False
+                status = int(msg.nav_result_status)
+                if status == int(GoalStatus.STATUS_SUCCEEDED):
+                    blocked_was_active = self._clear_blocked_state_locked()
+                    should_advance = True
+                    if blocked_was_active:
+                        self._mission_status = self._status_with_note_locked("route active")
+                elif status == int(GoalStatus.STATUS_CANCELED):
+                    self._mission_active = False
+                    self._active_chunk = []
+                    self._clear_blocked_state_locked()
+                    self._mission_status = self._status_with_note_locked("route cancelled")
+                    should_stop = True
+                    stop_reason = "cancelled"
+                else:
+                    reason_code, reason_text = self._blocking_reason_from_nav_telemetry_locked(msg)
+                    if self._is_blocking_reason(reason_code):
+                        should_enter_blocked = True
+                        blocked_reason_code = reason_code
+                        blocked_reason_text = reason_text
+                    else:
+                        self._mission_active = False
+                        self._active_chunk = []
+                        self._clear_blocked_state_locked()
+                        self._mission_status = self._status_with_note_locked(
+                            f"route failed: {str(msg.nav_result_text)}"
+                        )
+                        should_stop = True
+                        stop_reason = str(msg.nav_result_text)
 
         if should_pause:
             self.get_logger().warning("Route mission paused by manual takeover")
+            self._publish_empty_active_chunk_path()
+            return
+        if should_enter_blocked:
+            self._enter_blocked_waiting(
+                blocked_reason_code,
+                blocked_reason_text,
+                cancel_goal=blocked_cancel_goal,
+                brake=True,
+            )
             return
         if should_advance:
             self._start_next_chunk_after_success()
             return
         if should_stop:
             self.get_logger().warning(f"Route mission stopped ({stop_reason})")
+            self._publish_empty_route_paths()
 
     def _validate_set_route_request(
         self, request: SetRouteMissionLL.Request
@@ -981,18 +1880,26 @@ class RouteExecutorNode(Node):
             self._current_target_index = 0
             self._awaiting_chunk_result = False
             self._last_handled_nav_result_event_id = self._last_nav_result_event_id
+            self._clear_blocked_state_locked()
 
         ok, err = self._send_chunk(start_index=0)
         response.input_waypoint_count = int(len(prepared.waypoints))
         response.expanded_waypoint_count = int(len(expanded))
         response.ok = bool(ok)
         response.error = "" if ok else str(err)
-        if not ok:
+        if ok:
+            self._publish_route_debug_path(
+                self._mission_path_pub,
+                expanded,
+                label="mission",
+            )
+        else:
             with self._lock:
                 self._mission_active = False
                 self._mission_paused = False
                 self._active_chunk = []
                 self._mission_status = self._status_with_note_locked(f"route failed: {err}")
+            self._publish_empty_route_paths()
         return response
 
     def _on_cancel_route(
@@ -1001,6 +1908,7 @@ class RouteExecutorNode(Node):
         cancel_ok, cancel_err = self._cancel_nav_goal()
         with self._lock:
             self._reset_mission_locked("route cancelled")
+        self._publish_empty_route_paths()
         response.ok = bool(cancel_ok or cancel_err == "cancel_goal timeout")
         response.error = "" if response.ok else str(cancel_err)
         return response
@@ -1022,7 +1930,13 @@ class RouteExecutorNode(Node):
             response.leg_spacing_m = float(self._leg_spacing_m)
             response.chunk_span_m = float(self._chunk_span_m)
             response.chunk_max_waypoints = int(self._chunk_max_waypoints)
-            response.status = str(self._mission_status)
+            response.status = str(self._blocked_status_locked())
+            response.blocked_state = str(self._blocked_state)
+            response.blocked_reason_code = str(self._blocked_reason_code)
+            response.blocked_reason_text = str(self._blocked_reason_text)
+            response.blocked_retry_attempt = int(self._blocked_retry_attempt)
+            response.blocked_retry_max_attempts = int(self.blocked_retry_max_attempts)
+            response.blocked_wait_remaining_s = float(self._blocked_wait_remaining_s_locked())
             response.mission_lats = [float(entry.lat) for entry in self._route_expanded]
             response.mission_lons = [float(entry.lon) for entry in self._route_expanded]
             response.mission_yaws_deg = [float(entry.yaw_deg) for entry in self._route_expanded]
