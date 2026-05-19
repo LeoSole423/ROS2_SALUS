@@ -2,28 +2,14 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="3" name="NavigateRecovery">
       <PipelineSequence>
-        <RateController hz="1.0" name="RateControllerComputePathToPose">
+        <RateController hz="0.666" name="RateControllerComputePathToPose">
           <RecoveryNode number_of_retries="1" name="RecoveryComputePathToPose">
-            <Fallback name="FallbackComputePathToPose">
-              <ReactiveSequence name="CheckIfNewPathNeeded">
-                <Inverter>
-                  <GlobalUpdatedGoal />
-                </Inverter>
-                <IsPathValid path="{path}" />
-              </ReactiveSequence>
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
-            </Fallback>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
             <Wait name="WaitGlobalRetry-Context" wait_duration="1" />
           </RecoveryNode>
         </RateController>
-        <SmoothPath
-          unsmoothed_path="{path}"
-          smoothed_path="{smoothed_path}"
-          smoother_id="Constrained"
-          max_smoothing_duration="0.35"
-          check_for_collisions="true" />
         <RecoveryNode number_of_retries="1" name="RecoveryFollowPath">
-          <FollowPath path="{smoothed_path}" controller_id="FollowPath" />
+          <FollowPath path="{path}" controller_id="FollowPath" />
           <Wait name="WaitLocalRetry-Context" wait_duration="1" />
         </RecoveryNode>
       </PipelineSequence>

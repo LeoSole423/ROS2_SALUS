@@ -272,10 +272,39 @@ def test_recovery_behavior_uses_intermediate_ackermann_backup() -> None:
 
     assert '<BackUp backup_dist="1.0" backup_speed="0.7"/>' in through_poses_bt
     assert '<BackUp backup_dist="1.0" backup_speed="0.7" />' in to_pose_bt
+    assert '<RateController hz="0.666" name="RateControllerComputePathToPose">' in to_pose_bt
+    assert "<ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\" />" in to_pose_bt
+    assert '<FollowPath path="{path}" controller_id="FollowPath" />' in to_pose_bt
+    assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in through_poses_bt
+    assert "SmoothPath" not in to_pose_bt
+    assert "SmoothPath" not in through_poses_bt
+    assert "smoothed_path" not in to_pose_bt
+    assert "smoothed_path" not in through_poses_bt
+    assert "IsPathValid" not in to_pose_bt
     assert "spin" not in through_poses_bt.lower()
     assert "spin" not in to_pose_bt.lower()
     assert "simulate_ahead_time: 2.0" in real_wifi_params
     assert "simulate_ahead_time: 2.0" in sim_wifi_params
+
+
+def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
+    profile_paths = [
+        "config/nav2_global_v2_real_rolling_params.yaml",
+        "config/nav2_global_v2_sim_rolling_params.yaml",
+        "config/nav2_global_v2_real_rolling_wifi_params.yaml",
+        "config/nav2_global_v2_sim_rolling_wifi_params.yaml",
+    ]
+
+    for profile_path in profile_paths:
+        params_contents = _read(profile_path)
+
+        assert "optimizer_costmap_weight: 10.0" in params_contents
+        assert "cost_penalty: 3.5" in params_contents
+        assert "inflation_cost_scaling_factor: 1.3" in params_contents
+        assert "inflation_radius: 1.4" in params_contents
+        assert "cost_scaling_factor: 1.3" in params_contents
+        assert "inflation_radius: 1.5" in params_contents
+        assert "cost_scaling_factor: 1.4" in params_contents
 
 
 def test_wifi_nav2_costmaps_keep_longer_lidar_forward_vision() -> None:
