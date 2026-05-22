@@ -6,7 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -113,13 +113,40 @@ def generate_launch_description():
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
     web_app_port = LaunchConfiguration("web_app_port")
+    enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
+    lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    lidar_filter_roi_x_min = LaunchConfiguration("lidar_filter_roi_x_min")
+    lidar_filter_roi_x_max = LaunchConfiguration("lidar_filter_roi_x_max")
+    lidar_filter_roi_y_min = LaunchConfiguration("lidar_filter_roi_y_min")
+    lidar_filter_roi_y_max = LaunchConfiguration("lidar_filter_roi_y_max")
+    lidar_filter_roi_z_min = LaunchConfiguration("lidar_filter_roi_z_min")
+    lidar_filter_roi_z_max = LaunchConfiguration("lidar_filter_roi_z_max")
+    lidar_filter_ground_distance_threshold = LaunchConfiguration(
+        "lidar_filter_ground_distance_threshold"
+    )
+    lidar_filter_min_obstacle_height = LaunchConfiguration(
+        "lidar_filter_min_obstacle_height"
+    )
+    lidar_filter_max_obstacle_height = LaunchConfiguration(
+        "lidar_filter_max_obstacle_height"
+    )
+    lidar_filter_min_voxel_points = LaunchConfiguration("lidar_filter_min_voxel_points")
+    effective_lidar_scan_topic = PythonExpression(
+        [
+            "'",
+            lidar_scan_topic,
+            "' if '",
+            enable_lidar_obstacle_filter,
+            "'.lower() == 'true' else '/scan'",
+        ]
+    )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="True"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
-            DeclareLaunchArgument("nav_start_delay_s", default_value="4.0"),
+            DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
             DeclareLaunchArgument("use_keepout", default_value="True"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
@@ -204,6 +231,27 @@ def generate_launch_description():
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True"),
+            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
+            DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
+            DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_y_max", default_value="2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_z_min", default_value="-1.0"),
+            DeclareLaunchArgument("lidar_filter_roi_z_max", default_value="2.0"),
+            DeclareLaunchArgument(
+                "lidar_filter_ground_distance_threshold",
+                default_value="0.18",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_min_obstacle_height",
+                default_value="0.22",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_max_obstacle_height",
+                default_value="1.40",
+            ),
+            DeclareLaunchArgument("lidar_filter_min_voxel_points", default_value="3"),
             Node(
                 package="navegacion_gps",
                 executable="sim_sensor_normalizer_v2",
@@ -232,6 +280,57 @@ def generate_launch_description():
                     "world_name": world_name,
                     "model_name": model_name,
                 }.items(),
+            ),
+            Node(
+                package="navegacion_gps",
+                executable="lidar_obstacle_filter",
+                name="lidar_obstacle_filter",
+                output="screen",
+                condition=IfCondition(enable_lidar_obstacle_filter),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "cloud_topic": "/scan_3d",
+                        "imu_topic": "/imu/data",
+                        "obstacles_cloud_topic": "/obstacles_cloud",
+                        "scan_topic": lidar_scan_topic,
+                        "output_frame": "base_footprint",
+                        "roi_x_min": ParameterValue(
+                            lidar_filter_roi_x_min, value_type=float
+                        ),
+                        "roi_x_max": ParameterValue(
+                            lidar_filter_roi_x_max, value_type=float
+                        ),
+                        "roi_y_min": ParameterValue(
+                            lidar_filter_roi_y_min, value_type=float
+                        ),
+                        "roi_y_max": ParameterValue(
+                            lidar_filter_roi_y_max, value_type=float
+                        ),
+                        "roi_z_min": ParameterValue(
+                            lidar_filter_roi_z_min, value_type=float
+                        ),
+                        "roi_z_max": ParameterValue(
+                            lidar_filter_roi_z_max, value_type=float
+                        ),
+                        "ground_distance_threshold": ParameterValue(
+                            lidar_filter_ground_distance_threshold,
+                            value_type=float,
+                        ),
+                        "min_obstacle_height": ParameterValue(
+                            lidar_filter_min_obstacle_height,
+                            value_type=float,
+                        ),
+                        "max_obstacle_height": ParameterValue(
+                            lidar_filter_max_obstacle_height,
+                            value_type=float,
+                        ),
+                        "min_voxel_points": ParameterValue(
+                            lidar_filter_min_voxel_points,
+                            value_type=int,
+                        ),
+                    }
+                ],
             ),
             Node(
                 package="controller_server",
@@ -447,6 +546,7 @@ def generate_launch_description():
                             "nav2_params_file": nav2_params_file,
                             "collision_monitor_params_file": collision_monitor_params_file,
                             "keepout_mask_yaml": keepout_mask_yaml_arg,
+                            "lidar_scan_topic": effective_lidar_scan_topic,
                         }.items(),
                     )
                 ],

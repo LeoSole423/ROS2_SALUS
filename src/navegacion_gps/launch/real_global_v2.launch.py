@@ -98,6 +98,24 @@ def generate_launch_description():
     scan_wifi_debug_publish_hz = LaunchConfiguration("scan_wifi_debug_publish_hz")
     scan_wifi_debug_beam_stride = LaunchConfiguration("scan_wifi_debug_beam_stride")
     scan_wifi_debug_range_max_m = LaunchConfiguration("scan_wifi_debug_range_max_m")
+    enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
+    lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    lidar_filter_roi_x_min = LaunchConfiguration("lidar_filter_roi_x_min")
+    lidar_filter_roi_x_max = LaunchConfiguration("lidar_filter_roi_x_max")
+    lidar_filter_roi_y_min = LaunchConfiguration("lidar_filter_roi_y_min")
+    lidar_filter_roi_y_max = LaunchConfiguration("lidar_filter_roi_y_max")
+    lidar_filter_roi_z_min = LaunchConfiguration("lidar_filter_roi_z_min")
+    lidar_filter_roi_z_max = LaunchConfiguration("lidar_filter_roi_z_max")
+    lidar_filter_ground_distance_threshold = LaunchConfiguration(
+        "lidar_filter_ground_distance_threshold"
+    )
+    lidar_filter_min_obstacle_height = LaunchConfiguration(
+        "lidar_filter_min_obstacle_height"
+    )
+    lidar_filter_max_obstacle_height = LaunchConfiguration(
+        "lidar_filter_max_obstacle_height"
+    )
+    lidar_filter_min_voxel_points = LaunchConfiguration("lidar_filter_min_voxel_points")
     vx_deadband_mps = LaunchConfiguration("vx_deadband_mps")
     vx_min_effective_mps = LaunchConfiguration("vx_min_effective_mps")
     invert_steer_from_cmd_vel = LaunchConfiguration("invert_steer_from_cmd_vel")
@@ -166,6 +184,15 @@ def generate_launch_description():
             "'.lower() == 'true')) else 'false'",
         ]
     )
+    effective_lidar_scan_topic = PythonExpression(
+        [
+            "'",
+            lidar_scan_topic,
+            "' if '",
+            enable_lidar_obstacle_filter,
+            "'.lower() == 'true' else '/scan'",
+        ]
+    )
 
     return LaunchDescription(
         [
@@ -189,7 +216,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("fcu_url", default_value="/dev/ttyACM0:921600"),
             DeclareLaunchArgument("use_cyclone_dds", default_value="false"),
-            DeclareLaunchArgument("nav_start_delay_s", default_value="4.0"),
+            DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
             # Perfil operativo actual: keepout deshabilitado por default
             # mientras se estabiliza la navegación global con el costmap de
             # 300 x 300 m. Se puede reactivar explícitamente por launch arg.
@@ -212,6 +239,27 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True"),
+            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
+            DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
+            DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_y_max", default_value="2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_z_min", default_value="-1.0"),
+            DeclareLaunchArgument("lidar_filter_roi_z_max", default_value="2.0"),
+            DeclareLaunchArgument(
+                "lidar_filter_ground_distance_threshold",
+                default_value="0.18",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_min_obstacle_height",
+                default_value="0.22",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_max_obstacle_height",
+                default_value="1.40",
+            ),
+            DeclareLaunchArgument("lidar_filter_min_voxel_points", default_value="3"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
             DeclareLaunchArgument("invert_steer_from_cmd_vel", default_value="True"),
@@ -335,6 +383,57 @@ def generate_launch_description():
                 remappings=[("cloud_in", "/scan_3d"), ("scan", "/scan")],
             ),
             Node(
+                package="navegacion_gps",
+                executable="lidar_obstacle_filter",
+                name="lidar_obstacle_filter",
+                output="screen",
+                condition=IfCondition(enable_lidar_obstacle_filter),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "cloud_topic": "/scan_3d",
+                        "imu_topic": "/imu/data",
+                        "obstacles_cloud_topic": "/obstacles_cloud",
+                        "scan_topic": lidar_scan_topic,
+                        "output_frame": "base_footprint",
+                        "roi_x_min": ParameterValue(
+                            lidar_filter_roi_x_min, value_type=float
+                        ),
+                        "roi_x_max": ParameterValue(
+                            lidar_filter_roi_x_max, value_type=float
+                        ),
+                        "roi_y_min": ParameterValue(
+                            lidar_filter_roi_y_min, value_type=float
+                        ),
+                        "roi_y_max": ParameterValue(
+                            lidar_filter_roi_y_max, value_type=float
+                        ),
+                        "roi_z_min": ParameterValue(
+                            lidar_filter_roi_z_min, value_type=float
+                        ),
+                        "roi_z_max": ParameterValue(
+                            lidar_filter_roi_z_max, value_type=float
+                        ),
+                        "ground_distance_threshold": ParameterValue(
+                            lidar_filter_ground_distance_threshold,
+                            value_type=float,
+                        ),
+                        "min_obstacle_height": ParameterValue(
+                            lidar_filter_min_obstacle_height,
+                            value_type=float,
+                        ),
+                        "max_obstacle_height": ParameterValue(
+                            lidar_filter_max_obstacle_height,
+                            value_type=float,
+                        ),
+                        "min_voxel_points": ParameterValue(
+                            lidar_filter_min_voxel_points,
+                            value_type=int,
+                        ),
+                    }
+                ],
+            ),
+            Node(
                 package="controller_server",
                 executable="controller_server_node",
                 name="vehicle_controller_server",
@@ -368,7 +467,7 @@ def generate_launch_description():
                 condition=IfCondition(enable_scan_wifi_debug),
                 parameters=[
                     {
-                        "source_topic": "/scan",
+                        "source_topic": effective_lidar_scan_topic,
                         "output_topic": scan_wifi_debug_topic,
                         "publish_hz": ParameterValue(
                             scan_wifi_debug_publish_hz, value_type=float
@@ -553,6 +652,7 @@ def generate_launch_description():
                             "nav2_params_file": nav2_params_file,
                             "collision_monitor_params_file": collision_monitor_params_file,
                             "keepout_mask_yaml": keepout_mask_yaml,
+                            "lidar_scan_topic": effective_lidar_scan_topic,
                         }.items(),
                     )
                 ],

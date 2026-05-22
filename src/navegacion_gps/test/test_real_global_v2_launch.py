@@ -112,7 +112,12 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert 'executable="gps_course_heading"' in launch_contents
     assert 'executable="scan_wifi_debug"' in launch_contents
     assert 'condition=IfCondition(enable_scan_wifi_debug)' in launch_contents
-    assert '"source_topic": "/scan"' in launch_contents
+    assert 'DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered")' in launch_contents
+    assert 'executable="lidar_obstacle_filter"' in launch_contents
+    assert 'condition=IfCondition(enable_lidar_obstacle_filter)' in launch_contents
+    assert '"source_topic": effective_lidar_scan_topic' in launch_contents
+    assert '"lidar_scan_topic": effective_lidar_scan_topic' in launch_contents
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
     assert '"publish_hz": ParameterValue(' in launch_contents
     assert '"beam_stride": ParameterValue(' in launch_contents
@@ -213,6 +218,8 @@ def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
     assert "nav2_global_v2_real_rolling_wifi_params.yaml" in launch_contents
     assert '"use_rviz": "false"' in launch_contents
     assert '"enable_scan_wifi_debug": enable_scan_wifi_debug' in launch_contents
+    assert '"enable_lidar_obstacle_filter": enable_lidar_obstacle_filter' in launch_contents
+    assert '"lidar_scan_topic": lidar_scan_topic' in launch_contents
     assert '"scan_wifi_debug_topic": scan_wifi_debug_topic' in launch_contents
     assert '"scan_wifi_debug_publish_hz": scan_wifi_debug_publish_hz' in launch_contents
     assert '"scan_wifi_debug_beam_stride": scan_wifi_debug_beam_stride' in launch_contents

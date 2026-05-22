@@ -43,6 +43,7 @@ setup(
             'global_odom_stationary_gate = navegacion_gps.global_odom_stationary_gate:main',
             'global_imu_stationary_gate = navegacion_gps.global_imu_stationary_gate:main',
             'global_yaw_stationary_hold = navegacion_gps.global_yaw_stationary_hold:main',
+            'lidar_obstacle_filter = navegacion_gps.lidar_obstacle_filter:main',
             'loop_waypoint_benchmark = navegacion_gps.loop_waypoint_benchmark:main',
             'map_gps_absolute_measurement = navegacion_gps.map_gps_absolute_measurement:main',
             'zones_manager = navegacion_gps.zones_manager:main',

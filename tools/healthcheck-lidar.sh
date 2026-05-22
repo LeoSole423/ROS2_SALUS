@@ -16,6 +16,10 @@ docker exec "${CONTAINER}" bash -lc "
   timeout 5 ros2 topic hz /scan_3d || true
   echo '--- scan hz (5s) ---'
   timeout 5 ros2 topic hz /scan || true
+  echo '--- scan_filtered hz (5s) ---'
+  timeout 5 ros2 topic hz /scan_filtered || true
+  echo '--- obstacles_cloud hz (5s) ---'
+  timeout 5 ros2 topic hz /obstacles_cloud || true
   echo '--- tf map->odom (once) ---'
   timeout 5 ros2 topic echo /tf --once || true
   echo '--- tf odom->lidar_link (5s) ---'

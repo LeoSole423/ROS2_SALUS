@@ -6,7 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -117,13 +117,40 @@ def generate_launch_description():
     scan_wifi_debug_publish_hz = LaunchConfiguration("scan_wifi_debug_publish_hz")
     scan_wifi_debug_beam_stride = LaunchConfiguration("scan_wifi_debug_beam_stride")
     scan_wifi_debug_range_max_m = LaunchConfiguration("scan_wifi_debug_range_max_m")
+    enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
+    lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    lidar_filter_roi_x_min = LaunchConfiguration("lidar_filter_roi_x_min")
+    lidar_filter_roi_x_max = LaunchConfiguration("lidar_filter_roi_x_max")
+    lidar_filter_roi_y_min = LaunchConfiguration("lidar_filter_roi_y_min")
+    lidar_filter_roi_y_max = LaunchConfiguration("lidar_filter_roi_y_max")
+    lidar_filter_roi_z_min = LaunchConfiguration("lidar_filter_roi_z_min")
+    lidar_filter_roi_z_max = LaunchConfiguration("lidar_filter_roi_z_max")
+    lidar_filter_ground_distance_threshold = LaunchConfiguration(
+        "lidar_filter_ground_distance_threshold"
+    )
+    lidar_filter_min_obstacle_height = LaunchConfiguration(
+        "lidar_filter_min_obstacle_height"
+    )
+    lidar_filter_max_obstacle_height = LaunchConfiguration(
+        "lidar_filter_max_obstacle_height"
+    )
+    lidar_filter_min_voxel_points = LaunchConfiguration("lidar_filter_min_voxel_points")
+    effective_lidar_scan_topic = PythonExpression(
+        [
+            "'",
+            lidar_scan_topic,
+            "' if '",
+            enable_lidar_obstacle_filter,
+            "'.lower() == 'true' else '/scan'",
+        ]
+    )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="True"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
-            DeclareLaunchArgument("nav_start_delay_s", default_value="4.0"),
+            DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
             DeclareLaunchArgument("use_keepout", default_value="True"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
@@ -211,6 +238,27 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True"),
+            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
+            DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
+            DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_y_max", default_value="2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_z_min", default_value="-1.0"),
+            DeclareLaunchArgument("lidar_filter_roi_z_max", default_value="2.0"),
+            DeclareLaunchArgument(
+                "lidar_filter_ground_distance_threshold",
+                default_value="0.18",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_min_obstacle_height",
+                default_value="0.22",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_max_obstacle_height",
+                default_value="1.40",
+            ),
+            DeclareLaunchArgument("lidar_filter_min_voxel_points", default_value="3"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(gps_wpf_dir, "launch", "sim_global_v2.launch.py")
@@ -266,6 +314,24 @@ def generate_launch_description():
                     "launch_web_app": launch_web_app,
                     "ws_host": ws_host,
                     "web_app_port": web_app_port,
+                    "enable_lidar_obstacle_filter": enable_lidar_obstacle_filter,
+                    "lidar_scan_topic": lidar_scan_topic,
+                    "lidar_filter_roi_x_min": lidar_filter_roi_x_min,
+                    "lidar_filter_roi_x_max": lidar_filter_roi_x_max,
+                    "lidar_filter_roi_y_min": lidar_filter_roi_y_min,
+                    "lidar_filter_roi_y_max": lidar_filter_roi_y_max,
+                    "lidar_filter_roi_z_min": lidar_filter_roi_z_min,
+                    "lidar_filter_roi_z_max": lidar_filter_roi_z_max,
+                    "lidar_filter_ground_distance_threshold": (
+                        lidar_filter_ground_distance_threshold
+                    ),
+                    "lidar_filter_min_obstacle_height": (
+                        lidar_filter_min_obstacle_height
+                    ),
+                    "lidar_filter_max_obstacle_height": (
+                        lidar_filter_max_obstacle_height
+                    ),
+                    "lidar_filter_min_voxel_points": lidar_filter_min_voxel_points,
                 }.items(),
             ),
             Node(
@@ -277,7 +343,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
-                        "source_topic": "/scan",
+                        "source_topic": effective_lidar_scan_topic,
                         "output_topic": scan_wifi_debug_topic,
                         "publish_hz": ParameterValue(scan_wifi_debug_publish_hz, value_type=float),
                         "beam_stride": ParameterValue(scan_wifi_debug_beam_stride, value_type=int),

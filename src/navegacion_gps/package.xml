@@ -25,6 +25,7 @@
   <depend>ament_index_python</depend>
   <depend>gazebo_ros</depend>
   <depend>sensor_msgs</depend>
+  <depend>sensor_msgs_py</depend>
   <depend>geometry_msgs</depend>
   <depend>ackermann_msgs</depend>
   <depend>pointcloud_to_laserscan</depend>

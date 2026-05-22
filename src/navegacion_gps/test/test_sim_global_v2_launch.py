@@ -217,7 +217,11 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_range_max_m", default_value="12.0"' in launch_contents
     assert 'executable="scan_wifi_debug"' in launch_contents
     assert 'condition=IfCondition(enable_scan_wifi_debug)' in launch_contents
-    assert '"source_topic": "/scan"' in launch_contents
+    assert 'DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered")' in launch_contents
+    assert '"enable_lidar_obstacle_filter": enable_lidar_obstacle_filter' in launch_contents
+    assert '"lidar_scan_topic": lidar_scan_topic' in launch_contents
+    assert '"source_topic": effective_lidar_scan_topic' in launch_contents
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
     assert '"crop_angle_min_rad": -1.57079632679' in launch_contents
     assert '"crop_angle_max_rad": 1.57079632679' in launch_contents
@@ -316,3 +320,23 @@ def test_wifi_nav2_costmaps_keep_longer_lidar_forward_vision() -> None:
         assert "height: 30" in params_contents
         assert params_contents.count("obstacle_max_range: 15.0") >= 2
         assert "raytrace_max_range: 20.0" in params_contents
+
+
+def test_global_v2_local_costmaps_split_lidar_marking_from_clearing() -> None:
+    profile_paths = [
+        "config/nav2_global_v2_params.yaml",
+        "config/nav2_global_v2_real_rolling_params.yaml",
+        "config/nav2_global_v2_sim_rolling_params.yaml",
+        "config/nav2_global_v2_real_rolling_wifi_params.yaml",
+        "config/nav2_global_v2_sim_rolling_wifi_params.yaml",
+    ]
+
+    for profile_path in profile_paths:
+        params_contents = _read(profile_path)
+
+        assert "observation_sources: scan_marking scan_clearing" in params_contents
+        assert "scan_marking:" in params_contents
+        assert "scan_clearing:" in params_contents
+        assert "inf_is_valid: False" in params_contents
+        assert "clearing: False" in params_contents
+        assert "marking: False" in params_contents
