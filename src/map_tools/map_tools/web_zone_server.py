@@ -14,10 +14,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib import request as urllib_request
 
+import cv2
 import numpy as np
 import rclpy
 import websockets
 from ament_index_python.packages import get_package_share_directory
+from cv_bridge import CvBridge
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from nav_msgs.msg import Odometry
 from nav2_msgs.msg import BehaviorTreeLog
@@ -25,9 +27,10 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.msg import Log
-from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
+from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+from vision_msgs.msg import Detection2DArray
 
 from interfaces.msg import CmdVelFinal, DriveTelemetry, NavEvent, NavTelemetry
 from interfaces.srv import (
@@ -164,6 +167,13 @@ class WebZoneServerNode(Node):
             return int(default)
         return int(parsed)
 
+    @staticmethod
+    def _normalize_camera_frame_encoding(value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"jpeg", "jpg", "png"}:
+            return "jpeg" if normalized in {"jpeg", "jpg"} else "png"
+        return "jpeg"
+
     def __init__(self, loop: asyncio.AbstractEventLoop):
         super().__init__("web_zone_server")
         self._loop = loop
@@ -206,6 +216,12 @@ class WebZoneServerNode(Node):
         self.declare_parameter("camera_pan_service", "/camara/camera_pan")
         self.declare_parameter("camera_zoom_toggle_service", "/camara/camera_zoom_toggle")
         self.declare_parameter("camera_status_service", "/camara/camera_status")
+        self.declare_parameter("camera_image_topic", "/camera/image_raw")
+        self.declare_parameter("camera_detections_topic", "/detections")
+        self.declare_parameter("camera_frame_encoding", "jpeg")
+        self.declare_parameter("camera_jpeg_quality", 90)
+        self.declare_parameter("camera_ws_max_fps", 10.0)
+        self.declare_parameter("camera_ws_width", 960)
         self.declare_parameter("enable_control_lock", False)
         self.declare_parameter("control_lock_start_locked", True)
         self.declare_parameter("control_lock_heartbeat_timeout_s", 2.5)
@@ -279,6 +295,20 @@ class WebZoneServerNode(Node):
             self.get_parameter("camera_zoom_toggle_service").value
         )
         self.camera_status_service = str(self.get_parameter("camera_status_service").value)
+        self.camera_image_topic = str(self.get_parameter("camera_image_topic").value)
+        self.camera_detections_topic = str(
+            self.get_parameter("camera_detections_topic").value
+        )
+        self.camera_frame_encoding = self._normalize_camera_frame_encoding(
+            str(self.get_parameter("camera_frame_encoding").value)
+        )
+        self.camera_jpeg_quality = min(
+            95, max(40, int(self.get_parameter("camera_jpeg_quality").value))
+        )
+        self.camera_ws_max_fps = max(
+            1.0, float(self.get_parameter("camera_ws_max_fps").value)
+        )
+        self.camera_ws_width = max(0, int(self.get_parameter("camera_ws_width").value))
         self.enable_control_lock = _coerce_bool(
             self.get_parameter("enable_control_lock").value
         )
@@ -309,6 +339,10 @@ class WebZoneServerNode(Node):
         self._lock = threading.Lock()
         self._ws_clients: Set[Any] = set()
         self._ws_send_locks: Dict[Any, asyncio.Lock] = {}
+        self._last_camera_ws_frame_monotonic = 0.0
+        self._camera_bridge = CvBridge()
+        self._recent_camera_frames: deque[Dict[str, int]] = deque(maxlen=20)
+        self._latest_camera_frame_shape = {"width": 0, "height": 0}
 
         self._last_robot_pose: Optional[Dict[str, float]] = None
         self._last_robot_heading_deg: Optional[float] = None
@@ -420,6 +454,15 @@ class WebZoneServerNode(Node):
         self._behavior_tree_log_sub = self.create_subscription(
             BehaviorTreeLog, "/behavior_tree_log", self._on_behavior_tree_log, 10
         )
+        self._camera_image_sub = self.create_subscription(
+            Image, self.camera_image_topic, self._on_camera_image, qos_profile_sensor_data
+        )
+        self._camera_detections_sub = self.create_subscription(
+            Detection2DArray,
+            self.camera_detections_topic,
+            self._on_camera_detections,
+            10,
+        )
 
         self._zones_set_geojson_client = self.create_client(
             SetZonesGeoJson, self.zones_set_geojson_service
@@ -474,6 +517,10 @@ class WebZoneServerNode(Node):
             f"rosbag_dir={self.rosbag_output_dir}, "
             f"camera_pan={self.camera_pan_service}, camera_zoom_toggle={self.camera_zoom_toggle_service}, "
             f"camera_status={self.camera_status_service}, "
+            f"camera_image={self.camera_image_topic}, "
+            f"camera_detections={self.camera_detections_topic}, "
+            f"camera_frame_encoding={self.camera_frame_encoding}, "
+            f"camera_ws_width={self.camera_ws_width}, "
             f"teleop_topic={self.teleop_cmd_topic}, gps_topic={self.gps_topic}, "
             f"imu_topic={self.imu_topic}, "
             f"gps_status_topic={self.gps_status_topic}, "
@@ -764,6 +811,131 @@ class WebZoneServerNode(Node):
         if not isinstance(sec, (int, float)) or not isinstance(nanosec, (int, float)):
             return None
         return int(float(sec) * 1000.0 + float(nanosec) / 1_000_000.0)
+
+    @staticmethod
+    def _clamp_unit_interval(value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+    def _record_camera_frame_shape(self, stamp_ms: int, width: int, height: int) -> None:
+        if stamp_ms <= 0 or width <= 0 or height <= 0:
+            return
+        with self._lock:
+            self._recent_camera_frames.append(
+                {"stamp_ms": int(stamp_ms), "width": int(width), "height": int(height)}
+            )
+            self._latest_camera_frame_shape = {"width": int(width), "height": int(height)}
+
+    def _resolve_camera_frame_shape(self, stamp_ms: int) -> Tuple[int, int]:
+        with self._lock:
+            recent_frames = list(self._recent_camera_frames)
+            fallback_width = int(self._latest_camera_frame_shape.get("width", 0))
+            fallback_height = int(self._latest_camera_frame_shape.get("height", 0))
+
+        best_width = fallback_width
+        best_height = fallback_height
+        best_diff = 251
+        for frame in recent_frames:
+            diff = abs(int(frame.get("stamp_ms", 0)) - int(stamp_ms))
+            if diff > 250 or diff >= best_diff:
+                continue
+            best_diff = diff
+            best_width = int(frame.get("width", 0))
+            best_height = int(frame.get("height", 0))
+        return best_width, best_height
+
+    def _normalize_detection_bbox(
+        self,
+        *,
+        cx: float,
+        cy: float,
+        width: float,
+        height: float,
+        frame_width: int,
+        frame_height: int,
+    ) -> Optional[List[float]]:
+        if not all(np.isfinite(value) for value in (cx, cy, width, height)):
+            return None
+        if width <= 0.0 or height <= 0.0:
+            return None
+
+        looks_normalized = max(abs(cx), abs(cy), abs(width), abs(height)) <= 1.5
+        if looks_normalized:
+            left = cx - width * 0.5
+            top = cy - height * 0.5
+            right = cx + width * 0.5
+            bottom = cy + height * 0.5
+            return [
+                self._clamp_unit_interval(left),
+                self._clamp_unit_interval(top),
+                self._clamp_unit_interval(right - left),
+                self._clamp_unit_interval(bottom - top),
+            ]
+
+        if frame_width <= 0 or frame_height <= 0:
+            return None
+
+        left_px = max(0.0, min(float(frame_width), cx - width * 0.5))
+        top_px = max(0.0, min(float(frame_height), cy - height * 0.5))
+        right_px = max(0.0, min(float(frame_width), cx + width * 0.5))
+        bottom_px = max(0.0, min(float(frame_height), cy + height * 0.5))
+        if right_px <= left_px or bottom_px <= top_px:
+            return None
+
+        return [
+            self._clamp_unit_interval(left_px / float(frame_width)),
+            self._clamp_unit_interval(top_px / float(frame_height)),
+            self._clamp_unit_interval((right_px - left_px) / float(frame_width)),
+            self._clamp_unit_interval((bottom_px - top_px) / float(frame_height)),
+        ]
+
+    def _serialize_detection(
+        self,
+        detection: Any,
+        *,
+        frame_width: int,
+        frame_height: int,
+    ) -> Optional[Dict[str, Any]]:
+        top_label = ""
+        top_score = 0.0
+        results = list(getattr(detection, "results", []) or [])
+        if results:
+            top_result = results[0]
+            hypothesis = getattr(top_result, "hypothesis", None)
+            if hypothesis is not None:
+                top_label = str(getattr(hypothesis, "class_id", "") or "")
+                try:
+                    top_score = float(getattr(hypothesis, "score", 0.0))
+                except (TypeError, ValueError):
+                    top_score = 0.0
+
+        bbox = getattr(detection, "bbox", None)
+        center = getattr(bbox, "center", None)
+        position = getattr(center, "position", None)
+        try:
+            cx = float(getattr(position, "x"))
+            cy = float(getattr(position, "y"))
+            width = float(getattr(bbox, "size_x"))
+            height = float(getattr(bbox, "size_y"))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+        normalized_bbox = self._normalize_detection_bbox(
+            cx=cx,
+            cy=cy,
+            width=width,
+            height=height,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+        if normalized_bbox is None:
+            return None
+
+        return {
+            "id": str(getattr(detection, "id", "") or ""),
+            "class": top_label or "unknown",
+            "confidence": max(0.0, min(1.0, top_score)),
+            "bbox": normalized_bbox,
+        }
 
     def _refresh_datum_snapshot(self) -> Dict[str, Any]:
         default_snapshot = self._build_default_datum_snapshot()
@@ -1952,6 +2124,89 @@ class WebZoneServerNode(Node):
             )
         except Exception as exc:
             self.get_logger().error(f"mission behavior tree recording failed: {exc}")
+
+    def _on_camera_image(self, msg: Image) -> None:
+        stamp_ms = self._stamp_to_epoch_ms(msg.header.stamp) or int(time.time() * 1000.0)
+        now = time.monotonic()
+        min_period = 1.0 / self.camera_ws_max_fps if self.camera_ws_max_fps > 0.0 else 0.0
+        try:
+            frame = self._camera_bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:
+            self.get_logger().warning(f"camera frame decode failed: {exc}")
+            return
+
+        height = int(frame.shape[0]) if len(frame.shape) >= 1 else 0
+        width = int(frame.shape[1]) if len(frame.shape) >= 2 else 0
+        self._record_camera_frame_shape(stamp_ms, width, height)
+
+        with self._lock:
+            has_clients = bool(self._ws_clients)
+        if not has_clients:
+            return
+        if min_period > 0.0:
+            with self._lock:
+                if (now - self._last_camera_ws_frame_monotonic) < min_period:
+                    return
+                self._last_camera_ws_frame_monotonic = now
+
+        if self.camera_ws_width > 0 and width > self.camera_ws_width:
+            ws_height = int(round(height * self.camera_ws_width / width))
+            frame = cv2.resize(frame, (self.camera_ws_width, ws_height), interpolation=cv2.INTER_AREA)
+            width = self.camera_ws_width
+            height = ws_height
+
+        encode_extension = ".png"
+        encode_params: List[int] = [int(cv2.IMWRITE_PNG_COMPRESSION), 1]
+        payload_encoding = "png"
+        if self.camera_frame_encoding == "jpeg":
+            encode_extension = ".jpg"
+            encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(self.camera_jpeg_quality)]
+            payload_encoding = "jpeg"
+
+        ok, encoded = cv2.imencode(encode_extension, frame, encode_params)
+        if not ok:
+            self.get_logger().warning(
+                f"camera frame {payload_encoding.upper()} encode failed"
+            )
+            return
+
+        self._broadcast_from_thread(
+            {
+                "op": "camera_frame",
+                "data": base64.b64encode(encoded.tobytes()).decode("ascii"),
+                "encoding": payload_encoding,
+                "stamp_ms": int(stamp_ms),
+                "width": int(width),
+                "height": int(height),
+            }
+        )
+
+    def _on_camera_detections(self, msg: Detection2DArray) -> None:
+        stamp_ms = self._stamp_to_epoch_ms(msg.header.stamp) or int(time.time() * 1000.0)
+        frame_width, frame_height = self._resolve_camera_frame_shape(stamp_ms)
+
+        with self._lock:
+            has_clients = bool(self._ws_clients)
+        if not has_clients:
+            return
+
+        detections: List[Dict[str, Any]] = []
+        for detection in list(getattr(msg, "detections", []) or []):
+            serialized = self._serialize_detection(
+                detection,
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+            if serialized is not None:
+                detections.append(serialized)
+
+        self._broadcast_from_thread(
+            {
+                "op": "camera_detections",
+                "detections": detections,
+                "stamp_ms": int(stamp_ms),
+            }
+        )
 
     def _wait_for_future(self, future: Any, timeout_s: float) -> Optional[Any]:
         start = time.monotonic()
