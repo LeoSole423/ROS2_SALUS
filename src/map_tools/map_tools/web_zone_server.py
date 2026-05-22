@@ -20,14 +20,16 @@ import websockets
 from ament_index_python.packages import get_package_share_directory
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from nav_msgs.msg import Odometry
+from nav2_msgs.msg import BehaviorTreeLog
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rcl_interfaces.msg import Log
 from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from interfaces.msg import CmdVelFinal, NavEvent, NavTelemetry
+from interfaces.msg import CmdVelFinal, DriveTelemetry, NavEvent, NavTelemetry
 from interfaces.srv import (
     BrakeNav,
     CameraPan,
@@ -122,6 +124,9 @@ ROSBAG_TOPIC_PROFILES: Dict[str, Tuple[str, ...]] = {
         "/behavior_tree_log",
     ),
 }
+
+MISSION_SESSION_DIR = Path("/tmp/mission_sessions")
+MISSION_STATUS_FILE = "status.json"
 
 UNSET = object()
 
@@ -332,6 +337,15 @@ class WebZoneServerNode(Node):
         self._rosbag_started_at_epoch_ms: Optional[int] = None
         self._rosbag_last_exit_code: Optional[int] = None
         self._rosbag_last_error = ""
+        self._mission_active: bool = False
+        self._mission_file: Optional[Path] = None
+        self._mission_message_count: int = 0
+        self._mission_pending_send: List[str] = []
+        self._mission_last_telemetry_key: Optional[str] = None
+        self._mission_last_drive_key: Optional[str] = None
+        self._mission_last_controller_telemetry_key: Optional[str] = None
+        self._mission_last_controller_status_key: Optional[str] = None
+        self._mission_last_diag_key: Dict[str, str] = {}
         self._control_locked = bool(
             self.enable_control_lock and self.control_lock_start_locked
         )
@@ -370,6 +384,21 @@ class WebZoneServerNode(Node):
         )
         self._diagnostics_sub = self.create_subscription(
             DiagnosticArray, self.diagnostics_topic, self._on_diagnostics, 10
+        )
+        self._drive_telemetry_sub = self.create_subscription(
+            DriveTelemetry, "/controller/drive_telemetry", self._on_drive_telemetry, 10
+        )
+        self._controller_telemetry_sub = self.create_subscription(
+            String, "/controller/telemetry", self._on_controller_telemetry, 10
+        )
+        self._controller_status_sub = self.create_subscription(
+            String, "/controller/status", self._on_controller_status, 10
+        )
+        self._rosout_sub = self.create_subscription(
+            Log, "/rosout", self._on_rosout, 10
+        )
+        self._behavior_tree_log_sub = self.create_subscription(
+            BehaviorTreeLog, "/behavior_tree_log", self._on_behavior_tree_log, 10
         )
 
         self._zones_set_geojson_client = self.create_client(
@@ -1498,6 +1527,392 @@ class WebZoneServerNode(Node):
         )
         asyncio.run_coroutine_threadsafe(
             self._broadcast(self._build_nav_telemetry_payload()), self._loop
+        )
+        for status in msg.status:
+            name = str(status.name)
+            level = self._diag_level_value(status.level)
+            key = f"{status.name}:{level}:{status.message}"
+            should_record = False
+            with self._lock:
+                if key != self._mission_last_diag_key.get(name):
+                    self._mission_last_diag_key[name] = key
+                    should_record = True
+            if should_record:
+                self._mission_record(
+                    {
+                        "t": time.time(),
+                        "topic": "/diagnostics",
+                        "data": {
+                            "name": str(status.name),
+                            "level": int(level),
+                            "message": str(status.message),
+                            "hardware_id": str(status.hardware_id),
+                        },
+                    }
+                )
+
+    @staticmethod
+    def _mission_line_count(path: Path) -> int:
+        count = 0
+        with path.open("rb") as handle:
+            for _ in handle:
+                count += 1
+        return count
+
+    @staticmethod
+    def _mission_session_path(filename: Any) -> Tuple[Optional[Path], str]:
+        name = str(filename or "").strip()
+        if not name:
+            return None, "filename is required"
+        candidate = Path(name)
+        if candidate.name != name or candidate.suffix != ".jsonl":
+            return None, "invalid mission session filename"
+        return MISSION_SESSION_DIR / name, ""
+
+    def mission_list_sessions(self) -> List[Dict[str, Any]]:
+        MISSION_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        sessions: List[Dict[str, Any]] = []
+
+        def _mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        for path in sorted(MISSION_SESSION_DIR.glob("*.jsonl"), key=_mtime, reverse=True):
+            try:
+                stat = path.stat()
+                line_count = self._mission_line_count(path)
+            except OSError:
+                continue
+            sessions.append(
+                {
+                    "filename": path.name,
+                    "size_bytes": int(stat.st_size),
+                    "line_count": int(line_count),
+                    "mtime_epoch_ms": int(stat.st_mtime * 1000.0),
+                }
+            )
+        return sessions
+
+    def mission_get_session(self, filename: Any) -> Tuple[bool, str, List[Dict[str, Any]]]:
+        path, err = self._mission_session_path(filename)
+        if path is None:
+            return False, err, []
+        if not path.is_file():
+            return False, "mission session not found", []
+        records: List[Dict[str, Any]] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, raw in enumerate(handle, start=1):
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        return False, f"invalid JSONL at line {line_number}: {exc}", []
+                    if isinstance(parsed, dict):
+                        records.append(parsed)
+                    else:
+                        return False, f"invalid JSONL record at line {line_number}", []
+        except OSError as exc:
+            return False, f"failed to read mission session: {exc}", []
+        return True, "", records
+
+    def mission_get_status(self) -> Dict[str, Any]:
+        MISSION_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        status_path = MISSION_SESSION_DIR / MISSION_STATUS_FILE
+        payload: Dict[str, Any] = {}
+        try:
+            if status_path.is_file():
+                loaded = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    payload = loaded
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        active = bool(payload.get("active", False))
+        filename = payload.get("current_session")
+        if filename is not None:
+            filename = str(filename)
+        message_count = int(payload.get("message_count", 0) or 0)
+        if active and filename:
+            path, err = self._mission_session_path(filename)
+            if err or path is None or not path.is_file():
+                active = False
+                filename = None
+                message_count = 0
+            else:
+                try:
+                    message_count = self._mission_line_count(path)
+                except OSError:
+                    message_count = int(payload.get("message_count", 0) or 0)
+        elif not active:
+            filename = None
+        return {
+            "active": bool(active),
+            "filename": filename,
+            "current_session": filename,
+            "message_count": int(message_count),
+            "updated_at": payload.get("updated_at"),
+        }
+
+    def _mission_record(self, record: dict) -> None:
+        with self._lock:
+            if not self._mission_active or self._mission_file is None:
+                return
+            mission_file = self._mission_file
+        try:
+            with mission_file.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+        except Exception as exc:
+            self.get_logger().error(f"mission record write failed: {exc}")
+            return
+        with self._lock:
+            self._mission_message_count += 1
+            current_session = self._mission_file.name if self._mission_file else None
+            status = {
+                "active": bool(self._mission_active),
+                "current_session": current_session,
+                "message_count": int(self._mission_message_count),
+                "updated_at": time.time(),
+            }
+        try:
+            MISSION_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+            (MISSION_SESSION_DIR / MISSION_STATUS_FILE).write_text(json.dumps(status), encoding="utf-8")
+        except Exception as exc:
+            self.get_logger().error(f"mission status write failed: {exc}")
+
+    def _mission_start(self) -> None:
+        try:
+            MISSION_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+            sessions = sorted(MISSION_SESSION_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+            while len(sessions) > 7:
+                oldest = sessions.pop(0)
+                oldest.unlink()
+        except Exception as exc:
+            self.get_logger().error(f"mission session cleanup failed: {exc}")
+        filename = f"mission_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.jsonl"
+        mission_file = MISSION_SESSION_DIR / filename
+        try:
+            mission_file.touch(exist_ok=True)
+        except Exception as exc:
+            self.get_logger().error(f"mission session create failed: {exc}")
+            return
+        with self._lock:
+            self._mission_active = True
+            self._mission_file = mission_file
+            self._mission_message_count = 0
+        self._mission_record({"t": time.time(), "topic": "system/session_start"})
+
+    def _mission_stop(self) -> None:
+        with self._lock:
+            if not self._mission_active:
+                return
+            filename = self._mission_file.name if self._mission_file else ""
+            message_count = int(self._mission_message_count)
+        self._mission_record(
+            {
+                "t": time.time(),
+                "topic": "system/session_end",
+                "data": {"message_count": message_count},
+            }
+        )
+        with self._lock:
+            self._mission_active = False
+            status = {
+                "active": False,
+                "current_session": None,
+                "message_count": int(self._mission_message_count),
+                "updated_at": time.time(),
+            }
+            if filename:
+                self._mission_pending_send.append(filename)
+        try:
+            MISSION_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+            (MISSION_SESSION_DIR / MISSION_STATUS_FILE).write_text(json.dumps(status), encoding="utf-8")
+        except Exception as exc:
+            self.get_logger().error(f"mission status write failed: {exc}")
+        self._mission_broadcast_pending()
+
+    def _mission_broadcast_pending(self) -> None:
+        with self._lock:
+            if not self._ws_clients:
+                return
+            pending = list(self._mission_pending_send)
+        sent: List[str] = []
+        for filename in pending:
+            ok, _, records = self.mission_get_session(filename)
+            if not ok:
+                continue
+            payload = {"op": "mission.session_ready", "filename": filename, "lines": records}
+            asyncio.run_coroutine_threadsafe(self._broadcast(payload), self._loop)
+            sent.append(filename)
+        if sent:
+            with self._lock:
+                for f in sent:
+                    try:
+                        self._mission_pending_send.remove(f)
+                    except ValueError:
+                        pass
+
+    def _on_drive_telemetry(self, msg: DriveTelemetry) -> None:
+        key = f"{msg.estop}:{msg.drive_enabled}"
+        should_record = False
+        with self._lock:
+            if key != self._mission_last_drive_key:
+                self._mission_last_drive_key = key
+                should_record = True
+        if not should_record:
+            return
+        self._mission_record(
+            {
+                "t": time.time(),
+                "topic": "/controller/drive_telemetry",
+                "data": {
+                    "estop": bool(msg.estop),
+                    "drive_enabled": bool(msg.drive_enabled),
+                    "speed_mps_measured": float(msg.speed_mps_measured),
+                    "steer_deg_measured": float(msg.steer_deg_measured),
+                    "brake_applied_pct": int(msg.brake_applied_pct),
+                    "ready": bool(msg.ready),
+                    "fresh": bool(msg.fresh),
+                },
+            }
+        )
+
+    def _on_controller_telemetry(self, msg: String) -> None:
+        raw = str(msg.data)
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {}
+        payload = parsed if isinstance(parsed, dict) else {}
+        telemetry = payload.get("telemetry")
+        telemetry = telemetry if isinstance(telemetry, dict) else {}
+        command = payload.get("requested_auto_command")
+        command = command if isinstance(command, dict) else {}
+        key_payload = {
+            "source": payload.get("source"),
+            "ready": telemetry.get("ready"),
+            "estop_active": telemetry.get("estop_active"),
+            "failsafe_active": telemetry.get("failsafe_active"),
+            "pi_fresh": telemetry.get("pi_fresh"),
+            "control_source": telemetry.get("control_source"),
+            "drive_enabled": command.get("drive_enabled"),
+            "estop": command.get("estop"),
+            "brake_pct": command.get("brake_pct"),
+        }
+        key = json.dumps(key_payload, sort_keys=True)
+        should_record = False
+        with self._lock:
+            if key != self._mission_last_controller_telemetry_key:
+                self._mission_last_controller_telemetry_key = key
+                should_record = True
+        if not should_record:
+            return
+        if payload:
+            data = {
+                "source": str(payload.get("source", "")),
+                "telemetry": {
+                    "ready": bool(telemetry.get("ready", False)),
+                    "estop_active": bool(telemetry.get("estop_active", False)),
+                    "failsafe_active": bool(telemetry.get("failsafe_active", False)),
+                    "pi_fresh": bool(telemetry.get("pi_fresh", False)),
+                    "control_source": str(telemetry.get("control_source", "")),
+                    "speed_mps": float(telemetry.get("speed_mps", 0.0) or 0.0),
+                    "steer_deg": float(telemetry.get("steer_deg", 0.0) or 0.0),
+                    "brake_applied_pct": int(telemetry.get("brake_applied_pct", 0) or 0),
+                },
+                "requested_auto_command": {
+                    "drive_enabled": bool(command.get("drive_enabled", False)),
+                    "estop": bool(command.get("estop", False)),
+                    "speed_mps": float(command.get("speed_mps", 0.0) or 0.0),
+                    "steer_pct": int(command.get("steer_pct", 0) or 0),
+                    "brake_pct": int(command.get("brake_pct", 0) or 0),
+                },
+            }
+        else:
+            data = {"raw": raw}
+        self._mission_record({"t": time.time(), "topic": "/controller/telemetry", "data": data})
+
+    def _on_controller_status(self, msg: String) -> None:
+        raw = str(msg.data)
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {}
+        payload = parsed if isinstance(parsed, dict) else {}
+        telemetry = payload.get("telemetry") if isinstance(payload.get("telemetry"), dict) else {}
+        key_fields = {
+            "ready": telemetry.get("ready"),
+            "estop_active": telemetry.get("estop_active"),
+            "failsafe_active": telemetry.get("failsafe_active"),
+            "control_source": telemetry.get("control_source"),
+            "overspeed_active": telemetry.get("overspeed_active"),
+        }
+        key = json.dumps(key_fields, sort_keys=True)
+        should_record = False
+        with self._lock:
+            if key != self._mission_last_controller_status_key:
+                self._mission_last_controller_status_key = key
+                should_record = True
+        if not should_record:
+            return
+        self._mission_record(
+            {
+                "t": time.time(),
+                "topic": "/controller/status",
+                "data": {
+                    "ready": bool(telemetry.get("ready", False)),
+                    "estop_active": bool(telemetry.get("estop_active", False)),
+                    "failsafe_active": bool(telemetry.get("failsafe_active", False)),
+                    "pi_fresh": bool(telemetry.get("pi_fresh", False)),
+                    "control_source": str(telemetry.get("control_source", "")),
+                    "overspeed_active": bool(telemetry.get("overspeed_active", False)),
+                    "speed_mps": float(telemetry.get("speed_mps", 0.0) or 0.0),
+                    "steer_deg": float(telemetry.get("steer_deg", 0.0) or 0.0),
+                    "brake_applied_pct": int(telemetry.get("brake_applied_pct", 0) or 0),
+                } if telemetry else {"raw": raw},
+            }
+        )
+
+    def _on_rosout(self, msg: Log) -> None:
+        if int(msg.level) < 30:
+            return
+        self._mission_record(
+            {
+                "t": time.time(),
+                "topic": "/rosout",
+                "data": {
+                    "level": int(msg.level),
+                    "name": str(msg.name),
+                    "msg": str(msg.msg),
+                    "file": str(msg.file),
+                    "function": str(msg.function),
+                    "line": int(msg.line),
+                },
+            }
+        )
+
+    def _on_behavior_tree_log(self, msg: BehaviorTreeLog) -> None:
+        events = [
+            {
+                "node_name": e.node_name,
+                "previous_status": e.previous_status,
+                "current_status": e.current_status,
+            }
+            for e in msg.event_log
+            if e.current_status == "FAILURE"
+        ]
+        if not events:
+            return
+        self._mission_record(
+            {
+                "t": time.time(),
+                "topic": "/behavior_tree_log",
+                "data": {"events": events},
+            }
         )
 
     def _wait_for_future(self, future: Any, timeout_s: float) -> Optional[Any]:
@@ -2644,6 +3059,9 @@ class WebSocketApi:
         }
         try:
             await self._send_json(ws, self.node.snapshot_state())
+            sessions = await asyncio.to_thread(self.node.mission_list_sessions)
+            await self._send_json(ws, {"op": "mission.sessions_on_connect", "sessions": sessions})
+            self.node._mission_broadcast_pending()
             connect_reload_task = asyncio.create_task(self._reload_zones_on_connect())
             pending_tasks.add(connect_reload_task)
             connect_reload_task.add_done_callback(
@@ -3186,6 +3604,59 @@ class WebSocketApi:
                     "client_req_id": client_req_id,
                 },
             )
+            return
+
+        if op == "mission.list_sessions":
+            payload = {
+                "op": "mission.list_sessions",
+                "ok": True,
+                "sessions": await asyncio.to_thread(self.node.mission_list_sessions),
+            }
+            if client_req_id is not None:
+                payload["client_req_id"] = client_req_id
+            await self._send_json(ws, payload)
+            return
+
+        if op == "mission.get_session":
+            filename = msg.get("filename")
+            ok, err, records = await asyncio.to_thread(self.node.mission_get_session, filename)
+            payload = {
+                "op": "mission.get_session",
+                "ok": bool(ok),
+                "filename": str(filename or ""),
+                "lines": records if ok else [],
+                "error": None if ok else err,
+            }
+            if client_req_id is not None:
+                payload["client_req_id"] = client_req_id
+            await self._send_json(ws, payload)
+            return
+
+        if op == "mission.download_session":
+            filename = msg.get("filename")
+            ok, err, records = await asyncio.to_thread(self.node.mission_get_session, filename)
+            payload = {
+                "op": "mission.download_session",
+                "ok": bool(ok),
+                "filename": str(filename or ""),
+                "lines": records if ok else [],
+                "error": None if ok else err,
+                "download": True,
+            }
+            if client_req_id is not None:
+                payload["client_req_id"] = client_req_id
+            await self._send_json(ws, payload)
+            return
+
+        if op == "mission.get_status":
+            payload = {
+                "op": "mission.get_status",
+                "ok": True,
+                "status": await asyncio.to_thread(self.node.mission_get_status),
+            }
+            if client_req_id is not None:
+                payload["client_req_id"] = client_req_id
+            await self._send_json(ws, payload)
             return
 
         if op == "start_rosbag":
