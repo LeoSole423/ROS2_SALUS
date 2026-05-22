@@ -1,0 +1,19 @@
+/**:
+  ros__parameters:
+    image_topic: /camera/image_raw
+    detections_topic: /detections
+    debug_topic: /objeto_detectado
+    model_path: ''
+    class_names_path: ''
+    input_width: 320
+    input_height: 320
+    conf_threshold: 0.70
+    nms_iou_threshold: 0.45
+    max_detections: 20
+    max_fps: 1.0
+    execution_provider: auto
+    intra_op_threads: 2
+    inter_op_threads: 1
+    warmup_runs: 1
+    log_interval_sec: 5.0
+    publish_empty_debug: true
