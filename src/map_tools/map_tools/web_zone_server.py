@@ -144,6 +144,26 @@ class WebZoneServerNode(Node):
             return int.from_bytes(value, byteorder="little", signed=False)
         return int(value)
 
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not np.isfinite(parsed):
+            return float(default)
+        return float(parsed)
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return int(default)
+        if not np.isfinite(parsed):
+            return int(default)
+        return int(parsed)
+
     def __init__(self, loop: asyncio.AbstractEventLoop):
         super().__init__("web_zone_server")
         self._loop = loop
@@ -1528,28 +1548,31 @@ class WebZoneServerNode(Node):
         asyncio.run_coroutine_threadsafe(
             self._broadcast(self._build_nav_telemetry_payload()), self._loop
         )
-        for status in msg.status:
-            name = str(status.name)
-            level = self._diag_level_value(status.level)
-            key = f"{status.name}:{level}:{status.message}"
-            should_record = False
-            with self._lock:
-                if key != self._mission_last_diag_key.get(name):
-                    self._mission_last_diag_key[name] = key
-                    should_record = True
-            if should_record:
-                self._mission_record(
-                    {
-                        "t": time.time(),
-                        "topic": "/diagnostics",
-                        "data": {
-                            "name": str(status.name),
-                            "level": int(level),
-                            "message": str(status.message),
-                            "hardware_id": str(status.hardware_id),
-                        },
-                    }
-                )
+        try:
+            for status in (msg.status or []):
+                name = str(status.name)
+                level = self._diag_level_value(status.level)
+                key = f"{status.name}:{level}:{status.message}"
+                should_record = False
+                with self._lock:
+                    if key != self._mission_last_diag_key.get(name):
+                        self._mission_last_diag_key[name] = key
+                        should_record = True
+                if should_record:
+                    self._mission_record(
+                        {
+                            "t": time.time(),
+                            "topic": "/diagnostics",
+                            "data": {
+                                "name": str(status.name),
+                                "level": int(level),
+                                "message": str(status.message),
+                                "hardware_id": str(status.hardware_id),
+                            },
+                        }
+                    )
+        except Exception as exc:
+            self.get_logger().error(f"mission diagnostics recording failed: {exc}")
 
     @staticmethod
     def _mission_line_count(path: Path) -> int:
@@ -1757,163 +1780,178 @@ class WebZoneServerNode(Node):
                         pass
 
     def _on_drive_telemetry(self, msg: DriveTelemetry) -> None:
-        key = f"{msg.estop}:{msg.drive_enabled}"
-        should_record = False
-        with self._lock:
-            if key != self._mission_last_drive_key:
-                self._mission_last_drive_key = key
-                should_record = True
-        if not should_record:
-            return
-        self._mission_record(
-            {
-                "t": time.time(),
-                "topic": "/controller/drive_telemetry",
-                "data": {
-                    "estop": bool(msg.estop),
-                    "drive_enabled": bool(msg.drive_enabled),
-                    "speed_mps_measured": float(msg.speed_mps_measured),
-                    "steer_deg_measured": float(msg.steer_deg_measured),
-                    "brake_applied_pct": int(msg.brake_applied_pct),
-                    "ready": bool(msg.ready),
-                    "fresh": bool(msg.fresh),
-                },
-            }
-        )
+        try:
+            key = f"{msg.estop}:{msg.drive_enabled}"
+            should_record = False
+            with self._lock:
+                if key != self._mission_last_drive_key:
+                    self._mission_last_drive_key = key
+                    should_record = True
+            if not should_record:
+                return
+            self._mission_record(
+                {
+                    "t": time.time(),
+                    "topic": "/controller/drive_telemetry",
+                    "data": {
+                        "estop": bool(msg.estop),
+                        "drive_enabled": bool(msg.drive_enabled),
+                        "speed_mps_measured": self._safe_float(msg.speed_mps_measured),
+                        "steer_deg_measured": self._safe_float(msg.steer_deg_measured),
+                        "brake_applied_pct": self._safe_int(msg.brake_applied_pct),
+                        "ready": bool(msg.ready),
+                        "fresh": bool(msg.fresh),
+                    },
+                }
+            )
+        except Exception as exc:
+            self.get_logger().error(f"mission drive telemetry recording failed: {exc}")
 
     def _on_controller_telemetry(self, msg: String) -> None:
-        raw = str(msg.data)
         try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = {}
-        payload = parsed if isinstance(parsed, dict) else {}
-        telemetry = payload.get("telemetry")
-        telemetry = telemetry if isinstance(telemetry, dict) else {}
-        command = payload.get("requested_auto_command")
-        command = command if isinstance(command, dict) else {}
-        key_payload = {
-            "source": payload.get("source"),
-            "ready": telemetry.get("ready"),
-            "estop_active": telemetry.get("estop_active"),
-            "failsafe_active": telemetry.get("failsafe_active"),
-            "pi_fresh": telemetry.get("pi_fresh"),
-            "control_source": telemetry.get("control_source"),
-            "drive_enabled": command.get("drive_enabled"),
-            "estop": command.get("estop"),
-            "brake_pct": command.get("brake_pct"),
-        }
-        key = json.dumps(key_payload, sort_keys=True)
-        should_record = False
-        with self._lock:
-            if key != self._mission_last_controller_telemetry_key:
-                self._mission_last_controller_telemetry_key = key
-                should_record = True
-        if not should_record:
-            return
-        if payload:
-            data = {
-                "source": str(payload.get("source", "")),
-                "telemetry": {
-                    "ready": bool(telemetry.get("ready", False)),
-                    "estop_active": bool(telemetry.get("estop_active", False)),
-                    "failsafe_active": bool(telemetry.get("failsafe_active", False)),
-                    "pi_fresh": bool(telemetry.get("pi_fresh", False)),
-                    "control_source": str(telemetry.get("control_source", "")),
-                    "speed_mps": float(telemetry.get("speed_mps", 0.0) or 0.0),
-                    "steer_deg": float(telemetry.get("steer_deg", 0.0) or 0.0),
-                    "brake_applied_pct": int(telemetry.get("brake_applied_pct", 0) or 0),
-                },
-                "requested_auto_command": {
-                    "drive_enabled": bool(command.get("drive_enabled", False)),
-                    "estop": bool(command.get("estop", False)),
-                    "speed_mps": float(command.get("speed_mps", 0.0) or 0.0),
-                    "steer_pct": int(command.get("steer_pct", 0) or 0),
-                    "brake_pct": int(command.get("brake_pct", 0) or 0),
-                },
+            raw = str(msg.data)
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {}
+            payload = parsed if isinstance(parsed, dict) else {}
+            telemetry = payload.get("telemetry")
+            telemetry = telemetry if isinstance(telemetry, dict) else {}
+            command = payload.get("requested_auto_command")
+            command = command if isinstance(command, dict) else {}
+            key_payload = {
+                "source": payload.get("source"),
+                "ready": telemetry.get("ready"),
+                "estop_active": telemetry.get("estop_active"),
+                "failsafe_active": telemetry.get("failsafe_active"),
+                "pi_fresh": telemetry.get("pi_fresh"),
+                "control_source": telemetry.get("control_source"),
+                "drive_enabled": command.get("drive_enabled"),
+                "estop": command.get("estop"),
+                "brake_pct": command.get("brake_pct"),
             }
-        else:
-            data = {"raw": raw}
-        self._mission_record({"t": time.time(), "topic": "/controller/telemetry", "data": data})
+            key = json.dumps(key_payload, sort_keys=True)
+            should_record = False
+            with self._lock:
+                if key != self._mission_last_controller_telemetry_key:
+                    self._mission_last_controller_telemetry_key = key
+                    should_record = True
+            if not should_record:
+                return
+            if payload:
+                data = {
+                    "source": str(payload.get("source", "")),
+                    "telemetry": {
+                        "ready": bool(telemetry.get("ready", False)),
+                        "estop_active": bool(telemetry.get("estop_active", False)),
+                        "failsafe_active": bool(telemetry.get("failsafe_active", False)),
+                        "pi_fresh": bool(telemetry.get("pi_fresh", False)),
+                        "control_source": str(telemetry.get("control_source", "")),
+                        "speed_mps": self._safe_float(telemetry.get("speed_mps", 0.0)),
+                        "steer_deg": self._safe_float(telemetry.get("steer_deg", 0.0)),
+                        "brake_applied_pct": self._safe_int(telemetry.get("brake_applied_pct", 0)),
+                    },
+                    "requested_auto_command": {
+                        "drive_enabled": bool(command.get("drive_enabled", False)),
+                        "estop": bool(command.get("estop", False)),
+                        "speed_mps": self._safe_float(command.get("speed_mps", 0.0)),
+                        "steer_pct": self._safe_int(command.get("steer_pct", 0)),
+                        "brake_pct": self._safe_int(command.get("brake_pct", 0)),
+                    },
+                }
+            else:
+                data = {"raw": raw}
+            self._mission_record({"t": time.time(), "topic": "/controller/telemetry", "data": data})
+        except Exception as exc:
+            self.get_logger().error(f"mission controller telemetry recording failed: {exc}")
 
     def _on_controller_status(self, msg: String) -> None:
-        raw = str(msg.data)
         try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = {}
-        payload = parsed if isinstance(parsed, dict) else {}
-        telemetry = payload.get("telemetry") if isinstance(payload.get("telemetry"), dict) else {}
-        key_fields = {
-            "ready": telemetry.get("ready"),
-            "estop_active": telemetry.get("estop_active"),
-            "failsafe_active": telemetry.get("failsafe_active"),
-            "control_source": telemetry.get("control_source"),
-            "overspeed_active": telemetry.get("overspeed_active"),
-        }
-        key = json.dumps(key_fields, sort_keys=True)
-        should_record = False
-        with self._lock:
-            if key != self._mission_last_controller_status_key:
-                self._mission_last_controller_status_key = key
-                should_record = True
-        if not should_record:
-            return
-        self._mission_record(
-            {
-                "t": time.time(),
-                "topic": "/controller/status",
-                "data": {
-                    "ready": bool(telemetry.get("ready", False)),
-                    "estop_active": bool(telemetry.get("estop_active", False)),
-                    "failsafe_active": bool(telemetry.get("failsafe_active", False)),
-                    "pi_fresh": bool(telemetry.get("pi_fresh", False)),
-                    "control_source": str(telemetry.get("control_source", "")),
-                    "overspeed_active": bool(telemetry.get("overspeed_active", False)),
-                    "speed_mps": float(telemetry.get("speed_mps", 0.0) or 0.0),
-                    "steer_deg": float(telemetry.get("steer_deg", 0.0) or 0.0),
-                    "brake_applied_pct": int(telemetry.get("brake_applied_pct", 0) or 0),
-                } if telemetry else {"raw": raw},
+            raw = str(msg.data)
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {}
+            payload = parsed if isinstance(parsed, dict) else {}
+            telemetry = payload.get("telemetry") if isinstance(payload.get("telemetry"), dict) else {}
+            key_fields = {
+                "ready": telemetry.get("ready"),
+                "estop_active": telemetry.get("estop_active"),
+                "failsafe_active": telemetry.get("failsafe_active"),
+                "control_source": telemetry.get("control_source"),
+                "overspeed_active": telemetry.get("overspeed_active"),
             }
-        )
+            key = json.dumps(key_fields, sort_keys=True)
+            should_record = False
+            with self._lock:
+                if key != self._mission_last_controller_status_key:
+                    self._mission_last_controller_status_key = key
+                    should_record = True
+            if not should_record:
+                return
+            self._mission_record(
+                {
+                    "t": time.time(),
+                    "topic": "/controller/status",
+                    "data": {
+                        "ready": bool(telemetry.get("ready", False)),
+                        "estop_active": bool(telemetry.get("estop_active", False)),
+                        "failsafe_active": bool(telemetry.get("failsafe_active", False)),
+                        "pi_fresh": bool(telemetry.get("pi_fresh", False)),
+                        "control_source": str(telemetry.get("control_source", "")),
+                        "overspeed_active": bool(telemetry.get("overspeed_active", False)),
+                        "speed_mps": self._safe_float(telemetry.get("speed_mps", 0.0)),
+                        "steer_deg": self._safe_float(telemetry.get("steer_deg", 0.0)),
+                        "brake_applied_pct": self._safe_int(telemetry.get("brake_applied_pct", 0)),
+                    } if telemetry else {"raw": raw},
+                }
+            )
+        except Exception as exc:
+            self.get_logger().error(f"mission controller status recording failed: {exc}")
 
     def _on_rosout(self, msg: Log) -> None:
-        if int(msg.level) < 30:
-            return
-        self._mission_record(
-            {
-                "t": time.time(),
-                "topic": "/rosout",
-                "data": {
-                    "level": int(msg.level),
-                    "name": str(msg.name),
-                    "msg": str(msg.msg),
-                    "file": str(msg.file),
-                    "function": str(msg.function),
-                    "line": int(msg.line),
-                },
-            }
-        )
+        try:
+            if self._safe_int(msg.level) < 30:
+                return
+            self._mission_record(
+                {
+                    "t": time.time(),
+                    "topic": "/rosout",
+                    "data": {
+                        "level": self._safe_int(msg.level),
+                        "name": str(msg.name),
+                        "msg": str(msg.msg),
+                        "file": str(msg.file),
+                        "function": str(msg.function),
+                        "line": self._safe_int(msg.line),
+                    },
+                }
+            )
+        except Exception as exc:
+            self.get_logger().error(f"mission rosout recording failed: {exc}")
 
     def _on_behavior_tree_log(self, msg: BehaviorTreeLog) -> None:
-        events = [
-            {
-                "node_name": e.node_name,
-                "previous_status": e.previous_status,
-                "current_status": e.current_status,
-            }
-            for e in msg.event_log
-            if e.current_status == "FAILURE"
-        ]
-        if not events:
-            return
-        self._mission_record(
-            {
-                "t": time.time(),
-                "topic": "/behavior_tree_log",
-                "data": {"events": events},
-            }
-        )
+        try:
+            events = [
+                {
+                    "node_name": str(e.node_name),
+                    "previous_status": str(e.previous_status),
+                    "current_status": str(e.current_status),
+                }
+                for e in (msg.event_log or [])
+                if str(e.current_status) == "FAILURE"
+            ]
+            if not events:
+                return
+            self._mission_record(
+                {
+                    "t": time.time(),
+                    "topic": "/behavior_tree_log",
+                    "data": {"events": events},
+                }
+            )
+        except Exception as exc:
+            self.get_logger().error(f"mission behavior tree recording failed: {exc}")
 
     def _wait_for_future(self, future: Any, timeout_s: float) -> Optional[Any]:
         start = time.monotonic()
