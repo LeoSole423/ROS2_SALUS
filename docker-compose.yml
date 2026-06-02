@@ -11,7 +11,6 @@ services:
     privileged: true
     restart: unless-stopped
     group_add:
-      - "986"
       - "20"
     volumes:
       - ./src:/ros2_ws/src
