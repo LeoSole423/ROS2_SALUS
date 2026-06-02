@@ -47,6 +47,9 @@ En `real_global_v2` queda disponible `/scan_wifi_debug` como `LaserScan` reducid
 | Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado para robot remoto por WiFi; usa `real_global_v2_wifi.launch.py` y params Nav2 con menor trafico |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
+Nota GUI Docker:
+los helpers que abren RViz/Gazebo deben pasar por `tools/exec.sh` o `tools/docker_ros_env.sh`. Esa capa refresca `DISPLAY`, valida el socket X11 actual y autoriza el usuario local con `xhost`, evitando que RViz quede atado al `DISPLAY` con el que se creo el contenedor.
+
 ## Politica de datum
 - La navegacion global vigente usa datum fijo por sitio operativo. `datum_lat`, `datum_lon` y `datum_yaw_deg` deben venir del launch/configuracion del sitio y no de la posicion instantanea del robot.
 - `datum_setter` y los servicios `SetDatum` / `GetDatum` quedan clasificados como LEGACY. Eran soporte para setear datum automaticamente o por servicio; no se usan en `real_global_v2`, `sim_global_v2` ni replay global vigentes.
