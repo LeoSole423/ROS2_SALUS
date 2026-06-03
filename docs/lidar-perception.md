@@ -7,13 +7,17 @@ Fuente de verdad: `real_global_v2`, `sim_global_v2`, configs Nav2, nodo `lidar_o
 ## Resumen ejecutivo
 La percepcion LiDAR es un frente abierto. El cambio reciente de filtrado 3D mejoro algunos falsos positivos en simulacion, pero fallo en pruebas reales: el robot detecto muchos obstaculos fantasma y Nav2 genero caminos grandes para rodearlos. La conclusion operativa es que el filtro actual no debe considerarse validado para patrullaje real.
 
-Para pruebas reales mientras se rediseña la percepcion, usar fallback:
+Plan inmediato recomendado: [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md).
+
+Plan V2 futuro, no a implementar de momento: [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md).
+
+Para volver al fallback legacy puro durante pruebas reales, usar:
 
 ```bash
-./tools/launch_real_global_v2_wifi.sh enable_lidar_obstacle_filter:=False
+./tools/launch_real_global_v2_wifi.sh enable_lidar_obstacle_filter:=False enable_scan_noise_filter:=False
 ```
 
-El objetivo de la siguiente iteracion no deberia ser ajustar un poco mas el RANSAC actual, sino rehacer la cadena con una arquitectura mas estandar: preprocesamiento robusto de nube, filtrado de outliers, segmentacion de suelo por rayos/anillos o libreria probada, costmap temporal 3D local y menor influencia de obstaculos dinamicos en el global costmap.
+La siguiente iteracion no deberia ser seguir ajustando el RANSAC actual. Como el pipeline anterior funcionaba razonablemente bien y el problema inmediato era ruido puntual, la recomendacion actual es una V1.5 conservadora: volver al pipeline legacy `/scan`, agregar filtrado simple de `LaserScan`, ajustar persistencia/clearing de costmaps con cambios pequeños y mantener rollback inmediato. El rediseño 3D completo queda como plan futuro si V1.5 no alcanza.
 
 ## Hardware y topicos
 - LiDAR: RoboSense RS16.
@@ -64,10 +68,19 @@ Tambien se mantiene el pipeline legacy:
 /scan_3d -> pointcloud_to_laserscan -> /scan
 ```
 
+La ruta V1.5 conservadora actualmente recomendada agrega un filtro simple
+despues de `/scan`:
+
+```text
+/scan_3d -> pointcloud_to_laserscan -> /scan -> scan_noise_filter -> /scan_clean
+```
+
 Launch args relevantes:
 
 - `enable_lidar_obstacle_filter:=True|False`
 - `lidar_scan_topic:=/scan_filtered`
+- `enable_scan_noise_filter:=True|False`
+- `scan_noise_filter_output:=/scan_clean`
 - `lidar_filter_roi_x_min`
 - `lidar_filter_roi_x_max`
 - `lidar_filter_roi_y_min`
@@ -79,7 +92,10 @@ Launch args relevantes:
 - `lidar_filter_max_obstacle_height`
 - `lidar_filter_min_voxel_points`
 
-Cuando el filtro esta activo, `nav_global_v2.launch.py` reescribe los topicos de costmap/collision monitor para usar `/scan_filtered`. Cuando esta desactivado, vuelve a `/scan`.
+Cuando el filtro RANSAC esta activo, `nav_global_v2.launch.py` reescribe los
+topicos de costmap/collision monitor para usar `/scan_filtered`. Cuando RANSAC
+esta desactivado y `enable_scan_noise_filter:=True`, usa `/scan_clean`.
+Cuando ambos filtros estan desactivados, vuelve a `/scan`.
 
 ## Que hace el filtro actual
 Nodo: `src/navegacion_gps/navegacion_gps/lidar_obstacle_filter.py`.

@@ -16,6 +16,8 @@ docker exec "${CONTAINER}" bash -lc "
   timeout 5 ros2 topic hz /scan_3d || true
   echo '--- scan hz (5s) ---'
   timeout 5 ros2 topic hz /scan || true
+  echo '--- scan_clean hz (5s) ---'
+  timeout 5 ros2 topic hz /scan_clean || true
   echo '--- scan_filtered hz (5s) ---'
   timeout 5 ros2 topic hz /scan_filtered || true
   echo '--- obstacles_cloud hz (5s) ---'

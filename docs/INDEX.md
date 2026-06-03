@@ -11,6 +11,8 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 - Usar [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md) para entender el wiring runtime.
 - Usar [docs/gazebo-worlds.md](/home/leo/codigo/ROS2_SALUS/docs/gazebo-worlds.md) para abrir mundos Gazebo/Fuel nuevos manteniendo paridad con el perfil real.
 - Usar [docs/lidar-perception.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception.md) para el estado, diagnostico y plan de mejora de percepcion LiDAR.
+- Usar [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md) para el plan inmediato de reduccion de ruido sobre el pipeline legacy.
+- Usar [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md) como plan futuro de rediseño LiDAR 3D inspirado en pipelines tipo Autoware/Nav2/PCL.
 - Usar [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md) para el contrato con la UI `cockpit`.
 
 ## Documentación vigente
@@ -22,6 +24,8 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
   - [docs/gazebo-worlds.md](/home/leo/codigo/ROS2_SALUS/docs/gazebo-worlds.md)
   - [docs/lidar-perception.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception.md)
+  - [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md)
+  - [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md)
   - [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md)
 - Paquetes:
   - [src/interfaces/README.md](/home/leo/codigo/ROS2_SALUS/src/interfaces/README.md)
@@ -35,6 +39,8 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
   - [docs/gazebo-worlds.md](/home/leo/codigo/ROS2_SALUS/docs/gazebo-worlds.md)
   - [docs/lidar-perception.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception.md)
+  - [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md)
+  - [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md)
   - [src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md)
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
 - Base local V2 usada por Global V2:

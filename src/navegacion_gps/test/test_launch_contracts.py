@@ -46,3 +46,48 @@ def test_simulation_launch_exposes_localization_profiles() -> None:
         in simulation_launch
     )
     assert "dual_ekf_navsat_params.sim_gps_only_global.yaml" not in simulation_launch
+
+
+def test_global_v2_lidar_scan_topic_contract_is_reversible() -> None:
+    real_global = _read_launch_file("real_global_v2.launch.py")
+    sim_global = _read_launch_file("sim_global_v2.launch.py")
+    nav_global = _read_launch_file("nav_global_v2.launch.py")
+    lidar_filter_default_arg = (
+        'DeclareLaunchArgument("enable_lidar_obstacle_filter", '
+        'default_value="False")'
+    )
+    scan_filter_default_arg = (
+        'DeclareLaunchArgument("enable_scan_noise_filter", default_value="True")'
+    )
+    scan_filter_output_arg = (
+        'DeclareLaunchArgument("scan_noise_filter_output", '
+        'default_value="/scan_clean")'
+    )
+
+    for launch_contents in (real_global, sim_global):
+        assert lidar_filter_default_arg in launch_contents
+        assert scan_filter_default_arg in launch_contents
+        assert scan_filter_output_arg in launch_contents
+        assert "' if '" in launch_contents
+        assert "enable_lidar_obstacle_filter" in launch_contents
+        assert "'.lower() == 'true' else ('" in launch_contents
+        assert "scan_noise_filter_output" in launch_contents
+        assert "enable_scan_noise_filter" in launch_contents
+        assert "'.lower() == 'true' else '/scan')" in launch_contents
+        assert 'condition=IfCondition(enable_legacy_scan_noise_filter)' in launch_contents
+        assert '"source_topic": "/scan"' in launch_contents
+        assert '"output_topic": scan_noise_filter_output' in launch_contents
+        assert '"scan_topic": lidar_scan_topic' in launch_contents
+        assert '"lidar_scan_topic": effective_lidar_scan_topic' in launch_contents
+
+    assert (
+        "local_costmap.local_costmap.ros__parameters."
+        "voxel_layer.scan_marking.topic"
+    ) in nav_global
+    assert (
+        "local_costmap.local_costmap.ros__parameters."
+        "voxel_layer.scan_clearing.topic"
+    ) in nav_global
+    assert "global_costmap.global_costmap.ros__parameters.obstacle_layer.scan.topic" in nav_global
+    assert "collision_monitor.ros__parameters.scan.topic" in nav_global
+    assert "DeclareLaunchArgument(\"lidar_scan_topic\", default_value=\"/scan\")" in nav_global

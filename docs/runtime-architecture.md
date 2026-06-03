@@ -31,6 +31,8 @@ RS16
 -> /scan_3d
 -> pointcloud_to_laserscan
 -> /scan
+-> scan_noise_filter
+-> /scan_clean
 ```
 
 En Global V2 existe tambien una ruta experimental de filtrado 3D:
@@ -42,6 +44,11 @@ RS16
 -> /obstacles_cloud
 -> /scan_filtered
 ```
+
+Por defecto Global V2 usa la ruta V1.5 conservadora `/scan -> /scan_clean`.
+El fallback legacy puro se obtiene con `enable_scan_noise_filter:=False`.
+La ruta RANSAC V1 queda como experimental/debug con
+`enable_lidar_obstacle_filter:=True` y no se mezcla con `/scan_clean`.
 
 Estado y plan de percepcion LiDAR: [docs/lidar-perception.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception.md).
 

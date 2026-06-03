@@ -125,6 +125,19 @@ def generate_launch_description():
     scan_wifi_debug_range_max_m = LaunchConfiguration("scan_wifi_debug_range_max_m")
     enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
     lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    enable_scan_noise_filter = LaunchConfiguration("enable_scan_noise_filter")
+    scan_noise_filter_output = LaunchConfiguration("scan_noise_filter_output")
+    scan_noise_filter_range_min_m = LaunchConfiguration("scan_noise_filter_range_min_m")
+    scan_noise_filter_range_max_m = LaunchConfiguration("scan_noise_filter_range_max_m")
+    scan_noise_filter_speckle_window = LaunchConfiguration(
+        "scan_noise_filter_speckle_window"
+    )
+    scan_noise_filter_speckle_max_range_m = LaunchConfiguration(
+        "scan_noise_filter_speckle_max_range_m"
+    )
+    scan_noise_filter_speckle_max_deviation_m = LaunchConfiguration(
+        "scan_noise_filter_speckle_max_deviation_m"
+    )
     lidar_filter_roi_x_min = LaunchConfiguration("lidar_filter_roi_x_min")
     lidar_filter_roi_x_max = LaunchConfiguration("lidar_filter_roi_x_max")
     lidar_filter_roi_y_min = LaunchConfiguration("lidar_filter_roi_y_min")
@@ -147,7 +160,11 @@ def generate_launch_description():
             lidar_scan_topic,
             "' if '",
             enable_lidar_obstacle_filter,
-            "'.lower() == 'true' else '/scan'",
+            "'.lower() == 'true' else ('",
+            scan_noise_filter_output,
+            "' if '",
+            enable_scan_noise_filter,
+            "'.lower() == 'true' else '/scan')",
         ]
     )
 
@@ -250,8 +267,21 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
-            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True"),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
+            DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
+            DeclareLaunchArgument("scan_noise_filter_range_min_m", default_value="0.4"),
+            DeclareLaunchArgument("scan_noise_filter_range_max_m", default_value="20.0"),
+            DeclareLaunchArgument("scan_noise_filter_speckle_window", default_value="2"),
+            DeclareLaunchArgument(
+                "scan_noise_filter_speckle_max_range_m",
+                default_value="12.0",
+            ),
+            DeclareLaunchArgument(
+                "scan_noise_filter_speckle_max_deviation_m",
+                default_value="0.30",
+            ),
             DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
             DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
             DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
@@ -334,6 +364,19 @@ def generate_launch_description():
                     "web_app_port": web_app_port,
                     "enable_lidar_obstacle_filter": enable_lidar_obstacle_filter,
                     "lidar_scan_topic": lidar_scan_topic,
+                    "enable_scan_noise_filter": enable_scan_noise_filter,
+                    "scan_noise_filter_output": scan_noise_filter_output,
+                    "scan_noise_filter_range_min_m": scan_noise_filter_range_min_m,
+                    "scan_noise_filter_range_max_m": scan_noise_filter_range_max_m,
+                    "scan_noise_filter_speckle_window": (
+                        scan_noise_filter_speckle_window
+                    ),
+                    "scan_noise_filter_speckle_max_range_m": (
+                        scan_noise_filter_speckle_max_range_m
+                    ),
+                    "scan_noise_filter_speckle_max_deviation_m": (
+                        scan_noise_filter_speckle_max_deviation_m
+                    ),
                     "lidar_filter_roi_x_min": lidar_filter_roi_x_min,
                     "lidar_filter_roi_x_max": lidar_filter_roi_x_max,
                     "lidar_filter_roi_y_min": lidar_filter_roi_y_min,

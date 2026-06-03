@@ -55,6 +55,7 @@ setup(
             'polygon_stamped_republisher = navegacion_gps.polygon_stamped_republisher:main',
             'replay_localization_compare = navegacion_gps.replay_localization_compare:main',
             'route_executor = navegacion_gps.route_executor:main',
+            'scan_noise_filter = navegacion_gps.scan_noise_filter:main',
             'scan_wifi_debug = navegacion_gps.scan_wifi_debug:main',
             'sim_drive_telemetry = navegacion_gps.sim_drive_telemetry:main',
             'sim_sensor_normalizer_v2 = navegacion_gps.sim_sensor_normalizer_v2:main',

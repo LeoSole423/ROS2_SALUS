@@ -121,6 +121,19 @@ def generate_launch_description():
     web_app_port = LaunchConfiguration("web_app_port")
     enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
     lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    enable_scan_noise_filter = LaunchConfiguration("enable_scan_noise_filter")
+    scan_noise_filter_output = LaunchConfiguration("scan_noise_filter_output")
+    scan_noise_filter_range_min_m = LaunchConfiguration("scan_noise_filter_range_min_m")
+    scan_noise_filter_range_max_m = LaunchConfiguration("scan_noise_filter_range_max_m")
+    scan_noise_filter_speckle_window = LaunchConfiguration(
+        "scan_noise_filter_speckle_window"
+    )
+    scan_noise_filter_speckle_max_range_m = LaunchConfiguration(
+        "scan_noise_filter_speckle_max_range_m"
+    )
+    scan_noise_filter_speckle_max_deviation_m = LaunchConfiguration(
+        "scan_noise_filter_speckle_max_deviation_m"
+    )
     lidar_filter_roi_x_min = LaunchConfiguration("lidar_filter_roi_x_min")
     lidar_filter_roi_x_max = LaunchConfiguration("lidar_filter_roi_x_max")
     lidar_filter_roi_y_min = LaunchConfiguration("lidar_filter_roi_y_min")
@@ -143,7 +156,20 @@ def generate_launch_description():
             lidar_scan_topic,
             "' if '",
             enable_lidar_obstacle_filter,
-            "'.lower() == 'true' else '/scan'",
+            "'.lower() == 'true' else ('",
+            scan_noise_filter_output,
+            "' if '",
+            enable_scan_noise_filter,
+            "'.lower() == 'true' else '/scan')",
+        ]
+    )
+    enable_legacy_scan_noise_filter = PythonExpression(
+        [
+            "'",
+            enable_scan_noise_filter,
+            "'.lower() == 'true' and '",
+            enable_lidar_obstacle_filter,
+            "'.lower() != 'true'",
         ]
     )
 
@@ -243,8 +269,21 @@ def generate_launch_description():
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
-            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True"),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
+            DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
+            DeclareLaunchArgument("scan_noise_filter_range_min_m", default_value="0.4"),
+            DeclareLaunchArgument("scan_noise_filter_range_max_m", default_value="20.0"),
+            DeclareLaunchArgument("scan_noise_filter_speckle_window", default_value="2"),
+            DeclareLaunchArgument(
+                "scan_noise_filter_speckle_max_range_m",
+                default_value="12.0",
+            ),
+            DeclareLaunchArgument(
+                "scan_noise_filter_speckle_max_deviation_m",
+                default_value="0.30",
+            ),
             DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
             DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
             DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
@@ -298,6 +337,40 @@ def generate_launch_description():
                     "spawn_pitch": spawn_pitch,
                     "spawn_yaw": spawn_yaw,
                 }.items(),
+            ),
+            Node(
+                package="navegacion_gps",
+                executable="scan_noise_filter",
+                name="scan_noise_filter",
+                output="screen",
+                condition=IfCondition(enable_legacy_scan_noise_filter),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "source_topic": "/scan",
+                        "output_topic": scan_noise_filter_output,
+                        "filter_range_min_m": ParameterValue(
+                            scan_noise_filter_range_min_m,
+                            value_type=float,
+                        ),
+                        "filter_range_max_m": ParameterValue(
+                            scan_noise_filter_range_max_m,
+                            value_type=float,
+                        ),
+                        "speckle_filter_window": ParameterValue(
+                            scan_noise_filter_speckle_window,
+                            value_type=int,
+                        ),
+                        "speckle_max_range_m": ParameterValue(
+                            scan_noise_filter_speckle_max_range_m,
+                            value_type=float,
+                        ),
+                        "speckle_max_deviation_m": ParameterValue(
+                            scan_noise_filter_speckle_max_deviation_m,
+                            value_type=float,
+                        ),
+                    }
+                ],
             ),
             Node(
                 package="navegacion_gps",
