@@ -59,6 +59,12 @@ def generate_launch_description():
     world = LaunchConfiguration("world")
     world_name = LaunchConfiguration("world_name")
     model_name = LaunchConfiguration("model_name")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_z = LaunchConfiguration("spawn_z")
+    spawn_roll = LaunchConfiguration("spawn_roll")
+    spawn_pitch = LaunchConfiguration("spawn_pitch")
+    spawn_yaw = LaunchConfiguration("spawn_yaw")
     pose_covariance_xy = LaunchConfiguration("pose_covariance_xy")
     pose_covariance_yaw = LaunchConfiguration("pose_covariance_yaw")
     twist_covariance_vx = LaunchConfiguration("twist_covariance_vx")
@@ -174,6 +180,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("world_name", default_value="vacio"),
             DeclareLaunchArgument("model_name", default_value="quad_ackermann_viewer_safe"),
+            DeclareLaunchArgument("spawn_x", default_value="0.0"),
+            DeclareLaunchArgument("spawn_y", default_value="0.0"),
+            DeclareLaunchArgument("spawn_z", default_value="0.2"),
+            DeclareLaunchArgument("spawn_roll", default_value="0.0"),
+            DeclareLaunchArgument("spawn_pitch", default_value="0.0"),
+            DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
             DeclareLaunchArgument("pose_covariance_xy", default_value="0.05"),
             DeclareLaunchArgument("pose_covariance_yaw", default_value="0.1"),
             DeclareLaunchArgument("twist_covariance_vx", default_value="0.05"),
@@ -279,6 +291,12 @@ def generate_launch_description():
                     "world": world,
                     "world_name": world_name,
                     "model_name": model_name,
+                    "spawn_x": spawn_x,
+                    "spawn_y": spawn_y,
+                    "spawn_z": spawn_z,
+                    "spawn_roll": spawn_roll,
+                    "spawn_pitch": spawn_pitch,
+                    "spawn_yaw": spawn_yaw,
                 }.items(),
             ),
             Node(

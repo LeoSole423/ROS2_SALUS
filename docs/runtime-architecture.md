@@ -33,6 +33,18 @@ RS16
 -> /scan
 ```
 
+En Global V2 existe tambien una ruta experimental de filtrado 3D:
+
+```text
+RS16
+-> /scan_3d
+-> lidar_obstacle_filter
+-> /obstacles_cloud
+-> /scan_filtered
+```
+
+Estado y plan de percepcion LiDAR: [docs/lidar-perception.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception.md).
+
 ## Localización mainline
 - Entradas típicas:
   - `/imu/data`
@@ -66,6 +78,20 @@ RS16
   - `/odometry/global`
 - TF:
   - `map -> odom -> base_footprint`
+
+## Simulación Gazebo
+- Entrada canónica:
+  - `tools/launch_sim_global_v2_wifi.sh`
+- El wrapper WiFi acepta argumentos extra de launch para cambiar mundo y pose inicial:
+  - `world`
+  - `world_name`
+  - `spawn_x`, `spawn_y`, `spawn_z`
+  - `spawn_roll`, `spawn_pitch`, `spawn_yaw`
+  - `datum_lat`, `datum_lon`, `datum_yaw_deg`
+- Wrapper específico disponible:
+  - `tools/launch_sim_global_v2_wifi_sonoma.sh`
+
+Procedimiento para abrir mundos Gazebo/Fuel nuevos: [docs/gazebo-worlds.md](/home/leo/codigo/ROS2_SALUS/docs/gazebo-worlds.md).
 
 ## Nodos clave por responsabilidad
 - Arbitraje y navegación:

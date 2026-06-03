@@ -111,6 +111,14 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"rtk_status_max_age_s": ParameterValue(' in launch_contents
     assert "nav2_global_v2_sim_rolling_params.yaml" in launch_contents
     assert 'DeclareLaunchArgument("launch_web_app", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_x", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_y", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_z", default_value="0.2")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_yaw", default_value="0.0")' in launch_contents
+    assert '"spawn_x": spawn_x' in launch_contents
+    assert '"spawn_y": spawn_y' in launch_contents
+    assert '"spawn_z": spawn_z' in launch_contents
+    assert '"spawn_yaw": spawn_yaw' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
     assert '"launch_nav_command_server": "false"' in launch_contents
     assert 'executable="rviz2"' not in launch_contents
@@ -219,12 +227,48 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert 'condition=IfCondition(enable_scan_wifi_debug)' in launch_contents
     assert 'DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="True")' in launch_contents
     assert 'DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_x", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_y", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_z", default_value="0.2")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_yaw", default_value="0.0")' in launch_contents
     assert '"enable_lidar_obstacle_filter": enable_lidar_obstacle_filter' in launch_contents
     assert '"lidar_scan_topic": lidar_scan_topic' in launch_contents
+    assert '"spawn_x": spawn_x' in launch_contents
+    assert '"spawn_y": spawn_y' in launch_contents
+    assert '"spawn_z": spawn_z' in launch_contents
+    assert '"spawn_yaw": spawn_yaw' in launch_contents
     assert '"source_topic": effective_lidar_scan_topic' in launch_contents
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
     assert '"crop_angle_min_rad": -1.57079632679' in launch_contents
     assert '"crop_angle_max_rad": 1.57079632679' in launch_contents
+
+
+def test_sim_v2_base_spawn_pose_is_launch_configurable() -> None:
+    launch_contents = _read("launch/sim_v2_base.launch.py")
+
+    assert 'DeclareLaunchArgument("spawn_x", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_y", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_z", default_value="0.2")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_roll", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_pitch", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_yaw", default_value="0.0")' in launch_contents
+    assert 'spawn_x = LaunchConfiguration("spawn_x").perform(context)' in launch_contents
+    assert 'spawn_y = LaunchConfiguration("spawn_y").perform(context)' in launch_contents
+    assert 'spawn_z = LaunchConfiguration("spawn_z").perform(context)' in launch_contents
+    assert 'spawn_roll = LaunchConfiguration("spawn_roll").perform(context)' in launch_contents
+    assert 'spawn_pitch = LaunchConfiguration("spawn_pitch").perform(context)' in launch_contents
+    assert 'spawn_yaw = LaunchConfiguration("spawn_yaw").perform(context)' in launch_contents
+    assert '"-R",' in launch_contents
+    assert '"-P",' in launch_contents
+    assert '"-Y",' in launch_contents
+
+
+def test_nav_global_v2_keeps_global_costmap_window_in_profile_yaml() -> None:
+    launch_contents = _read("launch/nav_global_v2.launch.py")
+
+    assert "global_costmap_width" not in launch_contents
+    assert "global_costmap_height" not in launch_contents
+    assert "global_costmap_resolution" not in launch_contents
 
 
 def test_sim_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
