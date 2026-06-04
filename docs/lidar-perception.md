@@ -97,7 +97,33 @@ topicos de costmap/collision monitor para usar `/scan_filtered`. Cuando RANSAC
 esta desactivado y `enable_scan_noise_filter:=True`, usa `/scan_clean`.
 Cuando ambos filtros estan desactivados, vuelve a `/scan`.
 
-## Que hace el filtro actual
+## Nota Sobre `laser_filters`
+
+`laser_filters` existe en el contenedor Humble y podria usarse con
+`scan_to_scan_filter_chain`, pero la V1.5 conservadora usa un nodo propio:
+
+```text
+src/navegacion_gps/navegacion_gps/scan_noise_filter.py
+```
+
+Motivos practicos:
+
+- el ejemplo instalado de `LaserScanSpeckleFilter` usa una estructura YAML
+  antigua que no carga directamente como parametros ROS 2;
+- `scan_to_scan_filter_chain` publica por defecto en `/scan_filtered`, topico
+  que en SALUS queda reservado para la ruta RANSAC experimental;
+- el speckle de `laser_filters` marca puntos eliminados como `NaN`, mientras
+  que el filtro actual publica `+inf` para lecturas invalidas/fuera de
+  rango/sin vecinos, que encaja mejor con el fallback y clearing esperados en
+  esta etapa;
+- la logica propia es pequena, parametrizable desde launch y tiene tests
+  unitarios para puntos aislados, clusters, NaN/Inf, limites min/max y
+  preservacion de metadata.
+
+Por eso `laser_filters` queda como alternativa futura, no como bloqueo para
+esta implementacion.
+
+## Que hace el filtro RANSAC V1 experimental
 Nodo: `src/navegacion_gps/navegacion_gps/lidar_obstacle_filter.py`.
 
 Proceso actual:

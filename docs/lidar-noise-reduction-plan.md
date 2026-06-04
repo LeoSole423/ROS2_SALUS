@@ -169,6 +169,20 @@ Filtros candidatos:
 - `laser_filters/LaserScanMedianFilter`
 - filtro propio minimo si `laser_filters` no esta disponible en Humble del contenedor.
 
+Nota de implementacion V1.5:
+`laser_filters` esta disponible en el contenedor Humble, pero la primera
+implementacion quedo como nodo propio `scan_noise_filter`. La razon practica es
+que el filtro de speckles de `laser_filters` no era plug-and-play para este
+caso: el ejemplo instalado de speckle usa una estructura YAML antigua que el
+parser ROS 2 rechaza, el nodo de cadena publica por defecto en `/scan_filtered`
+(topico reservado en SALUS para el RANSAC experimental) y la semantica no es
+identica a la deseada para Nav2. En particular, `LaserScanSpeckleFilter` marca
+speckles con `NaN`, mientras que el filtro V1.5 propio convierte lecturas
+invalidas/fuera de rango/sin vecinos a `+inf`, preserva metadata del
+`LaserScan`, conserva clusters anchos y queda cubierto por tests unitarios.
+Migrar a `laser_filters` sigue siendo posible, pero no es requisito para esta
+etapa conservadora.
+
 Parametros iniciales sugeridos:
 
 ```text
