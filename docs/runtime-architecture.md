@@ -26,6 +26,19 @@ map_tools/web_zone_server
 ```
 
 ## Sensores y percepción
+En el robot real vigente, la telemetria Pixhawk/GNSS entra por MAVROS. El
+driver propio `sensores/pixhawk_driver` queda como codigo legacy/de referencia
+y no forma parte de `real_global_v2` ni `real_global_v2_wifi`.
+
+```text
+Pixhawk 6X + GNSS F9P DroneCAN
+-> MAVROS
+-> /imu/data
+-> /global_position/raw/fix
+-> /local_position/velocity_local
+-> /local_position/odom
+```
+
 ```text
 RS16
 -> /scan_3d
@@ -55,8 +68,9 @@ Estado y plan de percepcion LiDAR: [docs/lidar-perception.md](/home/leo/codigo/R
 ## Localización mainline
 - Entradas típicas:
   - `/imu/data`
-  - `/gps/fix`
-  - `/odom`
+  - `/global_position/raw/fix` en perfiles reales MAVROS
+  - `/gps/fix` en simulación o compatibilidad legacy
+  - `/controller/drive_telemetry`
 - Salidas:
   - `/odometry/local`
   - `/odometry/gps`
@@ -109,8 +123,10 @@ Procedimiento para abrir mundos Gazebo/Fuel nuevos: [docs/gazebo-worlds.md](/hom
 - Actuación:
   - `controller_server/controller_server_node`
 - Sensores:
-  - `sensores/pixhawk_driver`
-  - `sensores/mavros_compat_bridge`
+  - `mavros/mavros_node`
+  - `sensores/rtk_bridge`
+  - `sensores/mavros_compat_bridge` (compatibilidad legacy opcional)
+  - `sensores/pixhawk_driver` (legacy/referencia)
   - `rslidar_sdk`
 - Web:
   - `map_tools/web_zone_server`

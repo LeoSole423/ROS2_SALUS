@@ -33,10 +33,14 @@ Todos los paquetes bajo `src/` viven dentro de este mismo repositorio git.
   - `ros2 launch navegacion_gps real_global_v2.launch.py`
   - `ros2 launch navegacion_gps real_global_v2_wifi.launch.py` (recomendado para WiFi)
 - Infraestructura:
-  - `ros2 launch sensores pixhawk.launch.py`
+  - `ros2 launch sensores mavros.launch.py`
   - `ros2 launch sensores rs16.launch.py`
   - `ros2 launch map_tools no_go_editor.launch.py`
   - `ros2 launch controller_server controller_server.launch.py`
+
+`pixhawk_driver` y `ros2 launch sensores pixhawk.launch.py` quedan como codigo
+legacy/de referencia. La navegacion real vigente (`real_global_v2` y
+`real_global_v2_wifi`) usa MAVROS para la telemetria Pixhawk/GNSS.
 
 Los perfiles `simulacion.launch.py`, `real.launch.py`, `sim_local_v2.launch.py` y `real_local_v2.launch.py` quedan como LEGACY o referencia tecnica. No son la navegacion operativa actual.
 
@@ -48,7 +52,7 @@ Los perfiles `simulacion.launch.py`, `real.launch.py`, `sim_local_v2.launch.py` 
 - `controller_server` consume `/cmd_vel_final`.
 - El RS16 publica `/scan_3d` y `pointcloud_to_laserscan` publica `/scan`.
 - Localización:
-  - entradas: `/imu/data`, `/gps/fix`, `/odom` o `/controller/drive_telemetry` según perfil
+  - entradas: `/imu/data`, `/global_position/raw/fix`, `/controller/drive_telemetry` y compatibilidad `/gps/fix` según perfil
   - salidas: `/odometry/local`, `/odometry/gps`, `/odometry/global` según perfil
   - TF esperada: `map -> odom -> base_footprint`
 

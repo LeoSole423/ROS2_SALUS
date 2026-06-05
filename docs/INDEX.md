@@ -57,7 +57,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [src/navegacion_gps/REAL_LOCAL_V2_CHECKLIST.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/REAL_LOCAL_V2_CHECKLIST.md)
   - `sim_local_v2.launch.py`
   - `real_local_v2.launch.py`
-- Compatibilidad MAVROS legacy:
+- Sensores, MAVROS y codigo Pixhawk legacy:
   - [src/sensores/README.md](/home/leo/codigo/ROS2_SALUS/src/sensores/README.md)
 
 ## Histórica o de transición

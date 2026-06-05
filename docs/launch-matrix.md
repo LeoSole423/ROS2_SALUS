@@ -18,8 +18,7 @@ Fuente de verdad: `src/**/launch/*.launch.py` y `tools/*.sh`
 ## Infraestructura vigente
 | Perfil | Launch | Helper | Destino | Estado |
 | --- | --- | --- | --- | --- |
-| Pixhawk propio | `ros2 launch sensores pixhawk.launch.py` | n/a | robot/contenedor | actual |
-| MAVROS | `ros2 launch sensores mavros.launch.py` | n/a | robot/contenedor | actual |
+| MAVROS Pixhawk/GNSS | `ros2 launch sensores mavros.launch.py` | n/a | robot/contenedor | vigente, usado por `real_global_v2` |
 | RS16 | `ros2 launch sensores rs16.launch.py` | n/a | robot/contenedor | actual |
 | Web editor / backend | `ros2 launch map_tools no_go_editor.launch.py` | `./tools/launch_no_go_editor.sh` | contenedor | actual |
 | Controlador | `ros2 launch controller_server controller_server.launch.py` | `./tools/launch_controller.sh` | robot/contenedor | actual |
@@ -30,6 +29,7 @@ Fuente de verdad: `src/**/launch/*.launch.py` y `tools/*.sh`
 | Simulacion mainline vieja | `ros2 launch navegacion_gps simulacion.launch.py` | n/a | contenedor | LEGACY / no usar como navegacion vigente |
 | Navegacion real mainline vieja | `ros2 launch navegacion_gps real.launch.py` | `./tools/launch_real_nav.sh` | robot/contenedor | LEGACY / no usar como navegacion vigente |
 | RViz real mainline viejo | `ros2 launch navegacion_gps rviz_real.launch.py` | `./tools/launch_real_rviz.sh` | PC local | LEGACY |
+| Pixhawk propio | `ros2 launch sensores pixhawk.launch.py` | n/a | robot/contenedor | LEGACY / referencia, reemplazado por MAVROS |
 | Sim local Ackermann | `ros2 launch navegacion_gps sim_local_v2.launch.py` | `./tools/launch_sim_local_v2.sh` | contenedor | referencia / no operativo |
 | Real local Ackermann | `ros2 launch navegacion_gps real_local_v2.launch.py` | `./tools/launch_real_local_v2.sh` | robot/contenedor | referencia / no operativo |
 | RViz real local V2 | `ros2 launch navegacion_gps rviz_real_local_v2.launch.py` | `./tools/launch_real_local_v2_rviz.sh` | PC local | referencia |
