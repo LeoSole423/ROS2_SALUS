@@ -218,10 +218,10 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          # La ventana local WiFi cubre ~15 m utiles hacia adelante. Marcamos
-          # hasta 15 m para que Nav2 vea bloqueos antes, manteniendo raytrace
-          # a 20 m para limpiar espacio libre sin aceptar retornos al limite.
-          obstacle_max_range: 15.0
+          # Marcamos obstaculos solo hasta 10 m para no convertir retornos
+          # bajos/rasantes del suelo lejano en obstaculos locales. Mantenemos
+          # raytrace_max_range en 20 m para seguir limpiando espacio libre.
+          obstacle_max_range: 10.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
@@ -235,7 +235,7 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          obstacle_max_range: 15.0
+          obstacle_max_range: 10.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
@@ -297,9 +297,11 @@ global_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
-          # Marcamos con el mismo alcance que el costmap local para que el
-          # replanning global pueda rodear bloqueos antes de entrar al STOP.
-          obstacle_max_range: 15.0
+          # En el costmap global marcamos un poco menos lejos que el LiDAR:
+          # las pruebas reales muestran retornos bajos de suelo lejano cuando
+          # el sensor queda levemente inclinado. Raytrace queda en 20 m para
+          # limpiar fantasmas.
+          obstacle_max_range: 8.0
           obstacle_min_range: 0.0
           inf_is_valid: True
           observation_persistence: 1.0

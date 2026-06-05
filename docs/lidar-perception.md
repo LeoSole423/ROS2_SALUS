@@ -220,6 +220,24 @@ Aunque el procesamiento inicial sea 3D, la salida que consume Nav2 es 2D. Al per
 ### 5. Obstaculos dinamicos en global costmap
 El global costmap real WiFi usa obstacle layer con alcance amplio e inflacion. Esto hace que falsos positivos provoquen replanning grande. Para robots outdoor, suele ser mas estable dejar los obstaculos dinamicos fuertes en local/collision monitor y limitar su peso en global.
 
+Nota operativa despues de pruebas reales:
+en el perfil `real_global_v2_wifi`, el LiDAR puede quedar levemente inclinado y
+convertir retornos rasantes del suelo lejano en obstaculos cuando el marcado
+llega demasiado lejos. Para mantener el clearing largo sin usar esos retornos
+para planificar rodeos, el perfil real WiFi copia la logica conservadora del
+perfil real no-WiFi:
+
+```text
+local_costmap scan_marking obstacle_max_range: 10.0
+local_costmap scan_clearing obstacle_max_range: 10.0
+global_costmap obstacle_layer obstacle_max_range: 8.0
+raytrace_max_range: 20.0
+```
+
+`raytrace_max_range` queda en 20 m para limpiar espacio libre; lo que se limita
+es el alcance de marcado que puede meter obstaculos en costmaps y afectar la
+ruta global.
+
 ## Que se suele hacer de forma estandar
 La practica usual en robots con LiDAR 3D no es hacer solamente `RANSAC plano unico -> LaserScan`. Una cadena mas comun incluye:
 

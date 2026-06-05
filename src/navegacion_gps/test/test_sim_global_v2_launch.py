@@ -379,15 +379,18 @@ def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
         assert "cost_scaling_factor: 1.4" in params_contents
 
 
-def test_wifi_nav2_costmaps_keep_longer_lidar_forward_vision() -> None:
+def test_wifi_nav2_costmaps_use_real_safe_and_sim_long_lidar_marking_ranges() -> None:
     real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
     sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
 
     for params_contents in (real_wifi_params, sim_wifi_params):
         assert "width: 30" in params_contents
         assert "height: 30" in params_contents
-        assert params_contents.count("obstacle_max_range: 15.0") >= 2
         assert "raytrace_max_range: 20.0" in params_contents
+
+    assert real_wifi_params.count("obstacle_max_range: 10.0") >= 2
+    assert "obstacle_max_range: 8.0" in real_wifi_params
+    assert sim_wifi_params.count("obstacle_max_range: 15.0") >= 2
 
 
 def test_global_v2_local_costmaps_split_lidar_marking_from_clearing() -> None:
