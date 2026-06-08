@@ -100,6 +100,11 @@ Estado y plan de percepcion LiDAR: [docs/lidar-perception.md](/home/leo/codigo/R
 - TF:
   - `map -> odom -> base_footprint`
 
+Idea futura para heading: usar `/mavros_node/compass_hdg` como referencia débil
+solo en arranque o reposo largo, mediante un nodo gated que publique yaw-only
+con covarianza alta. No usar `/mavros_node/mag` crudo directamente en el EKF.
+Ver [docs/heading-compass-integration-ideas.md](/home/leo/codigo/ROS2_SALUS/docs/heading-compass-integration-ideas.md).
+
 ## Simulación Gazebo
 - Entrada canónica:
   - `tools/launch_sim_global_v2_wifi.sh`

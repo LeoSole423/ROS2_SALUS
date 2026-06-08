@@ -21,6 +21,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
   - [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
+  - [docs/heading-compass-integration-ideas.md](/home/leo/codigo/ROS2_SALUS/docs/heading-compass-integration-ideas.md)
   - [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
   - [docs/gazebo-worlds.md](/home/leo/codigo/ROS2_SALUS/docs/gazebo-worlds.md)
   - [docs/lidar-perception.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception.md)
@@ -43,6 +44,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md)
   - [src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md)
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
+  - [docs/heading-compass-integration-ideas.md](/home/leo/codigo/ROS2_SALUS/docs/heading-compass-integration-ideas.md)
 - Base local V2 usada por Global V2:
   - [src/navegacion_gps/LOCAL_NAV_V2.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/LOCAL_NAV_V2.md)
 
