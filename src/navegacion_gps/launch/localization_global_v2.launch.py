@@ -103,6 +103,11 @@ def _build_map_ekf(context):
         LaunchConfiguration("enable_gps_course_heading").perform(context).lower() == "true"
     )
     gps_course_heading_topic = LaunchConfiguration("gps_course_heading_topic").perform(context)
+    enable_compass_heading_fusion = (
+        LaunchConfiguration("enable_compass_heading_fusion").perform(context).lower()
+        == "true"
+    )
+    compass_heading_topic = LaunchConfiguration("compass_heading_topic").perform(context)
     map_filter_odom_topic = (
         global_odom_gated_topic if enable_global_odom_stationary_gate else "/odometry/local"
     )
@@ -169,6 +174,33 @@ def _build_map_ekf(context):
                 "imu1_differential": False,
                 "imu1_relative": False,
                 "imu1_remove_gravitational_acceleration": False,
+            }
+        )
+    if enable_compass_heading_fusion:
+        parameters.append(
+            {
+                "imu2": compass_heading_topic,
+                "imu2_config": [
+                    False,
+                    False,
+                    False,
+                    False,
+                    False,
+                    True,
+                    False,
+                    False,
+                    False,
+                    False,
+                    False,
+                    False,
+                    False,
+                    False,
+                    False,
+                ],
+                "imu2_queue_size": 10,
+                "imu2_differential": False,
+                "imu2_relative": False,
+                "imu2_remove_gravitational_acceleration": False,
             }
         )
 
@@ -245,6 +277,8 @@ def generate_launch_description():
     map_gps_fromll_service = LaunchConfiguration("map_gps_fromll_service")
     map_gps_fromll_service_fallback = LaunchConfiguration("map_gps_fromll_service_fallback")
     map_gps_fromll_wait_timeout_s = LaunchConfiguration("map_gps_fromll_wait_timeout_s")
+    compass_heading_topic = LaunchConfiguration("compass_heading_topic")
+    enable_compass_heading_fusion = LaunchConfiguration("enable_compass_heading_fusion")
     # LEGACY: dynamic datum setting is intentionally disabled in current
     # global profiles. Keep the launch switch only for historical tooling.
     datum_setter = LaunchConfiguration("datum_setter")
@@ -340,6 +374,9 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("enable_gps_course_heading", default_value="false"),
             DeclareLaunchArgument("gps_course_heading_topic", default_value="/gps/course_heading"),
+            DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
+            DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument(
                 "invert_measured_steer_sign",

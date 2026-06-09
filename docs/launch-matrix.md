@@ -50,6 +50,8 @@ En Global V2 la ruta LiDAR conservadora por default es `/scan -> /scan_clean`;
 | Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado para robot remoto por WiFi; usa `real_global_v2_wifi.launch.py` y params Nav2 con menor trafico |
 | Lanzar `real_global_v2` WiFi con URDF realista V2 | `./tools/launch_real_global_v2_wifi_cuatri_real_v2.sh` | usa `cuatri_real_v2.urdf` y `pointcloud_to_laserscan_real_cuatri_real_v2.yaml` con `min_height: 0.50` |
 | Lanzar sim WiFi con URDF realista V2 | `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh` | usa `cuatri_real_v2.urdf`, `model_name:=cuatri_real_v2`, parametros de LaserScan para LiDAR inclinado y abre RViz con el mismo URDF |
+| Probar brujula gateada en sim V2 | `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh enable_sim_compass:=true enable_compass_heading:=true` | publica `/sim/compass_hdg`, `/imu/compass_heading` y `/imu/compass_heading/debug`; no fusiona al EKF salvo `enable_compass_heading_fusion:=true` |
+| Probar brujula gateada en robot real | `./tools/launch_real_global_v2_wifi.sh enable_compass_heading:=true` | usa `/mavros_node/compass_hdg` y deja la salida yaw-only solo como diagnostico si no se activa `enable_compass_heading_fusion` |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
 ## Politica de datum
@@ -66,6 +68,7 @@ En Global V2 la ruta LiDAR conservadora por default es `/scan -> /scan_clean`;
 - En `real_global_v2`, la fuente de steering que debe mantenerse estable es `/controller/drive_telemetry.steer_deg_measured`.
 - Si el robot mide el ángulo en la barra central de dirección, ese dato es el que debe alimentar la odometría Ackermann real.
 - El gating de `/gps/course_heading` debe mantenerse alineado entre sim y real; solo cambian las fuentes de GPS/RTK.
+- La brujula gateada esta documentada en [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md). Queda apagada por defecto y no debe competir con `/gps/course_heading` en movimiento.
 
 ## Operación y diagnóstico
 | Herramienta | Comando | Estado |

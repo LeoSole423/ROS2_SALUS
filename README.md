@@ -24,6 +24,7 @@ Todos los paquetes bajo `src/` viven dentro de este mismo repositorio git.
 - Matriz de launches y perfiles: [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
 - Politica de paridad sim/real: [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
 - Arquitectura runtime y flujo de tópicos: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
+- Brujula gateada para heading inicial/reposo: [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md)
 - Integración con `cockpit`: [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md)
 - Históricos, transiciones y third-party: [docs/archive/README.md](/home/leo/codigo/ROS2_SALUS/docs/archive/README.md)
 
@@ -55,6 +56,9 @@ Los perfiles `simulacion.launch.py`, `real.launch.py`, `sim_local_v2.launch.py` 
   - entradas: `/imu/data`, `/global_position/raw/fix`, `/controller/drive_telemetry` y compatibilidad `/gps/fix` según perfil
   - salidas: `/odometry/local`, `/odometry/gps`, `/odometry/global` según perfil
   - TF esperada: `map -> odom -> base_footprint`
+- Heading auxiliar:
+  - `/gps/course_heading` es la referencia principal cuando el robot avanza con gate valido.
+  - `/imu/compass_heading` puede aportar brujula gateada en arranque/reposo, apagada por defecto.
 
 ## Flujo Docker recomendado
 1. Levantar el contenedor:

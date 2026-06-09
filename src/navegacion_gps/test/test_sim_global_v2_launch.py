@@ -17,6 +17,10 @@ def _read(relative_path: str) -> str:
     return (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _read_repo(relative_path: str) -> str:
+    return (PACKAGE_ROOT.parents[1] / relative_path).read_text(encoding="utf-8")
+
+
 def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     launch_contents = _read("launch/sim_global_v2.launch.py")
     map_gps_enable_arg = (
@@ -134,6 +138,8 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"spawn_y": spawn_y' in launch_contents
     assert '"spawn_z": spawn_z' in launch_contents
     assert '"spawn_yaw": spawn_yaw' in launch_contents
+    assert "sim_compass_initial_yaw_offset_deg = PythonExpression(" in launch_contents
+    assert '"initial_yaw_offset_deg": ParameterValue(' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
     assert '"launch_nav_command_server": "false"' in launch_contents
     assert 'executable="rviz2"' not in launch_contents
@@ -152,6 +158,12 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     gps_heading_arg = 'DeclareLaunchArgument("enable_gps_course_heading", default_value="false")'
     gps_heading_topic_arg = (
         'DeclareLaunchArgument("gps_course_heading_topic", default_value="/gps/course_heading")'
+    )
+    compass_heading_enable_arg = (
+        'DeclareLaunchArgument("enable_compass_heading", default_value="false")'
+    )
+    compass_heading_fusion_arg = (
+        'DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false")'
     )
 
     assert "localization_v2.launch.py" in launch_contents
@@ -173,6 +185,9 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     assert 'DeclareLaunchArgument(\n                "map_gps_absolute_topic"' in launch_contents
     assert gps_heading_arg in launch_contents
     assert gps_heading_topic_arg in launch_contents
+    assert compass_heading_enable_arg in launch_contents
+    assert 'DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading")' in launch_contents
+    assert compass_heading_fusion_arg in launch_contents
     assert '"use_odometry_yaw": navsat_use_odometry_yaw' in launch_contents
     assert '"input_odom_topic": "/odometry/local"' in launch_contents
     assert '"output_odom_topic": global_odom_gated_topic' in launch_contents
@@ -189,6 +204,8 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     assert '{"odom1": map_gps_absolute_topic}' in launch_contents
     assert '"imu1": gps_course_heading_topic' in launch_contents
     assert '"imu1_config": [' in launch_contents
+    assert '"imu2": compass_heading_topic' in launch_contents
+    assert '"imu2_config": [' in launch_contents
     assert '("odometry/filtered", "/odometry/local")' in launch_contents
     assert '("odometry/gps", "/odometry/gps")' in launch_contents
 
@@ -234,6 +251,15 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert 'DeclareLaunchArgument("gps_course_heading_publish_hz", default_value="5.0")' in launch_contents
     assert 'DeclareLaunchArgument("gps_course_heading_require_rtk", default_value="True")' in launch_contents
     assert 'DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_sim_compass", default_value="false")' in launch_contents
+    assert 'DeclareLaunchArgument("sim_compass_hdg_topic", default_value="/sim/compass_hdg")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_compass_heading", default_value="false")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false")' in launch_contents
+    assert "spawn_yaw" in launch_contents
+    assert '"enable_sim_compass": enable_sim_compass' in launch_contents
+    assert '"sim_compass_hdg_topic": sim_compass_hdg_topic' in launch_contents
+    assert '"enable_compass_heading": enable_compass_heading' in launch_contents
+    assert '"enable_compass_heading_fusion": enable_compass_heading_fusion' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
@@ -265,6 +291,14 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
     assert '"crop_angle_min_rad": -1.57079632679' in launch_contents
     assert '"crop_angle_max_rad": 1.57079632679' in launch_contents
+
+
+def test_cuatri_real_v2_wrapper_keeps_current_urdf_entrypoint() -> None:
+    script_contents = _read_repo("tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh")
+
+    assert 'URDF_PATH="/ros2_ws/src/navegacion_gps/models/cuatri_real_v2.urdf"' in script_contents
+    assert 'MODEL_NAME="cuatri_real_v2"' in script_contents
+    assert 'custom_urdf:="${URDF_PATH}"' in script_contents
 
 
 def test_sim_v2_base_spawn_pose_is_launch_configurable() -> None:

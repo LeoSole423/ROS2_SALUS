@@ -35,6 +35,7 @@ setup(
         'console_scripts': [
             'ackermann_odometry = navegacion_gps.ackermann_odometry:main',
             'cmd_vel_ackermann_bridge_v2 = navegacion_gps.cmd_vel_ackermann_bridge_v2:main',
+            'compass_heading_gate = navegacion_gps.compass_heading_gate:main',
             # LEGACY: dynamic datum setter. Current global profiles use fixed
             # site datum from launch/configuration.
             'datum_setter = navegacion_gps.datum_setter:main',
@@ -58,6 +59,7 @@ setup(
             'scan_noise_filter = navegacion_gps.scan_noise_filter:main',
             'scan_wifi_debug = navegacion_gps.scan_wifi_debug:main',
             'sim_drive_telemetry = navegacion_gps.sim_drive_telemetry:main',
+            'sim_compass_hdg = navegacion_gps.sim_compass_hdg:main',
             'sim_sensor_normalizer_v2 = navegacion_gps.sim_sensor_normalizer_v2:main',
             'sim_localization_benchmark = navegacion_gps.sim_localization_benchmark:main',
             'sim_global_straight_benchmark = navegacion_gps.sim_global_straight_benchmark:main',

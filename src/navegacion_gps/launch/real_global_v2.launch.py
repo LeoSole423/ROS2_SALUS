@@ -174,6 +174,14 @@ def generate_launch_description():
         "gps_course_heading_rtk_status_max_age_s"
     )
     gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
+    enable_compass_heading = LaunchConfiguration("enable_compass_heading")
+    compass_hdg_topic = LaunchConfiguration("compass_hdg_topic")
+    compass_heading_topic = LaunchConfiguration("compass_heading_topic")
+    compass_heading_debug_topic = LaunchConfiguration("compass_heading_debug_topic")
+    enable_compass_heading_fusion = LaunchConfiguration("enable_compass_heading_fusion")
+    compass_heading_yaw_variance_rad2 = LaunchConfiguration(
+        "compass_heading_yaw_variance_rad2"
+    )
     enable_map_gps_absolute_measurement = LaunchConfiguration(
         "enable_map_gps_absolute_measurement"
     )
@@ -381,6 +389,15 @@ def generate_launch_description():
                 "gps_rtk_status_topic",
                 default_value="/gps/rtk_status_mavros",
             ),
+            DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("compass_hdg_topic", default_value="/mavros_node/compass_hdg"),
+            DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
+            DeclareLaunchArgument(
+                "compass_heading_debug_topic",
+                default_value="/imu/compass_heading/debug",
+            ),
+            DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false"),
+            DeclareLaunchArgument("compass_heading_yaw_variance_rad2", default_value="1.0"),
             DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat)),
             DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon)),
             # Convencion fija operativa para `global v2`: por default el robot
@@ -617,6 +634,29 @@ def generate_launch_description():
             ),
             Node(
                 package="navegacion_gps",
+                executable="compass_heading_gate",
+                name="compass_heading_gate",
+                output="screen",
+                condition=IfCondition(enable_compass_heading),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "compass_hdg_topic": compass_hdg_topic,
+                        "imu_topic": "/imu/data",
+                        "drive_telemetry_topic": "/controller/drive_telemetry",
+                        "gps_course_heading_debug_topic": "/gps/course_heading/debug",
+                        "output_topic": compass_heading_topic,
+                        "debug_topic": compass_heading_debug_topic,
+                        "base_frame": "base_footprint",
+                        "yaw_variance_rad2": ParameterValue(
+                            compass_heading_yaw_variance_rad2,
+                            value_type=float,
+                        ),
+                    }
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
                 executable="nav_command_server",
                 name="nav_command_server",
                 output="screen",
@@ -711,6 +751,9 @@ def generate_launch_description():
                     "global_localization_params_file": global_localization_params_file,
                     "enable_gps_course_heading": enable_gps_course_heading,
                     "gps_course_heading_topic": "/gps/course_heading",
+                    "enable_compass_heading": enable_compass_heading,
+                    "compass_heading_topic": compass_heading_topic,
+                    "enable_compass_heading_fusion": enable_compass_heading_fusion,
                     "datum_setter": "false",
                     "datum_lat": datum_lat,
                     "datum_lon": datum_lon,

@@ -19,6 +19,8 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
   - [REAL_GLOBAL_V2_CHECKLIST.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md)
 - Benchmarks y observabilidad:
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
+- Heading auxiliar:
+  - [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md)
 - Diseño y transición:
   - [IMPLEMENTATION_PLAN_GLOBAL_NAV_V2.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/IMPLEMENTATION_PLAN_GLOBAL_NAV_V2.md)
   - clasificación recomendada: histórico / transición
@@ -35,6 +37,7 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
 
 La V2 global agrega la capa `map -> odom` sobre la base local Ackermann, con `navsat_transform`, EKF global, datum configurable y goals LL en `map`.
 En los perfiles globales actuales, la corrección absoluta del EKF de `map` entra como `/gps/odometry_map` en frame `map` obtenido vía `fromLL`, y el heading global puede asistir al filtro mediante `/gps/course_heading`.
+La brujula gateada puede aportar `/imu/compass_heading` como ayuda debil de arranque/reposo, pero queda apagada por defecto y no se fusiona al EKF salvo que se active explícitamente `enable_compass_heading_fusion:=true`.
 La base local V2 sigue vigente como bloque interno: `ackermann_odometry`, `localization_v2` y `/odometry/local` sostienen la capa global.
 El datum de V2 global es fijo por sitio operativo. Los mecanismos para setear datum automaticamente quedan como LEGACY y no forman parte de los bringups vigentes.
 
@@ -57,6 +60,8 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 - `gazebo_utils`
 - `sim_sensor_normalizer_v2`
 - `gps_course_heading`
+- `compass_heading_gate`
+- `sim_compass_hdg`
 
 ## Componentes LEGACY
 - Perfiles mainline viejos:
@@ -80,6 +85,8 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
   - `/odometry/gps`
   - `/gps/odometry_map`
   - `/odometry/global`
+  - `/imu/compass_heading`
+  - `/imu/compass_heading/debug`
 - Observabilidad:
   - `/nav_command_server/telemetry`
   - `/nav_command_server/events`
