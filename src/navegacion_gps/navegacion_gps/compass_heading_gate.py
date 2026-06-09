@@ -130,7 +130,7 @@ class CompassHeadingGateNode(Node):
             Float64,
             compass_hdg_topic,
             self._on_compass_hdg,
-            10,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             Imu,
