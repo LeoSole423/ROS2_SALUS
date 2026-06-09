@@ -48,6 +48,8 @@ En Global V2 la ruta LiDAR conservadora por default es `/scan -> /scan_clean`;
 | Abrir shell del contenedor | `./tools/exec.sh` | usar si hace falta correr `colcon` o `ros2` a mano |
 | Lanzar `real_global_v2` base | `./tools/launch_real_global_v2.sh` | wrapper corto no-WiFi sobre `ros2 launch navegacion_gps real_global_v2.launch.py`; mantiene compatibilidad con pruebas locales |
 | Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado para robot remoto por WiFi; usa `real_global_v2_wifi.launch.py` y params Nav2 con menor trafico |
+| Lanzar `real_global_v2` WiFi con URDF realista V2 | `./tools/launch_real_global_v2_wifi_cuatri_real_v2.sh` | usa `cuatri_real_v2.urdf` y `pointcloud_to_laserscan_real_cuatri_real_v2.yaml` con `min_height: 0.50` |
+| Lanzar sim WiFi con URDF realista V2 | `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh` | usa `cuatri_real_v2.urdf`, `model_name:=cuatri_real_v2`, parametros de LaserScan para LiDAR inclinado y abre RViz con el mismo URDF |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
 ## Politica de datum

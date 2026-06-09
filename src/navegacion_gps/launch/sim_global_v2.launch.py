@@ -55,6 +55,7 @@ def generate_launch_description():
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml_arg = LaunchConfiguration("keepout_mask_yaml")
     global_localization_params_file = LaunchConfiguration("global_localization_params_file")
+    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     custom_urdf = LaunchConfiguration("custom_urdf")
     world = LaunchConfiguration("world")
     world_name = LaunchConfiguration("world_name")
@@ -197,6 +198,12 @@ def generate_launch_description():
                 default_value=default_global_localization_params_file,
             ),
             DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=_resolve_config_file_path(
+                    gps_wpf_dir, "pointcloud_to_laserscan.yaml"
+                ),
+            ),
+            DeclareLaunchArgument(
                 "custom_urdf",
                 default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
             ),
@@ -326,6 +333,7 @@ def generate_launch_description():
                 ),
                 launch_arguments={
                     "use_sim_time": use_sim_time,
+                    "lidar_to_scan_params_file": lidar_to_scan_params_file,
                     "custom_urdf": custom_urdf,
                     "world": world,
                     "world_name": world_name,

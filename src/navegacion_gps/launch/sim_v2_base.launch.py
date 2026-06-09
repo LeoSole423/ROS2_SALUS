@@ -158,16 +158,21 @@ def generate_launch_description():
 
     world_path = os.path.join(gps_wpf_dir, "worlds", "vacio.world")
     bridge_config = _resolve_config_file_path(gps_wpf_dir, "bridge_config_v2.yaml")
-    lidar_to_scan_params = _resolve_config_file_path(
+    default_lidar_to_scan_params = _resolve_config_file_path(
         gps_wpf_dir, "pointcloud_to_laserscan.yaml"
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     world = LaunchConfiguration("world")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="True"),
+            DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=default_lidar_to_scan_params,
+            ),
             DeclareLaunchArgument(
                 "custom_urdf",
                 default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
@@ -200,7 +205,7 @@ def generate_launch_description():
                 name="pointcloud_to_laserscan",
                 output="screen",
                 parameters=[
-                    lidar_to_scan_params,
+                    lidar_to_scan_params_file,
                     {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
                     {"output_qos": "sensor_data"},
                 ],

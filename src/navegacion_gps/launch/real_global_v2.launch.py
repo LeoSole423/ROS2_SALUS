@@ -62,7 +62,7 @@ def generate_launch_description():
     sensores_dir = get_package_share_directory("sensores")
 
     default_rviz = _resolve_config_file_path(gps_wpf_dir, "rviz_global_v2.rviz")
-    lidar_to_scan_params = _resolve_config_file_path(
+    default_lidar_to_scan_params = _resolve_config_file_path(
         gps_wpf_dir, "pointcloud_to_laserscan_real.yaml"
     )
     default_global_localization_params = _resolve_config_file_path(
@@ -83,6 +83,7 @@ def generate_launch_description():
     wheelbase_m = LaunchConfiguration("wheelbase_m")
     invert_measured_steer_sign = LaunchConfiguration("invert_measured_steer_sign")
     enable_rtk = LaunchConfiguration("enable_rtk")
+    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     lidar_config_path = LaunchConfiguration("lidar_config_path")
     fcu_url = LaunchConfiguration("fcu_url")
     use_cyclone_dds = LaunchConfiguration("use_cyclone_dds")
@@ -235,6 +236,10 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "custom_urdf",
                 default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+            ),
+            DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=default_lidar_to_scan_params,
             ),
             DeclareLaunchArgument(
                 "lidar_config_path",
@@ -415,7 +420,7 @@ def generate_launch_description():
                 name="pointcloud_to_laserscan",
                 output="screen",
                 parameters=[
-                    lidar_to_scan_params,
+                    lidar_to_scan_params_file,
                     {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
                     {"output_qos": "sensor_data"},
                 ],

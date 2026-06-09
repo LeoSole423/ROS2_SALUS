@@ -79,8 +79,10 @@ docker compose up -d --build
 - `./tools/launch_controller.sh`
 - `./tools/launch_no_go_editor.sh`
 - `./tools/launch_sim_global_v2.sh`
+- `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh`
 - `./tools/launch_real_global_v2.sh`
 - `./tools/launch_real_global_v2_wifi.sh`
+- `./tools/launch_real_global_v2_wifi_cuatri_real_v2.sh`
 - `./tools/record_nav_debug_bag.sh`
 - `./tools/healthcheck-lidar.sh`
 

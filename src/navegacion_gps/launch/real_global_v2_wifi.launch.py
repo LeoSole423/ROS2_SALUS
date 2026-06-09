@@ -44,6 +44,7 @@ def generate_launch_description():
     enable_rtk = LaunchConfiguration("enable_rtk")
     invert_measured_steer_sign = LaunchConfiguration("invert_measured_steer_sign")
     custom_urdf = LaunchConfiguration("custom_urdf")
+    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     lidar_config_path = LaunchConfiguration("lidar_config_path")
     fcu_url = LaunchConfiguration("fcu_url")
     use_cyclone_dds = LaunchConfiguration("use_cyclone_dds")
@@ -155,6 +156,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "custom_urdf",
                 default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+            ),
+            DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=_resolve_config_file_path(
+                    gps_wpf_dir, "pointcloud_to_laserscan_real.yaml"
+                ),
             ),
             DeclareLaunchArgument(
                 "lidar_config_path",
@@ -285,6 +292,7 @@ def generate_launch_description():
                     "enable_rtk": enable_rtk,
                     "invert_measured_steer_sign": invert_measured_steer_sign,
                     "custom_urdf": custom_urdf,
+                    "lidar_to_scan_params_file": lidar_to_scan_params_file,
                     "lidar_config_path": lidar_config_path,
                     "fcu_url": fcu_url,
                     "use_cyclone_dds": use_cyclone_dds,
