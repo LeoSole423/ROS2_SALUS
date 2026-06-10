@@ -2,6 +2,15 @@ from pathlib import Path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+LIDAR_FILTER_DEFAULT_ARG = (
+    'DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False")'
+)
+SCAN_FILTER_DEFAULT_ARG = (
+    'DeclareLaunchArgument("enable_scan_noise_filter", default_value="True")'
+)
+SCAN_FILTER_OUTPUT_ARG = (
+    'DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean")'
+)
 
 
 def _read(relative_path: str) -> str:
@@ -111,6 +120,20 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"rtk_status_max_age_s": ParameterValue(' in launch_contents
     assert "nav2_global_v2_sim_rolling_params.yaml" in launch_contents
     assert 'DeclareLaunchArgument("launch_web_app", default_value="True")' in launch_contents
+    assert LIDAR_FILTER_DEFAULT_ARG in launch_contents
+    assert SCAN_FILTER_DEFAULT_ARG in launch_contents
+    assert SCAN_FILTER_OUTPUT_ARG in launch_contents
+    assert 'executable="scan_noise_filter"' in launch_contents
+    assert 'condition=IfCondition(enable_legacy_scan_noise_filter)' in launch_contents
+    assert '"lidar_scan_topic": effective_lidar_scan_topic' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_x", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_y", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_z", default_value="0.2")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_yaw", default_value="0.0")' in launch_contents
+    assert '"spawn_x": spawn_x' in launch_contents
+    assert '"spawn_y": spawn_y' in launch_contents
+    assert '"spawn_z": spawn_z' in launch_contents
+    assert '"spawn_yaw": spawn_yaw' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
     assert '"launch_nav_command_server": "false"' in launch_contents
     assert 'executable="rviz2"' not in launch_contents
@@ -217,10 +240,59 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_range_max_m", default_value="12.0"' in launch_contents
     assert 'executable="scan_wifi_debug"' in launch_contents
     assert 'condition=IfCondition(enable_scan_wifi_debug)' in launch_contents
-    assert '"source_topic": "/scan"' in launch_contents
+    assert LIDAR_FILTER_DEFAULT_ARG in launch_contents
+    assert 'DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered")' in launch_contents
+    assert SCAN_FILTER_DEFAULT_ARG in launch_contents
+    assert SCAN_FILTER_OUTPUT_ARG in launch_contents
+    assert 'DeclareLaunchArgument("spawn_x", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_y", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_z", default_value="0.2")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_yaw", default_value="0.0")' in launch_contents
+    assert '"enable_lidar_obstacle_filter": enable_lidar_obstacle_filter' in launch_contents
+    assert '"lidar_scan_topic": lidar_scan_topic' in launch_contents
+    assert '"enable_scan_noise_filter": enable_scan_noise_filter' in launch_contents
+    assert '"scan_noise_filter_output": scan_noise_filter_output' in launch_contents
+    assert '"scan_noise_filter_range_min_m": scan_noise_filter_range_min_m' in launch_contents
+    assert '"scan_noise_filter_range_max_m": scan_noise_filter_range_max_m' in launch_contents
+    assert '"scan_noise_filter_speckle_window": (' in launch_contents
+    assert '"scan_noise_filter_speckle_max_range_m": (' in launch_contents
+    assert '"scan_noise_filter_speckle_max_deviation_m": (' in launch_contents
+    assert '"spawn_x": spawn_x' in launch_contents
+    assert '"spawn_y": spawn_y' in launch_contents
+    assert '"spawn_z": spawn_z' in launch_contents
+    assert '"spawn_yaw": spawn_yaw' in launch_contents
+    assert '"source_topic": effective_lidar_scan_topic' in launch_contents
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
     assert '"crop_angle_min_rad": -1.57079632679' in launch_contents
     assert '"crop_angle_max_rad": 1.57079632679' in launch_contents
+
+
+def test_sim_v2_base_spawn_pose_is_launch_configurable() -> None:
+    launch_contents = _read("launch/sim_v2_base.launch.py")
+
+    assert 'DeclareLaunchArgument("spawn_x", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_y", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_z", default_value="0.2")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_roll", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_pitch", default_value="0.0")' in launch_contents
+    assert 'DeclareLaunchArgument("spawn_yaw", default_value="0.0")' in launch_contents
+    assert 'spawn_x = LaunchConfiguration("spawn_x").perform(context)' in launch_contents
+    assert 'spawn_y = LaunchConfiguration("spawn_y").perform(context)' in launch_contents
+    assert 'spawn_z = LaunchConfiguration("spawn_z").perform(context)' in launch_contents
+    assert 'spawn_roll = LaunchConfiguration("spawn_roll").perform(context)' in launch_contents
+    assert 'spawn_pitch = LaunchConfiguration("spawn_pitch").perform(context)' in launch_contents
+    assert 'spawn_yaw = LaunchConfiguration("spawn_yaw").perform(context)' in launch_contents
+    assert '"-R",' in launch_contents
+    assert '"-P",' in launch_contents
+    assert '"-Y",' in launch_contents
+
+
+def test_nav_global_v2_keeps_global_costmap_window_in_profile_yaml() -> None:
+    launch_contents = _read("launch/nav_global_v2.launch.py")
+
+    assert "global_costmap_width" not in launch_contents
+    assert "global_costmap_height" not in launch_contents
+    assert "global_costmap_resolution" not in launch_contents
 
 
 def test_sim_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
@@ -272,18 +344,70 @@ def test_recovery_behavior_uses_intermediate_ackermann_backup() -> None:
 
     assert '<BackUp backup_dist="1.0" backup_speed="0.7"/>' in through_poses_bt
     assert '<BackUp backup_dist="1.0" backup_speed="0.7" />' in to_pose_bt
+    assert '<RateController hz="0.666" name="RateControllerComputePathToPose">' in to_pose_bt
+    assert "<ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\" />" in to_pose_bt
+    assert '<FollowPath path="{path}" controller_id="FollowPath" />' in to_pose_bt
+    assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in through_poses_bt
+    assert "SmoothPath" not in to_pose_bt
+    assert "SmoothPath" not in through_poses_bt
+    assert "smoothed_path" not in to_pose_bt
+    assert "smoothed_path" not in through_poses_bt
+    assert "IsPathValid" not in to_pose_bt
     assert "spin" not in through_poses_bt.lower()
     assert "spin" not in to_pose_bt.lower()
     assert "simulate_ahead_time: 2.0" in real_wifi_params
     assert "simulate_ahead_time: 2.0" in sim_wifi_params
 
 
-def test_wifi_nav2_costmaps_keep_longer_lidar_forward_vision() -> None:
+def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
+    profile_paths = [
+        "config/nav2_global_v2_real_rolling_params.yaml",
+        "config/nav2_global_v2_sim_rolling_params.yaml",
+        "config/nav2_global_v2_real_rolling_wifi_params.yaml",
+        "config/nav2_global_v2_sim_rolling_wifi_params.yaml",
+    ]
+
+    for profile_path in profile_paths:
+        params_contents = _read(profile_path)
+
+        assert "optimizer_costmap_weight: 10.0" in params_contents
+        assert "cost_penalty: 3.5" in params_contents
+        assert "inflation_cost_scaling_factor: 1.3" in params_contents
+        assert "inflation_radius: 1.4" in params_contents
+        assert "cost_scaling_factor: 1.3" in params_contents
+        assert "inflation_radius: 1.5" in params_contents
+        assert "cost_scaling_factor: 1.4" in params_contents
+
+
+def test_wifi_nav2_costmaps_use_real_safe_and_sim_long_lidar_marking_ranges() -> None:
     real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
     sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
 
     for params_contents in (real_wifi_params, sim_wifi_params):
         assert "width: 30" in params_contents
         assert "height: 30" in params_contents
-        assert params_contents.count("obstacle_max_range: 15.0") >= 2
         assert "raytrace_max_range: 20.0" in params_contents
+
+    assert real_wifi_params.count("obstacle_max_range: 10.0") >= 2
+    assert "obstacle_max_range: 8.0" in real_wifi_params
+    assert sim_wifi_params.count("obstacle_max_range: 15.0") >= 2
+
+
+def test_global_v2_local_costmaps_split_lidar_marking_from_clearing() -> None:
+    profile_paths = [
+        "config/nav2_global_v2_params.yaml",
+        "config/nav2_global_v2_real_rolling_params.yaml",
+        "config/nav2_global_v2_sim_rolling_params.yaml",
+        "config/nav2_global_v2_real_rolling_wifi_params.yaml",
+        "config/nav2_global_v2_sim_rolling_wifi_params.yaml",
+    ]
+
+    for profile_path in profile_paths:
+        params_contents = _read(profile_path)
+
+        assert "observation_sources: scan_marking scan_clearing" in params_contents
+        assert "scan_marking:" in params_contents
+        assert "scan_clearing:" in params_contents
+        assert "inf_is_valid: False" in params_contents
+        assert "clearing: False" in params_contents
+        assert "marking: False" in params_contents

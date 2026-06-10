@@ -29,7 +29,7 @@ planner_server:
     robot_base_frame: base_footprint
     GridBased:
       plugin: "nav2_smac_planner/SmacPlannerHybrid"
-      optimizer_costmap_weight: 6.0
+      optimizer_costmap_weight: 10.0
       tolerance: 0.5
       # En simulacion rolling queremos ver claramente la ventana del costmap
       # aunque todavia no haya obstaculos marcados, por eso permitimos
@@ -48,7 +48,7 @@ planner_server:
       non_straight_penalty: 1.15
       # Penalizamos mas el costo inflado para que Smac prefiera rodeos con
       # margen lateral en vez de pasar pegado a obstaculos detectados.
-      cost_penalty: 3.0
+      cost_penalty: 3.5
       cost_travel_multiplier: 0.8
       use_final_approach_orientation: false
       smooth_path: false
@@ -166,7 +166,7 @@ controller_server:
       max_robot_pose_search_dist: 4.0
       cost_scaling_dist: 1.2
       cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 1.8
+      inflation_cost_scaling_factor: 1.3
 
 # ================================
 # LOCAL COSTMAP
@@ -192,8 +192,8 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 1.20
-        cost_scaling_factor: 1.8
+        inflation_radius: 1.4
+        cost_scaling_factor: 1.3
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -207,8 +207,8 @@ local_costmap:
         mark_threshold: 0
         unknown_threshold: 15
         combination_method: 1
-        observation_sources: scan
-        scan:
+        observation_sources: scan_marking scan_clearing
+        scan_marking:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
@@ -219,11 +219,25 @@ local_costmap:
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
+          inf_is_valid: False
+          observation_persistence: 0.6
+          expected_update_rate: 0.0
+          clearing: False
+          marking: True
+          data_type: "LaserScan"
+        scan_clearing:
+          topic: /scan
+          max_obstacle_height: 1.60
+          min_obstacle_height: 0.0
+          obstacle_max_range: 15.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 20.0
+          raytrace_min_range: 0.0
           inf_is_valid: True
           observation_persistence: 0.6
           expected_update_rate: 0.0
           clearing: True
-          marking: True
+          marking: False
           data_type: "LaserScan"
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
@@ -287,8 +301,8 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 1.50
-        cost_scaling_factor: 2.0
+        inflation_radius: 1.5
+        cost_scaling_factor: 1.4
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
         enabled: True

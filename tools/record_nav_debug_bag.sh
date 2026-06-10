@@ -23,6 +23,9 @@ CORE_TOPICS=(
   /imu/data
   /imu/data_global
   /scan
+  /scan_clean
+  /scan_filtered
+  /obstacles_cloud
   /cmd_vel
   /cmd_vel_safe
   /cmd_vel_final

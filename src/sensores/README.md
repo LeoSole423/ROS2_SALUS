@@ -4,7 +4,7 @@ Estado: actual
 Alcance: integración ROS 2 con Pixhawk, MAVROS, RS16 y herramientas web auxiliares
 Fuente de verdad: `launch/`, `setup.py` y nodos bajo `sensores/`
 
-Paquete ROS 2 para integración con Pixhawk, dashboard web y utilidades auxiliares de cámara. Mantiene dos caminos de telemetría: el driver propio `pixhawk_driver` y un launch alternativo basado en MAVROS.
+Paquete ROS 2 para integración con Pixhawk, dashboard web y utilidades auxiliares de cámara. El camino operativo vigente para Pixhawk/GNSS es MAVROS. El driver propio `pixhawk_driver` permanece en el repositorio como codigo legacy/de referencia.
 
 ## Documentación relacionada
 - Índice general: [docs/INDEX.md](/home/leo/codigo/ROS2_SALUS/docs/INDEX.md)
@@ -12,17 +12,25 @@ Paquete ROS 2 para integración con Pixhawk, dashboard web y utilidades auxiliar
 - Arquitectura runtime: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
 
 ## Ejecutables reales
-- `pixhawk_driver`
 - `mavros_compat_bridge`
+- `rtk_bridge`
+- `rtk_source_manager`
 - `sensores_web`
 - `camara`
 
+## Ejecutables legacy / referencia
+- `pixhawk_driver`
+
 ## Launches reales
-- `ros2 launch sensores pixhawk.launch.py`
 - `ros2 launch sensores mavros.launch.py`
 - `ros2 launch sensores rs16.launch.py`
 
-## `pixhawk_driver`
+## `pixhawk_driver` legacy
+Este driver propio fue reemplazado por MAVROS en la navegacion real vigente
+(`real_global_v2` y `real_global_v2_wifi`). Se conserva para diagnostico,
+comparacion o recuperacion, pero no debe usarse como backend operativo nuevo
+sin una decision explicita.
+
 Publica:
 - `/imu/data`
 - `/gps/fix`
@@ -94,7 +102,7 @@ Ejecutar:
 ros2 run sensores camara
 ```
 
-## Launch de Pixhawk
+## Launch de Pixhawk legacy
 Solo driver:
 ```bash
 ros2 launch sensores pixhawk.launch.py
@@ -106,7 +114,10 @@ ros2 launch sensores pixhawk.launch.py launch_web:=true
 ```
 
 ## Launch de MAVROS
-Este launch usa `mavros` + `mavros_extras`. El contrato nativo de MAVROS queda en tópicos root-level y, por defecto, un bridge temporal repone el contrato legacy que consumen navegación y web.
+Este launch usa `mavros` + `mavros_extras` y es el backend Pixhawk/GNSS vigente.
+`real_global_v2` lo incluye directamente con `launch_legacy_compat:=false`.
+Cuando se ejecuta solo, por defecto puede levantar un bridge temporal para
+reponer el contrato legacy que consumen herramientas antiguas.
 
 Dashboard con MAVROS:
 ```bash
@@ -167,6 +178,6 @@ ros2 launch sensores rs16.launch.py config_path:=/ruta/a/rs16.yaml
 
 ## Notas
 - El nombre correcto del ejecutable Pixhawk es `pixhawk_driver`; `ros2 run sensores sensores` no aplica en este checkout.
-- Los defaults de `pixhawk.launch.py` usan `base_footprint` y `gps_link`; si los cambias, mantén README y launch alineados.
+- Los defaults de `pixhawk.launch.py` usan `base_footprint` y `gps_link`, pero ese launch es legacy.
 - El camino MAVROS no reutiliza `yaw_correction_deg`; cualquier ajuste de heading debe resolverse en localización/configuración y no reinyectando correcciones del driver viejo.
 - `mavros.launch.py` requiere que `mavros` y `mavros_extras` estén instalados en el entorno ROS 2.

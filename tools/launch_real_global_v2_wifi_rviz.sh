@@ -12,5 +12,17 @@ set -euo pipefail
 # It only opens the Wi-Fi RViz profile for `real_global_v2`.
 CYCLONEDDS_WIFI_URI="file:///ros2_ws/src/navegacion_gps/config/cyclonedds_wifi.xml"
 RVIZ_WIFI_LAUNCH="/ros2_ws/src/navegacion_gps/launch/rviz_real_global_v2_wifi.launch.py"
+DISPLAY_VALUE="${DISPLAY:-:0}"
 
-./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch ${RVIZ_WIFI_LAUNCH} custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real.urdf rviz_config:=/ros2_ws/src/navegacion_gps/config/rviz_global_v2_wifi.rviz"
+prepare_x11_for_docker_rviz() {
+  if [[ -z "${DISPLAY_VALUE}" ]]; then
+    return
+  fi
+  if command -v xhost >/dev/null 2>&1; then
+    xhost +local: >/dev/null 2>&1 || true
+  fi
+}
+
+prepare_x11_for_docker_rviz
+
+./tools/exec.sh "export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch ${RVIZ_WIFI_LAUNCH} custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real.urdf rviz_config:=/ros2_ws/src/navegacion_gps/config/rviz_global_v2_wifi.rviz"

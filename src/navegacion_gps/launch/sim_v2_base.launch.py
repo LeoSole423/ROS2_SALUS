@@ -66,6 +66,12 @@ def _spawn_robot(context):
     custom_urdf = LaunchConfiguration("custom_urdf").perform(context)
     model_name = LaunchConfiguration("model_name").perform(context)
     use_sim_time = LaunchConfiguration("use_sim_time").perform(context) == "True"
+    spawn_x = LaunchConfiguration("spawn_x").perform(context)
+    spawn_y = LaunchConfiguration("spawn_y").perform(context)
+    spawn_z = LaunchConfiguration("spawn_z").perform(context)
+    spawn_roll = LaunchConfiguration("spawn_roll").perform(context)
+    spawn_pitch = LaunchConfiguration("spawn_pitch").perform(context)
+    spawn_yaw = LaunchConfiguration("spawn_yaw").perform(context)
     robot_description = _read_file(custom_urdf)
 
     return [
@@ -91,11 +97,17 @@ def _spawn_robot(context):
                 "-file",
                 custom_urdf,
                 "-x",
-                "0.0",
+                spawn_x,
                 "-y",
-                "0.0",
+                spawn_y,
                 "-z",
-                "0.2",
+                spawn_z,
+                "-R",
+                spawn_roll,
+                "-P",
+                spawn_pitch,
+                "-Y",
+                spawn_yaw,
             ],
         ),
     ]
@@ -146,16 +158,21 @@ def generate_launch_description():
 
     world_path = os.path.join(gps_wpf_dir, "worlds", "vacio.world")
     bridge_config = _resolve_config_file_path(gps_wpf_dir, "bridge_config_v2.yaml")
-    lidar_to_scan_params = _resolve_config_file_path(
+    default_lidar_to_scan_params = _resolve_config_file_path(
         gps_wpf_dir, "pointcloud_to_laserscan.yaml"
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     world = LaunchConfiguration("world")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="True"),
+            DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=default_lidar_to_scan_params,
+            ),
             DeclareLaunchArgument(
                 "custom_urdf",
                 default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
@@ -165,6 +182,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "model_name", default_value="quad_ackermann_viewer_safe"
             ),
+            DeclareLaunchArgument("spawn_x", default_value="0.0"),
+            DeclareLaunchArgument("spawn_y", default_value="0.0"),
+            DeclareLaunchArgument("spawn_z", default_value="0.2"),
+            DeclareLaunchArgument("spawn_roll", default_value="0.0"),
+            DeclareLaunchArgument("spawn_pitch", default_value="0.0"),
+            DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(ros_gz_sim_dir, "launch", "gz_sim.launch.py")
@@ -182,7 +205,7 @@ def generate_launch_description():
                 name="pointcloud_to_laserscan",
                 output="screen",
                 parameters=[
-                    lidar_to_scan_params,
+                    lidar_to_scan_params_file,
                     {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
                     {"output_qos": "sensor_data"},
                 ],
