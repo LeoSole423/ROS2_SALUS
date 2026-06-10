@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Vision IA</title>
+  <style>
+    :root {
+      --bg: #09131d;
+      --panel: rgba(9, 19, 29, 0.94);
+      --line: rgba(125, 157, 184, 0.18);
+      --text: #edf4f8;
+      --muted: #9cb0c4;
+      --accent: #2fd2b4;
+      --shadow: 0 22px 80px rgba(0, 0, 0, 0.42);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      font-family: "Aptos", "Trebuchet MS", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(47, 210, 180, 0.18), transparent 24%),
+        linear-gradient(180deg, #0b1621 0%, #060c13 100%);
+    }
+
+    .app {
+      width: min(1120px, 100%);
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel {
+      border-radius: 26px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(12px);
+    }
+
+    .hero {
+      padding: 18px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(22px, 3vw, 34px);
+    }
+
+    .hero p {
+      margin: 6px 0 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .badge {
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .viewer {
+      position: relative;
+      min-height: 420px;
+      background: #03070b;
+    }
+
+    .viewer img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #03070b;
+    }
+
+    .fallback {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+      background:
+        linear-gradient(180deg, rgba(10, 18, 27, 0.38), rgba(5, 10, 15, 0.86)),
+        repeating-linear-gradient(
+          -45deg,
+          rgba(255, 255, 255, 0.03) 0,
+          rgba(255, 255, 255, 0.03) 14px,
+          transparent 14px,
+          transparent 28px
+        );
+    }
+
+    .ai {
+      padding: 20px 22px 24px 22px;
+    }
+
+    .ai-label {
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .ai-text {
+      margin: 0;
+      font-size: clamp(26px, 3.5vw, 46px);
+      line-height: 1.08;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .ai-meta {
+      margin: 10px 0 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 12px;
+      }
+
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .viewer {
+        min-height: 280px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="panel hero">
+      <div>
+        <h1>Camara + IA</h1>
+        <p>Vista temporal del pipeline de vision.</p>
+      </div>
+      <div id="cameraBadge" class="badge">Sin imagen</div>
+    </section>
+
+    <section class="panel viewer">
+      <img id="cameraFeed" alt="Camara del pipeline" hidden />
+      <div id="fallback" class="fallback">
+        Esperando imagen desde <code>/camera/image_raw</code>.
+      </div>
+    </section>
+
+    <section class="panel ai">
+      <p class="ai-label">Lo que dice la IA</p>
+      <p id="aiText" class="ai-text">Esperando inferencia...</p>
+      <p id="aiMeta" class="ai-meta">Todavia no llegaron mensajes de <code>/objeto_detectado</code>.</p>
+    </section>
+  </main>
+
+  <script>
+    const cameraFeedEl = document.getElementById('cameraFeed');
+    const fallbackEl = document.getElementById('fallback');
+    const cameraBadgeEl = document.getElementById('cameraBadge');
+    const aiTextEl = document.getElementById('aiText');
+    const aiMetaEl = document.getElementById('aiMeta');
+
+    const DATA_REFRESH_INTERVAL_MS = 500;
+    let frameBusy = false;
+    let dataRefreshTimer = null;
+    let dataRefreshInFlight = false;
+
+    function formatAge(ageSec) {
+      if (ageSec === null || ageSec === undefined) {
+        return 'sin datos';
+      }
+      if (ageSec < 1) {
+        return `${Math.round(ageSec * 1000)} ms`;
+      }
+      return `${ageSec.toFixed(1)} s`;
+    }
+
+    async function refreshFrame() {
+      if (frameBusy) return;
+      if (cameraFeedEl.dataset.streamActive === 'true') return;
+      frameBusy = true;
+      cameraFeedEl.onload = () => {
+        cameraFeedEl.hidden = false;
+        fallbackEl.hidden = true;
+        cameraFeedEl.dataset.streamActive = 'true';
+      };
+      cameraFeedEl.onerror = () => {
+        cameraFeedEl.hidden = true;
+        fallbackEl.hidden = false;
+        cameraFeedEl.dataset.streamActive = 'false';
+      };
+      cameraFeedEl.src = `/stream.mjpg?ts=${Date.now()}`;
+      frameBusy = false;
+    }
+
+    function setTextIfChanged(element, value) {
+      if (element.textContent !== value) {
+        element.textContent = value;
+      }
+    }
+
+    function scheduleDataRefresh(delayMs = DATA_REFRESH_INTERVAL_MS) {
+      if (dataRefreshTimer !== null) {
+        window.clearTimeout(dataRefreshTimer);
+      }
+      dataRefreshTimer = window.setTimeout(refreshData, delayMs);
+    }
+
+    async function refreshData() {
+      if (dataRefreshInFlight) {
+        scheduleDataRefresh(DATA_REFRESH_INTERVAL_MS);
+        return;
+      }
+      dataRefreshInFlight = true;
+      try {
+        const response = await fetch('/data', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error('data_unavailable');
+        }
+        const payload = await response.json();
+        const camera = payload.camera || {};
+        const ai = payload.ai || {};
+        setTextIfChanged(aiTextEl, ai.text || 'sin_datos');
+        setTextIfChanged(
+          aiMetaEl,
+          `Camara actualizada hace ${formatAge(camera.age_sec)}. IA actualizada hace ${formatAge(ai.age_sec)}.`,
+        );
+        if (camera.available) {
+          setTextIfChanged(cameraBadgeEl, `${camera.width} x ${camera.height}`);
+        } else {
+          setTextIfChanged(cameraBadgeEl, 'Sin imagen');
+        }
+      } catch (_) {
+        setTextIfChanged(aiTextEl, 'Sin conexion con el servidor web');
+        setTextIfChanged(aiMetaEl, 'No se pudo leer /data.');
+        setTextIfChanged(cameraBadgeEl, 'Sin datos');
+      } finally {
+        dataRefreshInFlight = false;
+        scheduleDataRefresh(DATA_REFRESH_INTERVAL_MS);
+      }
+    }
+
+    refreshFrame();
+    refreshData();
+  </script>
+</body>
+</html>

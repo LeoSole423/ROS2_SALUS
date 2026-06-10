@@ -52,6 +52,9 @@ En Global V2 la ruta LiDAR conservadora por default es `/scan -> /scan_clean`;
 | Lanzar sim WiFi con URDF realista V2 | `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh` | usa `cuatri_real_v2.urdf`, `model_name:=cuatri_real_v2`, parametros de LaserScan para LiDAR inclinado y abre RViz con el mismo URDF |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
+Nota GUI Docker:
+los helpers que abren RViz/Gazebo deben pasar por `tools/exec.sh` o `tools/docker_ros_env.sh`. Esa capa refresca `DISPLAY`, valida el socket X11 actual y autoriza el usuario local con `xhost`, evitando que RViz quede atado al `DISPLAY` con el que se creo el contenedor.
+
 ## Politica de datum
 - La navegacion global vigente usa datum fijo por sitio operativo. `datum_lat`, `datum_lon` y `datum_yaw_deg` deben venir del launch/configuracion del sitio y no de la posicion instantanea del robot.
 - `datum_setter` y los servicios `SetDatum` / `GetDatum` quedan clasificados como LEGACY. Eran soporte para setear datum automaticamente o por servicio; no se usan en `real_global_v2`, `sim_global_v2` ni replay global vigentes.
