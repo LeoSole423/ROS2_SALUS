@@ -50,6 +50,7 @@ def generate_launch_description():
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml = LaunchConfiguration("keepout_mask_yaml")
+    lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
     selected_nav2_overrides_file = PythonExpression(
         [
             "'",
@@ -68,6 +69,26 @@ def generate_launch_description():
             param_rewrites={
                 "default_nav_to_pose_bt_xml": bt_xml,
                 "default_nav_through_poses_bt_xml": bt_through_poses_xml,
+                "local_costmap.local_costmap.ros__parameters.voxel_layer.scan_marking.topic": (
+                    lidar_scan_topic
+                ),
+                "local_costmap.local_costmap.ros__parameters.voxel_layer.scan_clearing.topic": (
+                    lidar_scan_topic
+                ),
+                "global_costmap.global_costmap.ros__parameters.obstacle_layer.scan.topic": (
+                    lidar_scan_topic
+                ),
+            },
+            convert_types=True,
+        ),
+        allow_substs=True,
+    )
+    configured_collision_monitor_params = ParameterFile(
+        RewrittenYaml(
+            source_file=collision_monitor_params_file,
+            root_key="",
+            param_rewrites={
+                "collision_monitor.ros__parameters.scan.topic": lidar_scan_topic,
             },
             convert_types=True,
         ),
@@ -101,6 +122,7 @@ def generate_launch_description():
                 default_value=default_collision_monitor_params,
             ),
             DeclareLaunchArgument("keepout_mask_yaml", default_value=default_keepout_mask),
+            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(keepout_launch),
                 launch_arguments={
@@ -188,7 +210,7 @@ def generate_launch_description():
                 name="collision_monitor",
                 output="screen",
                 parameters=[
-                    collision_monitor_params_file,
+                    configured_collision_monitor_params,
                     {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
                 ],
             ),

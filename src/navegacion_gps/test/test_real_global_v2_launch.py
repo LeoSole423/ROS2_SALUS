@@ -2,6 +2,24 @@ from pathlib import Path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+LIDAR_FILTER_DEFAULT_ARG = (
+    'DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False")'
+)
+SCAN_FILTER_DEFAULT_ARG = (
+    'DeclareLaunchArgument("enable_scan_noise_filter", default_value="True")'
+)
+SCAN_FILTER_OUTPUT_ARG = (
+    'DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean")'
+)
+SCAN_FILTER_MIN_RANGE_ARG = (
+    'DeclareLaunchArgument("scan_noise_filter_range_min_m", default_value="0.4")'
+)
+SCAN_FILTER_MAX_RANGE_ARG = (
+    'DeclareLaunchArgument("scan_noise_filter_range_max_m", default_value="20.0")'
+)
+SCAN_FILTER_WINDOW_ARG = (
+    'DeclareLaunchArgument("scan_noise_filter_speckle_window", default_value="2")'
+)
 
 
 def _read(relative_path: str) -> str:
@@ -24,6 +42,9 @@ def _assert_real_wifi_wrapper_parity(launch_contents: str) -> None:
     assert 'DeclareLaunchArgument("navsat_use_odometry_yaw", default_value="false")' in launch_contents
     assert 'DeclareLaunchArgument("enable_rtk", default_value="True")' in launch_contents
     assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
+    assert LIDAR_FILTER_DEFAULT_ARG in launch_contents
+    assert SCAN_FILTER_DEFAULT_ARG in launch_contents
+    assert SCAN_FILTER_OUTPUT_ARG in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
@@ -112,7 +133,25 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert 'executable="gps_course_heading"' in launch_contents
     assert 'executable="scan_wifi_debug"' in launch_contents
     assert 'condition=IfCondition(enable_scan_wifi_debug)' in launch_contents
+    assert LIDAR_FILTER_DEFAULT_ARG in launch_contents
+    assert 'DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered")' in launch_contents
+    assert SCAN_FILTER_DEFAULT_ARG in launch_contents
+    assert SCAN_FILTER_OUTPUT_ARG in launch_contents
+    assert SCAN_FILTER_MIN_RANGE_ARG in launch_contents
+    assert SCAN_FILTER_MAX_RANGE_ARG in launch_contents
+    assert SCAN_FILTER_WINDOW_ARG in launch_contents
+    assert '"scan_noise_filter_speckle_max_range_m"' in launch_contents
+    assert '"scan_noise_filter_speckle_max_deviation_m"' in launch_contents
+    assert 'executable="scan_noise_filter"' in launch_contents
+    assert 'condition=IfCondition(enable_legacy_scan_noise_filter)' in launch_contents
     assert '"source_topic": "/scan"' in launch_contents
+    assert '"output_topic": scan_noise_filter_output' in launch_contents
+    assert 'executable="lidar_obstacle_filter"' in launch_contents
+    assert 'condition=IfCondition(enable_lidar_obstacle_filter)' in launch_contents
+    assert "enable_legacy_scan_noise_filter = PythonExpression(" in launch_contents
+    assert "'.lower() == 'true' else ('" in launch_contents
+    assert '"source_topic": effective_lidar_scan_topic' in launch_contents
+    assert '"lidar_scan_topic": effective_lidar_scan_topic' in launch_contents
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
     assert '"publish_hz": ParameterValue(' in launch_contents
     assert '"beam_stride": ParameterValue(' in launch_contents
@@ -213,6 +252,15 @@ def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
     assert "nav2_global_v2_real_rolling_wifi_params.yaml" in launch_contents
     assert '"use_rviz": "false"' in launch_contents
     assert '"enable_scan_wifi_debug": enable_scan_wifi_debug' in launch_contents
+    assert '"enable_lidar_obstacle_filter": enable_lidar_obstacle_filter' in launch_contents
+    assert '"lidar_scan_topic": lidar_scan_topic' in launch_contents
+    assert '"enable_scan_noise_filter": enable_scan_noise_filter' in launch_contents
+    assert '"scan_noise_filter_output": scan_noise_filter_output' in launch_contents
+    assert '"scan_noise_filter_range_min_m": scan_noise_filter_range_min_m' in launch_contents
+    assert '"scan_noise_filter_range_max_m": scan_noise_filter_range_max_m' in launch_contents
+    assert '"scan_noise_filter_speckle_window": (' in launch_contents
+    assert '"scan_noise_filter_speckle_max_range_m": (' in launch_contents
+    assert '"scan_noise_filter_speckle_max_deviation_m": (' in launch_contents
     assert '"scan_wifi_debug_topic": scan_wifi_debug_topic' in launch_contents
     assert '"scan_wifi_debug_publish_hz": scan_wifi_debug_publish_hz' in launch_contents
     assert '"scan_wifi_debug_beam_stride": scan_wifi_debug_beam_stride' in launch_contents

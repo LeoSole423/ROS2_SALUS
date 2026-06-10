@@ -15,5 +15,17 @@ set -euo pipefail
 # priorizar discovery liviano y payloads más chicos cuando el operador se une
 # por Wi‑Fi a la navegación real del robot.
 CYCLONEDDS_WIFI_URI="file:///ros2_ws/src/navegacion_gps/config/cyclonedds_wifi.xml"
+DISPLAY_VALUE="${DISPLAY:-:0}"
 
-./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch navegacion_gps rviz_real_global_v2.launch.py custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real.urdf rviz_config:=/ros2_ws/src/navegacion_gps/config/rviz_global_v2.rviz"
+prepare_x11_for_docker_rviz() {
+  if [[ -z "${DISPLAY_VALUE}" ]]; then
+    return
+  fi
+  if command -v xhost >/dev/null 2>&1; then
+    xhost +local: >/dev/null 2>&1 || true
+  fi
+}
+
+prepare_x11_for_docker_rviz
+
+./tools/exec.sh "export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch navegacion_gps rviz_real_global_v2.launch.py custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real.urdf rviz_config:=/ros2_ws/src/navegacion_gps/config/rviz_global_v2.rviz"

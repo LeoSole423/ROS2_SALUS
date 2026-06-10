@@ -6,7 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -54,10 +54,17 @@ def generate_launch_description():
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml = LaunchConfiguration("keepout_mask_yaml")
     global_localization_params_file = LaunchConfiguration("global_localization_params_file")
+    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     custom_urdf = LaunchConfiguration("custom_urdf")
     world = LaunchConfiguration("world")
     world_name = LaunchConfiguration("world_name")
     model_name = LaunchConfiguration("model_name")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_z = LaunchConfiguration("spawn_z")
+    spawn_roll = LaunchConfiguration("spawn_roll")
+    spawn_pitch = LaunchConfiguration("spawn_pitch")
+    spawn_yaw = LaunchConfiguration("spawn_yaw")
     pose_covariance_xy = LaunchConfiguration("pose_covariance_xy")
     pose_covariance_yaw = LaunchConfiguration("pose_covariance_yaw")
     twist_covariance_vx = LaunchConfiguration("twist_covariance_vx")
@@ -117,13 +124,57 @@ def generate_launch_description():
     scan_wifi_debug_publish_hz = LaunchConfiguration("scan_wifi_debug_publish_hz")
     scan_wifi_debug_beam_stride = LaunchConfiguration("scan_wifi_debug_beam_stride")
     scan_wifi_debug_range_max_m = LaunchConfiguration("scan_wifi_debug_range_max_m")
+    enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
+    lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    enable_scan_noise_filter = LaunchConfiguration("enable_scan_noise_filter")
+    scan_noise_filter_output = LaunchConfiguration("scan_noise_filter_output")
+    scan_noise_filter_range_min_m = LaunchConfiguration("scan_noise_filter_range_min_m")
+    scan_noise_filter_range_max_m = LaunchConfiguration("scan_noise_filter_range_max_m")
+    scan_noise_filter_speckle_window = LaunchConfiguration(
+        "scan_noise_filter_speckle_window"
+    )
+    scan_noise_filter_speckle_max_range_m = LaunchConfiguration(
+        "scan_noise_filter_speckle_max_range_m"
+    )
+    scan_noise_filter_speckle_max_deviation_m = LaunchConfiguration(
+        "scan_noise_filter_speckle_max_deviation_m"
+    )
+    lidar_filter_roi_x_min = LaunchConfiguration("lidar_filter_roi_x_min")
+    lidar_filter_roi_x_max = LaunchConfiguration("lidar_filter_roi_x_max")
+    lidar_filter_roi_y_min = LaunchConfiguration("lidar_filter_roi_y_min")
+    lidar_filter_roi_y_max = LaunchConfiguration("lidar_filter_roi_y_max")
+    lidar_filter_roi_z_min = LaunchConfiguration("lidar_filter_roi_z_min")
+    lidar_filter_roi_z_max = LaunchConfiguration("lidar_filter_roi_z_max")
+    lidar_filter_ground_distance_threshold = LaunchConfiguration(
+        "lidar_filter_ground_distance_threshold"
+    )
+    lidar_filter_min_obstacle_height = LaunchConfiguration(
+        "lidar_filter_min_obstacle_height"
+    )
+    lidar_filter_max_obstacle_height = LaunchConfiguration(
+        "lidar_filter_max_obstacle_height"
+    )
+    lidar_filter_min_voxel_points = LaunchConfiguration("lidar_filter_min_voxel_points")
+    effective_lidar_scan_topic = PythonExpression(
+        [
+            "'",
+            lidar_scan_topic,
+            "' if '",
+            enable_lidar_obstacle_filter,
+            "'.lower() == 'true' else ('",
+            scan_noise_filter_output,
+            "' if '",
+            enable_scan_noise_filter,
+            "'.lower() == 'true' else '/scan')",
+        ]
+    )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="True"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
-            DeclareLaunchArgument("nav_start_delay_s", default_value="4.0"),
+            DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
             DeclareLaunchArgument("use_keepout", default_value="True"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
@@ -142,6 +193,12 @@ def generate_launch_description():
                 default_value=default_global_localization_params_file,
             ),
             DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=_resolve_config_file_path(
+                    gps_wpf_dir, "pointcloud_to_laserscan.yaml"
+                ),
+            ),
+            DeclareLaunchArgument(
                 "custom_urdf",
                 default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
             ),
@@ -151,6 +208,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("world_name", default_value="vacio"),
             DeclareLaunchArgument("model_name", default_value="quad_ackermann_viewer_safe"),
+            DeclareLaunchArgument("spawn_x", default_value="0.0"),
+            DeclareLaunchArgument("spawn_y", default_value="0.0"),
+            DeclareLaunchArgument("spawn_z", default_value="0.2"),
+            DeclareLaunchArgument("spawn_roll", default_value="0.0"),
+            DeclareLaunchArgument("spawn_pitch", default_value="0.0"),
+            DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
             DeclareLaunchArgument("pose_covariance_xy", default_value="0.05"),
             DeclareLaunchArgument("pose_covariance_yaw", default_value="0.1"),
             DeclareLaunchArgument("twist_covariance_vx", default_value="0.05"),
@@ -211,6 +274,40 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
+            DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
+            DeclareLaunchArgument("scan_noise_filter_range_min_m", default_value="0.4"),
+            DeclareLaunchArgument("scan_noise_filter_range_max_m", default_value="20.0"),
+            DeclareLaunchArgument("scan_noise_filter_speckle_window", default_value="2"),
+            DeclareLaunchArgument(
+                "scan_noise_filter_speckle_max_range_m",
+                default_value="12.0",
+            ),
+            DeclareLaunchArgument(
+                "scan_noise_filter_speckle_max_deviation_m",
+                default_value="0.30",
+            ),
+            DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
+            DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
+            DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_y_max", default_value="2.5"),
+            DeclareLaunchArgument("lidar_filter_roi_z_min", default_value="-1.0"),
+            DeclareLaunchArgument("lidar_filter_roi_z_max", default_value="2.0"),
+            DeclareLaunchArgument(
+                "lidar_filter_ground_distance_threshold",
+                default_value="0.18",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_min_obstacle_height",
+                default_value="0.22",
+            ),
+            DeclareLaunchArgument(
+                "lidar_filter_max_obstacle_height",
+                default_value="1.40",
+            ),
+            DeclareLaunchArgument("lidar_filter_min_voxel_points", default_value="3"),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(gps_wpf_dir, "launch", "sim_global_v2.launch.py")
@@ -228,10 +325,17 @@ def generate_launch_description():
                     "collision_monitor_params_file": collision_monitor_params_file,
                     "keepout_mask_yaml": keepout_mask_yaml,
                     "global_localization_params_file": global_localization_params_file,
+                    "lidar_to_scan_params_file": lidar_to_scan_params_file,
                     "custom_urdf": custom_urdf,
                     "world": world,
                     "world_name": world_name,
                     "model_name": model_name,
+                    "spawn_x": spawn_x,
+                    "spawn_y": spawn_y,
+                    "spawn_z": spawn_z,
+                    "spawn_roll": spawn_roll,
+                    "spawn_pitch": spawn_pitch,
+                    "spawn_yaw": spawn_yaw,
                     "pose_covariance_xy": pose_covariance_xy,
                     "pose_covariance_yaw": pose_covariance_yaw,
                     "twist_covariance_vx": twist_covariance_vx,
@@ -266,6 +370,37 @@ def generate_launch_description():
                     "launch_web_app": launch_web_app,
                     "ws_host": ws_host,
                     "web_app_port": web_app_port,
+                    "enable_lidar_obstacle_filter": enable_lidar_obstacle_filter,
+                    "lidar_scan_topic": lidar_scan_topic,
+                    "enable_scan_noise_filter": enable_scan_noise_filter,
+                    "scan_noise_filter_output": scan_noise_filter_output,
+                    "scan_noise_filter_range_min_m": scan_noise_filter_range_min_m,
+                    "scan_noise_filter_range_max_m": scan_noise_filter_range_max_m,
+                    "scan_noise_filter_speckle_window": (
+                        scan_noise_filter_speckle_window
+                    ),
+                    "scan_noise_filter_speckle_max_range_m": (
+                        scan_noise_filter_speckle_max_range_m
+                    ),
+                    "scan_noise_filter_speckle_max_deviation_m": (
+                        scan_noise_filter_speckle_max_deviation_m
+                    ),
+                    "lidar_filter_roi_x_min": lidar_filter_roi_x_min,
+                    "lidar_filter_roi_x_max": lidar_filter_roi_x_max,
+                    "lidar_filter_roi_y_min": lidar_filter_roi_y_min,
+                    "lidar_filter_roi_y_max": lidar_filter_roi_y_max,
+                    "lidar_filter_roi_z_min": lidar_filter_roi_z_min,
+                    "lidar_filter_roi_z_max": lidar_filter_roi_z_max,
+                    "lidar_filter_ground_distance_threshold": (
+                        lidar_filter_ground_distance_threshold
+                    ),
+                    "lidar_filter_min_obstacle_height": (
+                        lidar_filter_min_obstacle_height
+                    ),
+                    "lidar_filter_max_obstacle_height": (
+                        lidar_filter_max_obstacle_height
+                    ),
+                    "lidar_filter_min_voxel_points": lidar_filter_min_voxel_points,
                 }.items(),
             ),
             Node(
@@ -277,7 +412,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
-                        "source_topic": "/scan",
+                        "source_topic": effective_lidar_scan_topic,
                         "output_topic": scan_wifi_debug_topic,
                         "publish_hz": ParameterValue(scan_wifi_debug_publish_hz, value_type=float),
                         "beam_stride": ParameterValue(scan_wifi_debug_beam_stride, value_type=int),
