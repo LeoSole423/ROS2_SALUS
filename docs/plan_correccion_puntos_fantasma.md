@@ -54,15 +54,35 @@ ros2 bag record /scan_3d /scan /scan_clean /imu/data /odometry/local \
   /cmd_vel /cmd_vel_safe /collision_monitor_state /tf /tf_static
 ```
 
+> **Estado: MEDIDO** (jun 2026). El host no tiene ROS; se compilo en Docker
+> (`ros2-humble-perception-ws-salus`) con `build/install/log` bajo
+> `/tmp/salus_lidar_validation`. Gazebo se ejecuto headless inyectando `-s` en
+> `world:=...` porque la GUI falla sin OpenGL. Bags:
+> `/tmp/salus_lidar_validation/bags/a1_slope_baseline` y
+> `/tmp/salus_lidar_validation/bags/a1_tilted_baseline`.
+
 Medir baseline: marcas fantasma en el costmap local y eventos de
-`/collision_monitor_state` sin obstáculo dentro del polígono. Anotar números.
+`/collision_monitor_state` sin obstáculo dentro del polígono. En Humble el
+`state_topic` quedo sin publisher activo (solo subscribers); se midio el efecto
+real comparando `/cmd_vel` contra `/cmd_vel_safe`.
 
 **Limitación a documentar**: el modelo de Gazebo es rígido (sin suspensión), así
 que el pitch transitorio por frenada no se reproduce físicamente; la rampa y el
 URDF inclinado cubren la misma geometría en régimen. El componente *transitorio*
 (salto de pitch entre frames) se cubre con tests sintéticos en A4.
 
-**Salida**: bags de ambos escenarios + número baseline de FP/FN.
+Resultados A1:
+
+| Escenario | FP costmap local acumulado | FP max/frame | FN obstaculos reales | Eventos falsos collision_monitor |
+|---|---:|---:|---:|---:|
+| `slope_lidar.world`, URDF plano | 174,946 celdas ocupadas | 8,419 | 0/2 perdidos (ambos detectados) | 5 slowdown + 4 stop |
+| `vacio.world`, `cuatri_real_v2.urdf` | 0 | 0 | N/A | 0 |
+
+Hallazgo: el escenario de URDF v2 no reproduce fantasmas en este launch porque
+el TF publicado coincide con el LiDAR inclinado; los retornos de suelo quedan por
+debajo de la banda de obstaculo. La rampa de 10 grados si reproduce el problema.
+
+**Salida**: bags de ambos escenarios + baseline medido.
 
 ### A2. Activar la rama 3D y tunear el RANSAC (en sim)
 
@@ -80,12 +100,40 @@ tópico ya está en `real_global_v2.launch.py:201` y su análogo sim).
 - Medir latencia del nodo (Python+NumPy a 10 Hz): si supera ~50 ms por frame,
   recortar ROI o decimar la nube antes del RANSAC.
 
-**Criterio de salida**: en `slope_lidar.world`, cero marcas de suelo y los dos
-obstáculos de la rampa detectados, en ambos URDF.
+> **Estado: MEDIDO** (jun 2026). Barrido offline sobre el bag A1 para aislar
+> RANSAC+persistencia, y corrida live end-to-end con
+> `enable_lidar_obstacle_filter:=True` y `ground_distance_threshold:=0.05`.
+> Bag live: `/tmp/salus_lidar_validation/bags/a2_slope_filter_005`.
+
+Barrido `slope_lidar.world` con gate deshabilitado solo para medir RANSAC:
+
+| `ground_distance_threshold` | Beams fantasma acumulados | Max/frame | Deteccion `left` | Deteccion `right` | Latencia p95 offline |
+|---:|---:|---:|---:|---:|---:|
+| 0.05 | 77 | 39 | 159/175 frames | 165/196 frames | 4.6 ms |
+| 0.08 | 1,380 | 77 | 143/175 | 159/196 | 4.7 ms |
+| 0.12 | 1,057 | 47 | 138/175 | 163/196 | 5.6 ms |
+| 0.18 | 601 | 48 | 139/175 | 151/196 | 6.1 ms |
+
+Con gate default activo (7 grados), la rampa de 10 grados bloquea la mayoria de
+los frames: 308/373 en replay offline y 323/374 en la corrida live. En el bag
+live A2, aun asi los dos obstaculos reales se mantuvieron visibles en el costmap
+(`left` 38/39 frames, `right` 41/42 frames), los FP bajaron a 194 celdas
+acumuladas (max 10/frame), y no hubo slow/stop falsos. Latencia real grabada
+`/scan_3d` -> `/scan_filtered`: media 6.6 ms, p95 9.6 ms, max 14.0 ms.
+
+En `vacio.world` con `cuatri_real_v2.urdf`, todos los thresholds dieron 0 beams
+fantasma y 0 bloqueos del gate; no hay obstaculos reales en ese mundo para FN.
+
+**Recomendacion A2**: usar `ground_distance_threshold: 0.05` en sim para el
+siguiente ciclo. Fue el mejor balance del barrido: minimo suelo residual y mayor
+conteo de deteccion de ambos obstaculos. Queda como issue de campo revisar el
+`tilt_gate_max_offset_deg` si SALUS debe aceptar rampas sostenidas de ~10 grados;
+el valor de 7 grados esta bien para transitorios de cabeceo, pero bloquea rampas
+largas en sim.
 
 ### A3. Endurecer Nav2 (en sim, un cambio por corrida)
 
-Sobre `nav2_global_v2_real_rolling_params.yaml` y equivalentes sim/wifi/local:
+Sobre `nav2_global_v2_sim_rolling_params.yaml`:
 
 | Parámetro | Hoy | Cambio | Fuente |
 |---|---|---|---|
@@ -99,6 +147,26 @@ aparecen FN, volver a 1 antes de tocar lo demás.
 
 **Criterio de salida**: replay de los bags A1 — un frame malo no deja huella
 de más de un ciclo en el costmap, sin FN nuevos.
+
+> **Estado: IMPLEMENTADO/MEDIDO** (jun 2026). Se hizo replay del bag A1 de rampa
+> contra `nav_global_v2.launch.py` con YAMLs temporales, un cambio por corrida.
+> Bags de salida bajo `/tmp/salus_lidar_validation/replay_bags/`.
+
+Resultados A3 (`/scan_clean` baseline, local costmap):
+
+| Configuracion | FP acumulado | FP max/frame | FN | Decision |
+|---|---:|---:|---:|---|
+| Baseline | 168,294 | 8,067 | 0/2 perdidos | referencia |
+| + `denoise_layer`, `minimal_group_size: 2` | 142,471 | 7,356 | 0/2 perdidos | aplicar |
+| `mark_threshold: 2` | 0 | 0 | 2/2 perdidos | descartar |
+| `observation_persistence: 0.0` | 138,133 | 4,941 | 0/2 perdidos | aplicar |
+| `scan_marking.min_obstacle_height: 0.10` | 0 | 0 | 2/2 perdidos | descartar |
+| `denoise_layer` + `observation_persistence: 0.0` | 123,794 | 4,691 | 0/2 perdidos | aplicado |
+
+Los eventos de `/cmd_vel_safe` no cambian con A3 porque `collision_monitor`
+consume el scan efectivo directamente, no el costmap. A3 endurece Nav2/costmap;
+la reduccion de frenados falsos viene de A2 cuando el scan efectivo pasa a
+`/scan_filtered`.
 
 ### A4. Gate de inclinación + persistencia temporal (desarrollo con tests, cero hardware)
 
