@@ -120,6 +120,7 @@ def generate_launch_description():
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
     web_app_port = LaunchConfiguration("web_app_port")
+    nav_snapshot_scan_topic = LaunchConfiguration("nav_snapshot_scan_topic")
     enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
     lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
     enable_scan_noise_filter = LaunchConfiguration("enable_scan_noise_filter")
@@ -276,6 +277,10 @@ def generate_launch_description():
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
+            DeclareLaunchArgument(
+                "nav_snapshot_scan_topic",
+                default_value=effective_lidar_scan_topic,
+            ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
             DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
@@ -668,6 +673,7 @@ def generate_launch_description():
                     "fixed_datum_yaw_deg": datum_yaw_deg,
                     "fixed_datum_source": "sim_global_v2_fixed",
                     "datums_file": datums_file,
+                    "nav_snapshot_scan_topic": nav_snapshot_scan_topic,
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),
