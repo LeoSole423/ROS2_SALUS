@@ -126,6 +126,59 @@ class _FakeRouteStateNode(_FakeNode):
         self._route_mission = self._build_default_route_mission_payload()
 
 
+class _FakeMissionSessionNode(_FakeNode):
+    _MISSION_START_CODES = WebZoneServerNode._MISSION_START_CODES
+    _MISSION_STOP_CODES = WebZoneServerNode._MISSION_STOP_CODES
+    _nav_event_details_to_dict = staticmethod(WebZoneServerNode._nav_event_details_to_dict)
+    _nav_event_to_payload = WebZoneServerNode._nav_event_to_payload
+    _on_nav_event = WebZoneServerNode._on_nav_event
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._recent_nav_events = []
+        self._mission_active = False
+        self._mission_start_count = 0
+        self._mission_stop_count = 0
+        self._mission_records = []
+        self._loop = None
+
+    def _mission_start(self) -> None:
+        self._mission_active = True
+        self._mission_start_count += 1
+
+    def _mission_stop(self) -> None:
+        self._mission_active = False
+        self._mission_stop_count += 1
+
+    def _mission_record(self, record: dict) -> None:
+        if self._mission_active:
+            self._mission_records.append(record)
+
+    def _build_nav_telemetry_payload(self):
+        return {"op": "nav_telemetry"}
+
+    async def _broadcast(self, payload):
+        return payload
+
+
+def _nav_event(code: str):
+    return SimpleNamespace(
+        stamp=SimpleNamespace(sec=0, nanosec=0),
+        severity=0,
+        component="nav_command_server",
+        code=code,
+        message=code,
+        event_id=1,
+        details=[],
+    )
+
+
+def _discard_scheduled_coroutine(coro, loop):
+    _ = loop
+    coro.close()
+    return None
+
+
 def test_should_surface_diagnostic_accepts_navigation_errors():
     node = _FakeNode()
     status = _FakeStatus(
@@ -318,3 +371,40 @@ def test_update_route_state_exposes_blocked_fields_for_websocket_payload():
     assert node._route_mission["blocked_retry_attempt"] == 1
     assert node._route_mission["blocked_retry_max_attempts"] == 3
     assert node._route_mission["blocked_wait_remaining_s"] == pytest.approx(7.5)
+
+
+def test_mission_session_starts_only_after_goal_accepted(monkeypatch):
+    monkeypatch.setattr(
+        "map_tools.web_zone_server.asyncio.run_coroutine_threadsafe",
+        _discard_scheduled_coroutine,
+    )
+    node = _FakeMissionSessionNode()
+
+    node._on_nav_event(_nav_event("GOAL_REQUESTED"))
+    node._on_nav_event(_nav_event("ACTION_SERVER_UNAVAILABLE"))
+
+    assert node._mission_active is False
+    assert node._mission_start_count == 0
+    assert node._mission_records == []
+
+    node._on_nav_event(_nav_event("GOAL_ACCEPTED"))
+
+    assert node._mission_active is True
+    assert node._mission_start_count == 1
+    assert node._mission_records[-1]["data"]["code"] == "GOAL_ACCEPTED"
+
+
+def test_mission_session_stops_on_terminal_nav_event(monkeypatch):
+    monkeypatch.setattr(
+        "map_tools.web_zone_server.asyncio.run_coroutine_threadsafe",
+        _discard_scheduled_coroutine,
+    )
+    node = _FakeMissionSessionNode()
+
+    node._on_nav_event(_nav_event("GOAL_ACCEPTED"))
+    node._on_nav_event(_nav_event("GOAL_RESULT_ABORTED"))
+
+    assert node._mission_active is False
+    assert node._mission_start_count == 1
+    assert node._mission_stop_count == 1
+    assert node._mission_records[-1]["data"]["code"] == "GOAL_RESULT_ABORTED"
