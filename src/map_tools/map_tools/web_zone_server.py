@@ -1685,6 +1685,28 @@ class WebZoneServerNode(Node):
                 )
                 robot_pose_payload = dict(self._last_robot_pose)
 
+        nav_telemetry_record = {
+            "goal_active": bool(msg.goal_active),
+            "auto_mode": str(getattr(msg, "auto_mode", "")),
+            "active_action": str(getattr(msg, "active_action", "")),
+            "cmd_vel_available": bool(msg.cmd_vel_available),
+            "gps_fix_available": bool(getattr(msg, "gps_fix_available", False)),
+            "failure_code": str(getattr(msg, "failure_code", "")),
+            "nav_result_status": int(getattr(msg, "nav_result_status", 0)),
+            "nav_result_text": str(getattr(msg, "nav_result_text", "")),
+            "nav_result_event_id": int(getattr(msg, "nav_result_event_id", 0)),
+        }
+        nav_telemetry_key = json.dumps(nav_telemetry_record, sort_keys=True)
+        should_record_nav_telemetry = False
+        with self._lock:
+            if nav_telemetry_key != self._mission_last_telemetry_key:
+                self._mission_last_telemetry_key = nav_telemetry_key
+                should_record_nav_telemetry = True
+        if should_record_nav_telemetry:
+            self._mission_record(
+                {"t": time.time(), "topic": "/nav_command_server/telemetry", "data": nav_telemetry_record}
+            )
+
         asyncio.run_coroutine_threadsafe(
             self._broadcast(self._build_nav_telemetry_payload()), self._loop
         )
@@ -1694,10 +1716,24 @@ class WebZoneServerNode(Node):
                 self._loop,
             )
 
+    _MISSION_START_CODES = frozenset({"GOAL_ACCEPTED"})
+    _MISSION_STOP_CODES = frozenset(
+        {"GOAL_RESULT_SUCCEEDED", "GOAL_RESULT_ABORTED", "GOAL_CANCELLED", "GOAL_REJECTED"}
+    )
+
     def _on_nav_event(self, msg: NavEvent) -> None:
         payload = self._nav_event_to_payload(msg)
         with self._lock:
             self._recent_nav_events.append(payload)
+        code = str(payload.get("code", "")).upper()
+        if code in self._MISSION_START_CODES:
+            with self._lock:
+                already_active = self._mission_active
+            if not already_active:
+                self._mission_start()
+        self._mission_record({"t": time.time(), "topic": "/nav_command_server/events", "data": payload})
+        if code in self._MISSION_STOP_CODES:
+            self._mission_stop()
         asyncio.run_coroutine_threadsafe(
             self._broadcast({"op": "nav_event", "event": payload}), self._loop
         )
@@ -1940,7 +1976,7 @@ class WebZoneServerNode(Node):
             ok, _, records = self.mission_get_session(filename)
             if not ok:
                 continue
-            payload = {"op": "mission.session_ready", "filename": filename, "lines": records}
+            payload = {"op": "mission.new_session", "filename": filename, "lines": records}
             asyncio.run_coroutine_threadsafe(self._broadcast(payload), self._loop)
             sent.append(filename)
         if sent:
