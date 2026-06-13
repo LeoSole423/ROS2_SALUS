@@ -1716,7 +1716,7 @@ class WebZoneServerNode(Node):
                 self._loop,
             )
 
-    _MISSION_START_CODES = frozenset({"GOAL_REQUESTED"})
+    _MISSION_START_CODES = frozenset({"GOAL_ACCEPTED"})
     _MISSION_STOP_CODES = frozenset(
         {"GOAL_RESULT_SUCCEEDED", "GOAL_RESULT_ABORTED", "GOAL_CANCELLED", "GOAL_REJECTED"}
     )
