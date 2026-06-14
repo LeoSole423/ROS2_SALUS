@@ -45,7 +45,12 @@ class TiltGateConfig:
     enabled: bool = True
     nominal_roll_deg: float = 0.0
     nominal_pitch_deg: float = 0.0
-    max_offset_deg: float = 7.0
+    # El offset debe quedar por ENCIMA de la pendiente operativa maxima:
+    # la inclinacion sostenida es compensable (IMU + RANSAC) y ademas el
+    # collision_monitor usa este scan como unica fuente (source_timeout 1.0 s),
+    # asi que un bloqueo sostenido lo deja ciego. Los transitorios los corta
+    # el limite de salto, no este.
+    max_offset_deg: float = 12.0
     max_jump_deg: float = 3.0
 
 
@@ -452,7 +457,7 @@ class LidarObstacleFilterNode(Node):
         self.declare_parameter("tilt_gate_enabled", True)
         self.declare_parameter("tilt_gate_nominal_roll_deg", 0.0)
         self.declare_parameter("tilt_gate_nominal_pitch_deg", 0.0)
-        self.declare_parameter("tilt_gate_max_offset_deg", 7.0)
+        self.declare_parameter("tilt_gate_max_offset_deg", 12.0)
         self.declare_parameter("tilt_gate_max_jump_deg", 3.0)
         self.declare_parameter(
             "tilt_gate_state_topic",

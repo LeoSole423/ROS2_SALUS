@@ -16,3 +16,20 @@
 # Generated runtime configs
 /src/navegacion_gps/config/block_loop_benchmark.yaml
 /src/navegacion_gps/config/saved_waypoints.yaml
+
+# Node / frontend deps (se regeneran con npm install)
+**/node_modules/
+**/dist/
+
+# Frontends y repos anidados (proyectos aparte, no van en este repo)
+/cockpit/
+/cockpit_simple/
+/cockpit_claude_repo/
+
+# Borradores y scratch local
+/borrador/
+/.codex
+
+# Parches / diffs sueltos
+/franco-borrador_force-push_diff.patch
+/franco-borrador_force-push_diffstat.txt

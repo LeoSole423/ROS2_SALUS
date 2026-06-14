@@ -291,6 +291,15 @@ def generate_launch_description():
                 "scan_noise_filter_speckle_max_deviation_m",
                 default_value="0.30",
             ),
+            DeclareLaunchArgument(
+                "enable_scan_ground_filter",
+                default_value="False",
+                description="Intercala el scan_ground_filter (estilo Autoware) "
+                "entre /scan_3d y pointcloud_to_laserscan (vía sim_v2_base). "
+                "Permite prender/apagar el filtro de suelo en el sim global.",
+            ),
+            DeclareLaunchArgument("scan_ground_min_height", default_value="0.10"),
+            DeclareLaunchArgument("scan_ground_max_height", default_value="2.50"),
             DeclareLaunchArgument("lidar_filter_roi_x_min", default_value="-0.4"),
             DeclareLaunchArgument("lidar_filter_roi_x_max", default_value="12.0"),
             DeclareLaunchArgument("lidar_filter_roi_y_min", default_value="-2.5"),
@@ -344,6 +353,15 @@ def generate_launch_description():
                     "spawn_roll": spawn_roll,
                     "spawn_pitch": spawn_pitch,
                     "spawn_yaw": spawn_yaw,
+                    "enable_scan_ground_filter": LaunchConfiguration(
+                        "enable_scan_ground_filter"
+                    ),
+                    "scan_ground_min_height": LaunchConfiguration(
+                        "scan_ground_min_height"
+                    ),
+                    "scan_ground_max_height": LaunchConfiguration(
+                        "scan_ground_max_height"
+                    ),
                 }.items(),
             ),
             Node(

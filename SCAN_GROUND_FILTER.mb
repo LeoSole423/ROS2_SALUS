@@ -1,0 +1,131 @@
+# Scan Ground Filter — del Autoware completo al port Python: todo lo que se hizo
+
+Resumen ejecutivo de la integración del filtro de suelo estilo Autoware para
+atacar los **puntos fantasma del piso** del RS16 (junio 2026). Documento detallado:
+`docs/autoware_ground_segmentation_integracion.md` (§8 wiring, §9 validación) y los
+docs de arquitectura en `docs/SENSORES_Y_LIDAR.md`.
+
+---
+
+## 1. El problema
+
+El RS16 ve el piso como obstáculo (puntos fantasma) → frenados falsos. La
+mitigación previa (`pointcloud_to_laserscan min_height=0.50`) tapa el piso pero
+**pierde obstáculos bajos**. La idea: eliminar el suelo en **3D** antes de aplanar
+a 2D, usando el `scan_ground_filter` de Autoware (código probado en producción).
+
+## 2. Por qué NO se usó Autoware compilado
+
+El plan original era vendorizar y compilar Autoware (`src/autoware_deps/`). Dos
+muros:
+
+1. **Tildaba la PC.** `colcon build` paraleliza paquetes Y cada paquete usa
+   `make -j<cores>`; los dos niveles se multiplican → decenas de compilaciones C++
+   pesadas (~1.5 GB c/u) revientan la RAM (14 GB) → swap thrashing → cuelgue.
+   - **Fix encontrado** (probado, RAM nunca bajó de ~9.6 GB):
+     `docker run --memory=9g --memory-swap=11g --cpus=6` + `--parallel-workers 2`
+     + `MAKEFLAGS="-j2"`.
+2. **Cascada de dependencias.** El nodo `scan_ground_filter` hereda de la clase
+   base `Filter` de `pointcloud_preprocessor`, que empaqueta un `vector_map_filter`
+   (que NO usamos) → arrastra **lanelet2 + GeographicLib + agnocast** enteros.
+   32/36 paquetes compilaban; `autoware_lanelet2_extension` linkeaba mal.
+
+Conclusión: compilar **un solo nodo** exigía ~36 paquetes C++ y dependencias de
+mapas innecesarias. Desproporcionado para el hardware (Raspberry Pi 5 en producción).
+
+## 3. La decisión: portar el algoritmo a mano
+
+En vez del binario, se copió **la lógica** del nodo a Python puro (numpy + rclpy).
+"Inspirado en / portado de" Autoware (licencia Apache-2.0), no el binario.
+
+### Qué nodo exacto se usó
+
+- **Paquete:** `autoware_ground_segmentation` (autoware.universe **v0.51.0**).
+- **Nodo/componente:** `ScanGroundFilterComponent`.
+- **Archivo portado:** `scan_ground_filter/node.cpp` — funciones
+  `convertPointcloud` (agrupar por azimut + ordenar por radio) y
+  `classifyPointCloud` (clasificación suelo/no-suelo). Apoyo: `node.hpp` (enum
+  `PointLabel`, structs) y `config/scan_ground_filter.param.yaml`.
+
+### Ese nodo tiene DOS algoritmos; se portó uno
+
+| Modo | Param | Portado |
+|---|---|---|
+| **non-grid** (ring-based clásico) | `elevation_grid_mode: false` | ✅ sí |
+| **grid** (elevation grid, `GridGroundFilter` en `grid_ground_filter.cpp`) | `elevation_grid_mode: true` | ❌ no |
+
+⚠️ El default de Autoware es **grid** (`elevation_grid_mode: true`). Se portó el
+**non-grid** (más simple, la otra rama del MISMO nodo). El grid es más robusto en
+terreno complejo (referencia de suelo por celdas + buffer de celdas-suelo +
+re-chequeo de clusters) pero ~500 líneas más y muchos más parámetros. Se deja para
+si la validación real muestra casos borde.
+
+## 4. Lo implementado
+
+- `src/navegacion_gps/navegacion_gps/scan_ground_filter.py` — clase
+  `ScanGroundSegmenter` (núcleo puro, testeable) + `ScanGroundFilterNode`.
+  Interfaz: `/scan_3d` → `/scan_3d/no_ground` (transforma a `base_footprint` antes
+  de clasificar, por el pitch del montaje).
+- `config/scan_ground_filter.param.yaml` (defaults RS16: global 10°, local 13°,
+  radial 1°). Entry point `scan_ground_filter`.
+- Tests: `test/test_scan_ground_filter.py` (núcleo) + `test/test_scan_ground_validation.py`.
+
+### Verificación + optimización (Codex)
+
+- Codex verificó **fidelidad línea por línea** vs `node.cpp` (10 tests verde).
+- Hallazgo: rendimiento ~110 ms / 28k puntos (lagearía en Pi 5). Se reescribió el
+  lazo en floats Python puros + `lexsort` → **~25 ms (4.4×)**, mismo comportamiento.
+  (Casi se cuela un bug al soltar la componente `dy` de la distancia; se detectó y
+  se mantuvo distancia 3D, igual que Autoware.)
+
+## 5. Cableado (detrás de flag, default off)
+
+`sim_v2_base.launch.py` (`OpaqueFunction _build_lidar_pipeline`), forwardeado por
+`sim_local_v2.launch.py` y `validate_scan_ground.launch.py`:
+
+- `enable_scan_ground_filter` (default **False**) → con on: intercala el nodo,
+  `cloud_in:=/scan_3d/no_ground`, y ajusta la ventana del proyector con
+  `scan_ground_min_height` (0.10) y `scan_ground_max_height` (2.50).
+- Con flag **off**, el pipeline queda idéntico al actual (cero regresión).
+
+## 6. Validación en simulación (rampa, ejecutada por Codex)
+
+Escenario: `launch/validate_scan_ground.launch.py` sobre `worlds/slope_lidar.world`
++ nodo medidor `scan_ground_validation` (FP en `/local_costmap/costmap`, eventos de
+freno `/cmd_vel` vs `/cmd_vel_safe`). Runner `scripts/run_scan_ground_validation.sh`.
+
+| Métrica | Baseline (off) | Filtrado (on) | Cambio |
+|---|---:|---:|---:|
+| FP acumulado | 16 654 | 791 | **−95.3 %** |
+| FP máx/frame | 176 | 9 | −94.9 % |
+| FN en `/scan_3d/no_ground` | — | **0/2** | el filtro no se come obstáculos |
+
+Hallazgo: el `/scan` 2D final perdía 1 obstáculo (`slope_obstacle_right`), pero
+**no por el filtro** sino por el `max_height=1.60` del proyector → resuelto con
+`scan_ground_max_height` (seguro de subir porque el piso ya se quitó en 3D).
+
+## 7. Limpieza (2026-06-13)
+
+Se eliminó todo lo que era solo referencia del camino Autoware completo:
+
+- `src/autoware_deps/` (~624 MB, vendor v0.51.0).
+- `config/autoware_scan_ground_filter.param.yaml`, `config/autoware_vehicle_info.param.yaml`.
+- Logs `aw_build.log`, `aw_deps.log`.
+- Imagen Docker `ros2-humble-perception-ws-salus:aw`.
+
+Quedó vivo solo el algoritmo portado en `navegacion_gps/scan_ground_filter.py`.
+**No volver a vendorizar Autoware.**
+
+## 8. Qué falta
+
+1. **Re-correr el A/B** confirmando **FN 0/2 en el `/scan` 2D final** con
+   `scan_ground_max_height=2.50` (no solo en `/scan_3d/no_ground`).
+2. Si pasa: cablear en `real_global_v2.launch.py` + Dockerfile, tuneando min/max a
+   la geometría real.
+3. (Solo si la validación real muestra casos borde) evaluar portar el modo **grid**.
+
+## 9. Cifra para recordar
+
+Rampa de 10° en sim con el `scan_ground_filter` portado:
+**16 654 → 791 celdas fantasma (−95 %), 0/2 obstáculos perdidos**, ~25 ms por nube
+de 28k puntos — sin compilar una sola línea de Autoware.

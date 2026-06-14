@@ -1,0 +1,21 @@
+scan_ground_filter:
+  ros__parameters:
+    input_topic: /scan_3d
+    output_topic: /scan_3d/no_ground
+    # frame nivelado al que se transforma la nube antes de clasificar
+    # (necesario porque el RS16 va montado con pitch). El suelo queda en z~0.
+    target_frame: base_footprint
+
+    # --- mismos valores que Autoware scan_ground_filter.param.yaml (RS16) ---
+    global_slope_max_angle_deg: 10.0
+    local_slope_max_angle_deg: 13.0
+    radial_divider_angle_deg: 1.0
+    split_points_distance_tolerance: 0.2
+    use_virtual_ground_point: true
+    split_height_distance: 0.2
+
+    # punto de suelo virtual = centro ruedas delanteras (autoware_vehicle_info)
+    vehicle_wheel_base_m: 0.90
+
+    # recorte de entrada para no iterar ruido lejano (no altera la clasificacion)
+    range_max: 20.0

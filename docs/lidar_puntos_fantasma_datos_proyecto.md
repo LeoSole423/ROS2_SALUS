@@ -48,7 +48,7 @@ Hay **tres consumidores de scan que pueden frenar**:
 | `lidar_brake_guard` (commit `a57e0c5`) | **`/scan` crudo** | **No** — pero no existe en esta rama (solo en `camara_lidear`, `pagina-terminada-yolo-sin-rtsp`, `pagina_bonita`; verificar si corre en el deployment 2antenas) |
 
 - `collision_monitor` v2: polígonos `footprint` (stop), `stop_zone` (approach,
-  2.05 m, `time_before_collision: 2.0`), `critical_slow_zone` (3.50 m, slowdown
+  2.05 m, TTC 2.0 s), `critical_slow_zone` (3.50 m, slowdown
   0.4375) y `slow_zone`; `/cmd_vel` → `/cmd_vel_safe`. El `collision_monitor.yaml`
   viejo (stop_zone 2.19 m, `/scan` crudo, `use_sim_time: true`) es legacy.
 - `lidar_brake_guard`: publica `/fusion/brake_active=True` si hay algo a
@@ -195,8 +195,9 @@ Global costmap: ObstacleLayer, `observation_persistence: 1.0`, `obstacle_max_ran
 ## 6. Notas operativas
 
 - El robot real (100.111.4.7) ejecuta el contenedor montado sobre
-  `/home/franco/final/2antenas`, **no este repo** — sincronizar antes de probar
-  cambios en campo.
+  `/home/franco/final/2antenas` **(desactualizado: este trabajo se valida y
+  despliega sobre ROS2_SALUS, no sobre 2antenas — verificar/recrear los montajes
+  del contenedor del robot antes de la sesión de campo; ver Etapa B del plan)**.
 - Historia git relevante: `feature/lidar-3d-ground-filter` (merge `c574cab`),
   "Filter ground hits in global v2 lidar" (`91259c8`), "Merge lidar ghost clearing
   fixes" (`4cc63da`), "Tune real lidar height filters" (`c8aa574`), speckle filter

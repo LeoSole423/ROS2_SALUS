@@ -131,6 +131,24 @@ def test_tilt_gate_rejects_offset_beyond_limit() -> None:
     assert _gate_sequence(gate, [0.0, 8.0, 0.0]) == [True, False, True]
 
 
+def test_tilt_gate_default_accepts_sustained_ramp() -> None:
+    # Rampa de 10 grados subida gradualmente: queda dentro del envelope
+    # default (12 grados) y los saltos quedan bajo el limite de 3 grados.
+    # Bloquearla dejaria al collision_monitor sin su unica fuente de scan.
+    gate = _gate()
+
+    assert _gate_sequence(
+        gate,
+        [0.0, 2.5, 5.0, 7.5, 10.0, 10.0, 10.0],
+    ) == [True, True, True, True, True, True, True]
+
+
+def test_tilt_gate_default_still_rejects_extreme_offset() -> None:
+    gate = _gate(max_jump_deg=90.0)
+
+    assert _gate_sequence(gate, [0.0, 13.0, 0.0]) == [True, False, True]
+
+
 def test_tilt_gate_rejects_sudden_jumps_then_recovers() -> None:
     gate = _gate(max_offset_deg=7.0, max_jump_deg=3.0)
 
@@ -146,7 +164,7 @@ def test_tilt_gate_rejects_sudden_jumps_then_recovers() -> None:
 
 
 def test_tilt_gate_honors_nominal_pitch() -> None:
-    gate = _gate(nominal_pitch_deg=10.0, max_jump_deg=90.0)
+    gate = _gate(nominal_pitch_deg=10.0, max_offset_deg=7.0, max_jump_deg=90.0)
 
     assert _gate_sequence(gate, [10.0, 12.0, 0.0]) == [True, True, False]
 

@@ -114,22 +114,45 @@ Barrido `slope_lidar.world` con gate deshabilitado solo para medir RANSAC:
 | 0.12 | 1,057 | 47 | 138/175 | 163/196 | 5.6 ms |
 | 0.18 | 601 | 48 | 139/175 | 151/196 | 6.1 ms |
 
-Con gate default activo (7 grados), la rampa de 10 grados bloquea la mayoria de
+Con el gate original a 7 grados, la rampa de 10 grados bloqueaba la mayoria de
 los frames: 308/373 en replay offline y 323/374 en la corrida live. En el bag
-live A2, aun asi los dos obstaculos reales se mantuvieron visibles en el costmap
+live A2 los dos obstaculos reales se mantuvieron visibles en el costmap
 (`left` 38/39 frames, `right` 41/42 frames), los FP bajaron a 194 celdas
 acumuladas (max 10/frame), y no hubo slow/stop falsos. Latencia real grabada
 `/scan_3d` -> `/scan_filtered`: media 6.6 ms, p95 9.6 ms, max 14.0 ms.
+
+**Caveats de esa medicion live:**
+- Los conteos de deteccion con 86% de frames bloqueados estan inflados por la
+  retencion del costmap (marcas que sobreviven entre updates escasos), no
+  reflejan la salida del filtro. Re-medir tras el cambio del gate (abajo).
+- El "0 slow/stop falsos" fue afortunado: los 51 frames aceptados (~1.4 Hz)
+  mantuvieron la fuente del collision_monitor por debajo de su
+  `source_timeout: 1.0`. Con bloqueo sostenido, el collision_monitor v2 queda
+  sin su **unica** observation source (`collision_monitor_v2.yaml:57`) —
+  segun la version de Nav2 eso significa manejar ciego o stop fail-safe
+  permanente en cualquier pendiente larga.
+- Unidades: el barrido offline cuenta **beams** del scan; el live y A3 cuentan
+  **celdas** del costmap. No comparar entre tablas.
+- La no-monotonicidad del barrido (0.08 peor que 0.18) es ruido del RANSAC
+  (interaccion threshold/percentil de candidatos); no invalida la eleccion de
+  0.05, que gano en FP y en deteccion a la vez.
+
+**Correccion post-review (jun 2026)**: el bloqueo de rampas sostenidas era un
+defecto de diseño del gate, no un issue de campo. La inclinacion *sostenida* es
+compensable (el barrido offline con gate deshabilitado lo demuestra: 77 beams
+residuales a 10 grados); el rol del gate son los *transitorios*, que cubre el
+limite de salto de 3 grados. Se subio el default `tilt_gate_max_offset_deg`
+de 7.0 a **12.0** (por encima de la pendiente operativa maxima), con tests de
+regresion (`test_tilt_gate_default_accepts_sustained_ramp`). **Pendiente:
+re-correr el escenario live A2 esperando ~0 bloqueos del gate en la rampa y
+conteos de deteccion sin el inflado por retencion.**
 
 En `vacio.world` con `cuatri_real_v2.urdf`, todos los thresholds dieron 0 beams
 fantasma y 0 bloqueos del gate; no hay obstaculos reales en ese mundo para FN.
 
 **Recomendacion A2**: usar `ground_distance_threshold: 0.05` en sim para el
 siguiente ciclo. Fue el mejor balance del barrido: minimo suelo residual y mayor
-conteo de deteccion de ambos obstaculos. Queda como issue de campo revisar el
-`tilt_gate_max_offset_deg` si SALUS debe aceptar rampas sostenidas de ~10 grados;
-el valor de 7 grados esta bien para transitorios de cabeceo, pero bloquea rampas
-largas en sim.
+conteo de deteccion de ambos obstaculos.
 
 ### A3. Endurecer Nav2 (en sim, un cambio por corrida)
 
@@ -168,6 +191,18 @@ consume el scan efectivo directamente, no el costmap. A3 endurece Nav2/costmap;
 la reduccion de frenados falsos viene de A2 cuando el scan efectivo pasa a
 `/scan_filtered`.
 
+**Por que los dos descartes son estructurales (NO reintentar en el yaml real):**
+la observation source es un LaserScan proyectado a z=0 en `base_footprint`
+(salida de `pointcloud_to_laserscan` / `points_to_laserscan`). Eso implica:
+- `mark_threshold: 2` exige >=2 voxels ocupados por columna antes de marcar la
+  celda 2D, pero un LaserScan plano ocupa a lo sumo **1** voxel por columna →
+  no puede marcar nada, nunca. El "0 FP / 2-2 FN" medido es el resultado
+  inevitable, no un dato de tuning.
+- `scan_marking.min_obstacle_height: 0.10` filtra por la z del retorno, y todos
+  los retornos del LaserScan estan en z≈0 → filtra el 100%.
+Ambos parametros solo tienen sentido si la fuente fuera PointCloud2
+(p. ej. `/obstacles_cloud`); con fuentes LaserScan deben quedar en 0.
+
 ### A4. Gate de inclinación + persistencia temporal (desarrollo con tests, cero hardware)
 
 > **Estado: IMPLEMENTADO** (jun 2026). `TiltGate` y `VoxelPersistenceFilter` en
@@ -175,7 +210,10 @@ la reduccion de frenados falsos viene de A2 cuando el scan efectivo pasa a
 > `test_lidar_obstacle_filter.py` (17/17 pasan en contenedor
 > `ros2-humble-perception-ws-salus`). Parámetros nuevos del nodo:
 > `tilt_gate_enabled` (True), `tilt_gate_nominal_roll_deg`/`_pitch_deg` (0.0),
-> `tilt_gate_max_offset_deg` (7.0), `tilt_gate_max_jump_deg` (3.0),
+> `tilt_gate_max_offset_deg` (12.0 — era 7.0, subido tras la validacion A2:
+> la inclinacion sostenida es compensable y bloquear deja al collision_monitor
+> sin fuente; los transitorios los corta el salto de 3°),
+> `tilt_gate_max_jump_deg` (3.0),
 > `persistence_enabled` (True), `persistence_min_hits` (2),
 > `persistence_window` (3). Estado del gate publicado en
 > `/lidar_obstacle_filter/tilt_gate_blocked` (Bool). Cuando el gate bloquea,
@@ -186,10 +224,12 @@ la reduccion de frenados falsos viene de A2 cuando el scan efectivo pasa a
 Los dos gaps que ningún nodo cubre hoy, en `lidar_obstacle_filter.py`:
 
 1. **Gate de evento de inclinación** (PDF 1): si `|roll|` o
-   `|pitch − nominal|` > **7°**, o salto > **3°** entre frames consecutivos del
+   `|pitch − nominal|` > **12°** (límite de seguridad, por encima de la
+   pendiente operativa), o salto > **3°** entre frames consecutivos del
    IMU → no publicar ese frame (mantener el último válido o scan vacío +
    estado degradado). Nominal parametrizado (0° para el montaje plano).
-   Esto es lo que ataja el transitorio de frenada que la sim no reproduce.
+   El salto de 3° es lo que ataja el transitorio de frenada que la sim no
+   reproduce; el offset NO debe bloquear pendientes sostenidas compensables.
 2. **Persistencia N-de-M** (PDF 1): voxel ocupado debe repetirse en ≥2 de los
    últimos 3 frames antes de salir en `/scan_filtered`. A 10 Hz agrega ~200 ms
    de latencia de detección (~32 cm a 1.6 m/s) — aceptable contra la stop_zone
@@ -219,8 +259,24 @@ Validación enteramente sintética, siguiendo el patrón de
 fuerte (el escenario que la sim no cubre), rampa o junta si hay, persona a
 2–5 m, obstáculo bajo (~0.3 m). Mismo `ros2 bag record` de A1.
 
-Antes de grabar, confirmar qué corre el robot (monta
-`/home/franco/final/2antenas`, no este repo):
+**El robot debe correr ESTE repo (ROS2_SALUS), no 2antenas** (confirmado por
+Franco, jun 2026 — `2antenas` ya no es el workspace de deployment para este
+trabajo). Antes de grabar, verificar en el robot:
+- que el contenedor monte `ROS2_SALUS`. Causa raíz del desvío: el
+  `docker-compose.yml` usa rutas **relativas** (`./src`, ...), así que monta el
+  workspace desde donde se ejecutó `docker compose up` — el contenedor actual
+  se levantó desde `/home/franco/final/2antenas`. Para recrearlo anclado a este
+  repo usar `docker-compose.salus.yml` (reescrito jun 2026 con rutas absolutas;
+  antes era un stub que creaba un contenedor sin montajes):
+  ```bash
+  docker rm -f ros2_salus   # CUIDADO: corta lo que esté corriendo adentro
+  docker compose -f /home/franco/final/ROS2_SALUS/docker-compose.salus.yml up -d ros2
+  docker exec -it ros2_salus bash -lc 'cd /ros2_ws && colcon build --symlink-install'
+  ```
+  Verificar con `docker inspect ros2_salus --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'`.
+  Nota: el compose de 2antenas agregaba `group_add: "986"` (gid de otra
+  máquina; redundante con `privileged: true`, no se arrastró).
+- rama con este trabajo (`feature/lidar-ghost-validation` o su merge a main),
 - launch y args efectivos (`enable_lidar_obstacle_filter`?),
 - si corre `lidar_brake_guard` (`ros2 node list | grep brake`) — ese nodo
   consume `/scan` crudo y solo existe en ramas `camara_lidear`/`pagina_*`;
@@ -228,10 +284,10 @@ Antes de grabar, confirmar qué corre el robot (monta
 
 **B2. Replay offline y ajuste fino**: correr los bags reales contra el pipeline
 de la Etapa A; ajustar el umbral del gate (el cabeceo real por frenada puede ser
-mayor o menor que los 7° supuestos) y el RANSAC con datos verdaderos.
+mayor o menor que los 3° de salto supuestos) y el RANSAC con datos verdaderos.
 
-**B3. Sincronizar a 2antenas y validar en campo** repitiendo los escenarios de
-B1, comparando KPI contra el baseline. Cerrar actualizando
+**B3. Validar en campo con el robot corriendo ROS2_SALUS** repitiendo los
+escenarios de B1, comparando KPI contra el baseline. Cerrar actualizando
 `docs/lidar_puntos_fantasma_datos_proyecto.md` con los valores finales.
 
 ---
