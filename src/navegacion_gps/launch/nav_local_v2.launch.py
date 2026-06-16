@@ -31,7 +31,7 @@ def generate_launch_description():
     default_collision_monitor_params = _resolve_config_file_path(
         gps_wpf_dir, "collision_monitor_v2.yaml"
     )
-    bt_xml = _resolve_config_file_path(
+    default_bt_xml = _resolve_config_file_path(
         gps_wpf_dir, "navigate_to_pose_w_replanning_and_recovery_no_spin.xml"
     )
     bt_through_poses_xml = _resolve_config_file_path(
@@ -50,6 +50,7 @@ def generate_launch_description():
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml = LaunchConfiguration("keepout_mask_yaml")
+    bt_xml = LaunchConfiguration("nav_to_pose_bt_xml")
     selected_nav2_overrides_file = PythonExpression(
         [
             "'",
@@ -101,6 +102,13 @@ def generate_launch_description():
                 default_value=default_collision_monitor_params,
             ),
             DeclareLaunchArgument("keepout_mask_yaml", default_value=default_keepout_mask),
+            DeclareLaunchArgument(
+                "nav_to_pose_bt_xml",
+                default_value=default_bt_xml,
+                description="BT de NavigateToPose. Default = el de main (con BackUp "
+                "de recovery). Pasá el variante '..._no_backup.xml' para un "
+                "escenario sin retroceso.",
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(keepout_launch),
                 launch_arguments={

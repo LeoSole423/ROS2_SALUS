@@ -39,6 +39,11 @@ def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     slope_world = os.path.join(gps_wpf_dir, "worlds", "slope_lidar.world")
     flat_urdf = os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf")
+    default_bt_xml = os.path.join(
+        gps_wpf_dir,
+        "config",
+        "navigate_to_pose_w_replanning_and_recovery_no_spin.xml",
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
 
@@ -62,6 +67,13 @@ def generate_launch_description():
                 "loop ('retrocede de la nada'). Con esto se puede navegar con "
                 "metas. Poné False si vas a correr localización global real.",
             ),
+            DeclareLaunchArgument(
+                "nav_to_pose_bt_xml",
+                default_value=default_bt_xml,
+                description="BT de NavigateToPose. Default = el de main (con "
+                "BackUp de recovery). Pasá el '..._no_backup.xml' para correr la "
+                "rampa sin retroceso.",
+            ),
             DeclareLaunchArgument("label", default_value="run"),
             DeclareLaunchArgument("duration_s", default_value="60.0"),
             DeclareLaunchArgument("output_path", default_value=""),
@@ -82,6 +94,7 @@ def generate_launch_description():
                     "use_rviz": LaunchConfiguration("use_rviz"),
                     "use_keepout": "False",
                     "gz_args": "-s -r ",
+                    "nav_to_pose_bt_xml": LaunchConfiguration("nav_to_pose_bt_xml"),
                     "enable_scan_ground_filter": LaunchConfiguration(
                         "enable_scan_ground_filter"
                     ),

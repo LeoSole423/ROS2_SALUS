@@ -29,6 +29,7 @@ def generate_launch_description():
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml_arg = LaunchConfiguration("keepout_mask_yaml")
+    nav_to_pose_bt_xml = LaunchConfiguration("nav_to_pose_bt_xml")
     pose_covariance_xy = LaunchConfiguration("pose_covariance_xy")
     pose_covariance_yaw = LaunchConfiguration("pose_covariance_yaw")
     twist_covariance_vx = LaunchConfiguration("twist_covariance_vx")
@@ -67,6 +68,17 @@ def generate_launch_description():
                 default_value=os.path.join(gps_wpf_dir, "config", "collision_monitor_v2.yaml"),
             ),
             DeclareLaunchArgument("keepout_mask_yaml", default_value=keepout_mask_yaml),
+            DeclareLaunchArgument(
+                "nav_to_pose_bt_xml",
+                default_value=os.path.join(
+                    gps_wpf_dir,
+                    "config",
+                    "navigate_to_pose_w_replanning_and_recovery_no_spin.xml",
+                ),
+                description="BT de NavigateToPose reenviado a nav_local_v2. Default "
+                "= el de main (con BackUp). Pasá el '..._no_backup.xml' para sim "
+                "sin retroceso.",
+            ),
             DeclareLaunchArgument("pose_covariance_xy", default_value="0.05"),
             DeclareLaunchArgument("pose_covariance_yaw", default_value="0.1"),
             DeclareLaunchArgument("twist_covariance_vx", default_value="0.05"),
@@ -255,6 +267,7 @@ def generate_launch_description():
                             "nav2_params_file": nav2_params_file,
                             "collision_monitor_params_file": collision_monitor_params_file,
                             "keepout_mask_yaml": keepout_mask_yaml_arg,
+                            "nav_to_pose_bt_xml": nav_to_pose_bt_xml,
                         }.items(),
                     )
                 ],

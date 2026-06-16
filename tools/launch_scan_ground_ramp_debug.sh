@@ -55,10 +55,8 @@ docker exec -d \
       enable_scan_ground_filter:=True \
       scan_ground_min_height:=0.10 \
       scan_ground_max_height:=2.50 \
-      collision_backup_recovery_enabled:=True \
-      collision_backup_distance_m:=0.50 \
-      collision_backup_speed_mps:=0.25 \
-      collision_backup_cooldown_s:=8.0 \
+      collision_backup_recovery_enabled:=False \
+      nav_to_pose_bt_xml:=/ros2_ws/src/navegacion_gps/config/navigate_to_pose_w_replanning_and_recovery_no_spin_no_backup.xml \
       use_rviz:=False \
       duration_s:=${DURATION_S} \
       label:=manual_rviz \
@@ -98,5 +96,8 @@ echo "  slow_zone:          x=5.35 m, slowdown_ratio=0.75"
 echo "  critical_slow_zone: x=3.50 m, slowdown_ratio=0.4375"
 echo "  stop_zone:          x=2.05 m, action=approach, ttc=2.0s"
 echo "  footprint:          x=1.05 m, action=stop"
-echo "Recovery activo: STOP -> cancela goal -> Nav2 BackUp 0.50 m -> reenvia el goal."
+echo "Navegacion = main (RPP allow_reversing:=false) con BT SIN retroceso:"
+echo "  - collision_backup_recovery custom: OFF"
+echo "  - BT de recovery sin BackUp (solo Wait + replan)"
+echo "  El robot nunca retrocede; ante fallo de plan solo espera y replanifica."
 echo "Log: ${LOG_FILE}"

@@ -1,0 +1,25 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence>
+        <RateController hz="0.666" name="RateControllerComputePathToPose">
+          <RecoveryNode number_of_retries="1" name="RecoveryComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
+            <Wait name="WaitGlobalRetry-Context" wait_duration="1" />
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="RecoveryFollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath" />
+          <Wait name="WaitLocalRetry-Context" wait_duration="1" />
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="FallbackRecoveries">
+        <GoalUpdated />
+        <Sequence name="WaitAndReplan">
+          <Wait name="WaitRecovery" wait_duration="2" />
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
+        </Sequence>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
