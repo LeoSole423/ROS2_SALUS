@@ -142,7 +142,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("datums_file", default_value=""),
             DeclareLaunchArgument("request_timeout_s", default_value="5.0"),
-            DeclareLaunchArgument("snapshot_request_timeout_s", default_value="2.0"),
+            DeclareLaunchArgument("snapshot_request_timeout_s", default_value="5.0"),
             DeclareLaunchArgument("set_zones_timeout_s", default_value="12.0"),
             DeclareLaunchArgument("set_goal_timeout_s", default_value="12.0"),
             Node(
