@@ -134,6 +134,7 @@ def generate_launch_description():
     )
     gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
     enable_compass_heading = LaunchConfiguration("enable_compass_heading")
+    enable_compass_initial_guess = LaunchConfiguration("enable_compass_initial_guess")
     compass_hdg_topic = LaunchConfiguration("compass_hdg_topic")
     compass_heading_topic = LaunchConfiguration("compass_heading_topic")
     compass_heading_debug_topic = LaunchConfiguration("compass_heading_debug_topic")
@@ -287,6 +288,7 @@ def generate_launch_description():
                 default_value="/gps/rtk_status_mavros",
             ),
             DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("enable_compass_initial_guess", default_value="false"),
             DeclareLaunchArgument("compass_hdg_topic", default_value="/mavros_node/compass_hdg"),
             DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
             DeclareLaunchArgument(
@@ -382,6 +384,7 @@ def generate_launch_description():
                     "gps_course_heading_rtk_status_max_age_s": gps_course_heading_rtk_status_max_age_s,
                     "gps_rtk_status_topic": gps_rtk_status_topic,
                     "enable_compass_heading": enable_compass_heading,
+                    "enable_compass_initial_guess": enable_compass_initial_guess,
                     "compass_hdg_topic": compass_hdg_topic,
                     "compass_heading_topic": compass_heading_topic,
                     "compass_heading_debug_topic": compass_heading_debug_topic,

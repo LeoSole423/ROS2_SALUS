@@ -15,6 +15,7 @@ GPS ni corregir navegacion en movimiento.
 Por defecto no cambia el comportamiento de navegacion:
 
 - `enable_compass_heading:=false`
+- `enable_compass_initial_guess:=false`
 - `enable_compass_heading_fusion:=false`
 - `enable_sim_compass:=false` en simulacion
 
@@ -142,6 +143,7 @@ del modelo, no yaw absoluto del mundo Gazebo.
 | `compass_heading_topic` | `/imu/compass_heading` | salida yaw-only |
 | `compass_heading_debug_topic` | `/imu/compass_heading/debug` | debug JSON |
 | `compass_heading_yaw_variance_rad2` | `1.0` | covarianza yaw |
+| `enable_compass_initial_guess` | `false` | fusiona solo el guess inicial |
 | `enable_compass_heading_fusion` | `false` | agrega `imu2` al EKF global |
 
 `sim_global_v2.launch.py` y `sim_global_v2_wifi.launch.py` agregan ademas:
@@ -158,10 +160,41 @@ del modelo, no yaw absoluto del mundo Gazebo.
 Cuando `enable_sim_compass:=true`, `compass_heading_gate` lee
 `sim_compass_hdg_topic`. Cuando esta apagado, lee `compass_hdg_topic`.
 
-## Fusion en EKF global
-La fusion esta implementada pero apagada por defecto.
+## Guess inicial
+El modo recomendado para `cuatri_real_v2` es usar la brujula solo como guess
+inicial:
 
-Con `enable_compass_heading_fusion:=true`,
+```bash
+./tools/launch_real_global_v2_wifi_cuatri_real_v2.sh
+```
+
+Ese wrapper activa:
+
+```text
+enable_compass_initial_guess:=true
+```
+
+En simulacion, el wrapper equivalente activa ademas la brujula simulada:
+
+```bash
+./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh
+```
+
+```text
+enable_sim_compass:=true
+enable_compass_initial_guess:=true
+```
+
+Con `enable_compass_initial_guess`, `compass_heading_gate` publica solo dentro
+de `startup_window_s`, bloquea si `/gps/course_heading/debug.valid == true` y
+no vuelve a publicar en reposos largos. El debug deberia mostrar
+`startup_stationary` al inicio y luego `initial_guess_window_expired`.
+
+## Fusion en EKF global
+La fusion permanente esta implementada pero apagada por defecto.
+
+Con `enable_compass_initial_guess:=true` o
+`enable_compass_heading_fusion:=true`,
 `localization_global_v2.launch.py` agrega una fuente `imu2` al EKF global:
 
 ```yaml
@@ -176,8 +209,8 @@ imu2_relative: false
 imu2_remove_gravitational_acceleration: false
 ```
 
-Usar este flag solo en pruebas controladas. La primera etapa recomendada es
-habilitar el nodo y mirar debug/bags sin fusionarlo.
+Usar `enable_compass_heading_fusion:=true` solo en pruebas controladas. Para
+operacion normal del `cuatri_real_v2`, preferir `enable_compass_initial_guess`.
 
 ## Prueba recomendada en simulacion
 Para probar con el URDF realista V2:

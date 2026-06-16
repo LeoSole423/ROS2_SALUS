@@ -25,6 +25,8 @@ LAUNCH_RVIZ=false ./tools/launch_sim_global_v2_wifi.sh \
   custom_urdf:="${URDF_PATH}" \
   lidar_to_scan_params_file:="${LIDAR_TO_SCAN_PARAMS}" \
   model_name:="${MODEL_NAME}" \
+  enable_sim_compass:=true \
+  enable_compass_initial_guess:=true \
   "$@"
 
 if ! docker ps --format '{{.Names}}' | grep -qx "${CONTAINER}"; then

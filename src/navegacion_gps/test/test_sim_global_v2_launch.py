@@ -140,6 +140,11 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"spawn_yaw": spawn_yaw' in launch_contents
     assert "sim_compass_initial_yaw_offset_deg = PythonExpression(" in launch_contents
     assert '"initial_yaw_offset_deg": ParameterValue(' in launch_contents
+    assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
+    assert "effective_enable_compass_heading = PythonExpression(" in launch_contents
+    assert 'condition=IfCondition(effective_enable_compass_heading)' in launch_contents
+    assert '"initial_guess_only": ParameterValue(' in launch_contents
+    assert '"enable_compass_initial_guess": enable_compass_initial_guess' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
     assert '"launch_nav_command_server": "false"' in launch_contents
     assert 'executable="rviz2"' not in launch_contents
@@ -165,6 +170,9 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     compass_heading_fusion_arg = (
         'DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false")'
     )
+    compass_initial_guess_arg = (
+        'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")'
+    )
 
     assert "localization_v2.launch.py" in launch_contents
     assert 'name="global_odom_stationary_gate"' in launch_contents
@@ -188,6 +196,7 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     assert compass_heading_enable_arg in launch_contents
     assert 'DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading")' in launch_contents
     assert compass_heading_fusion_arg in launch_contents
+    assert compass_initial_guess_arg in launch_contents
     assert '"use_odometry_yaw": navsat_use_odometry_yaw' in launch_contents
     assert '"input_odom_topic": "/odometry/local"' in launch_contents
     assert '"output_odom_topic": global_odom_gated_topic' in launch_contents
@@ -206,6 +215,7 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     assert '"imu1_config": [' in launch_contents
     assert '"imu2": compass_heading_topic' in launch_contents
     assert '"imu2_config": [' in launch_contents
+    assert "if enable_compass_heading_fusion or enable_compass_initial_guess:" in launch_contents
     assert '("odometry/filtered", "/odometry/local")' in launch_contents
     assert '("odometry/gps", "/odometry/gps")' in launch_contents
 
@@ -255,11 +265,13 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert 'DeclareLaunchArgument("sim_compass_hdg_topic", default_value="/sim/compass_hdg")' in launch_contents
     assert 'DeclareLaunchArgument("enable_compass_heading", default_value="false")' in launch_contents
     assert 'DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
     assert "spawn_yaw" in launch_contents
     assert '"enable_sim_compass": enable_sim_compass' in launch_contents
     assert '"sim_compass_hdg_topic": sim_compass_hdg_topic' in launch_contents
     assert '"enable_compass_heading": enable_compass_heading' in launch_contents
     assert '"enable_compass_heading_fusion": enable_compass_heading_fusion' in launch_contents
+    assert '"enable_compass_initial_guess": enable_compass_initial_guess' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_topic", default_value="/scan_wifi_debug"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
@@ -299,6 +311,8 @@ def test_cuatri_real_v2_wrapper_keeps_current_urdf_entrypoint() -> None:
     assert 'URDF_PATH="/ros2_ws/src/navegacion_gps/models/cuatri_real_v2.urdf"' in script_contents
     assert 'MODEL_NAME="cuatri_real_v2"' in script_contents
     assert 'custom_urdf:="${URDF_PATH}"' in script_contents
+    assert "enable_sim_compass:=true" in script_contents
+    assert "enable_compass_initial_guess:=true" in script_contents
 
 
 def test_sim_v2_base_spawn_pose_is_launch_configurable() -> None:

@@ -107,6 +107,10 @@ def _build_map_ekf(context):
         LaunchConfiguration("enable_compass_heading_fusion").perform(context).lower()
         == "true"
     )
+    enable_compass_initial_guess = (
+        LaunchConfiguration("enable_compass_initial_guess").perform(context).lower()
+        == "true"
+    )
     compass_heading_topic = LaunchConfiguration("compass_heading_topic").perform(context)
     map_filter_odom_topic = (
         global_odom_gated_topic if enable_global_odom_stationary_gate else "/odometry/local"
@@ -176,7 +180,7 @@ def _build_map_ekf(context):
                 "imu1_remove_gravitational_acceleration": False,
             }
         )
-    if enable_compass_heading_fusion:
+    if enable_compass_heading_fusion or enable_compass_initial_guess:
         parameters.append(
             {
                 "imu2": compass_heading_topic,
@@ -279,6 +283,7 @@ def generate_launch_description():
     map_gps_fromll_wait_timeout_s = LaunchConfiguration("map_gps_fromll_wait_timeout_s")
     compass_heading_topic = LaunchConfiguration("compass_heading_topic")
     enable_compass_heading_fusion = LaunchConfiguration("enable_compass_heading_fusion")
+    enable_compass_initial_guess = LaunchConfiguration("enable_compass_initial_guess")
     # LEGACY: dynamic datum setting is intentionally disabled in current
     # global profiles. Keep the launch switch only for historical tooling.
     datum_setter = LaunchConfiguration("datum_setter")
@@ -377,6 +382,7 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_compass_heading", default_value="false"),
             DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
             DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false"),
+            DeclareLaunchArgument("enable_compass_initial_guess", default_value="false"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument(
                 "invert_measured_steer_sign",

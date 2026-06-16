@@ -45,6 +45,7 @@ class _FakeCompassGate:
     def __init__(self) -> None:
         self._base_frame = "base_footprint"
         self._yaw_variance_rad2 = 1.0
+        self._initial_guess_only = False
         self._startup_window_s = 10.0
         self._stationary_publish_after_s = 30.0
         self._stationary_speed_threshold_mps = 0.05
@@ -190,3 +191,54 @@ def test_gate_blocks_stale_compass_and_large_jumps() -> None:
     assert jumped._imu_pub.messages == []
     jump_debug = json.loads(jumped._debug_pub.messages[-1].data)
     assert jump_debug["reason"] == "compass_jump"
+
+
+def test_initial_guess_only_blocks_after_startup_window() -> None:
+    node = _FakeCompassGate()
+    node._initial_guess_only = True
+    node._compass_max_age_s = 10.0
+    node._imu_max_age_s = 10.0
+    node._drive_telemetry_timeout_s = 10.0
+    _prime_stationary_gate(node, compass_hdg_deg=0.0)
+    node._now_s = 106.0
+
+    node._on_publish_timer()
+
+    assert node._imu_pub.messages == []
+    debug = json.loads(node._debug_pub.messages[-1].data)
+    assert debug["reason"] == "initial_guess_window_expired"
+    assert debug["initial_guess_only"] is True
+
+
+def test_initial_guess_only_blocks_long_stationary_publish() -> None:
+    node = _FakeCompassGate()
+    node._initial_guess_only = True
+    node._compass_max_age_s = 40.0
+    node._imu_max_age_s = 40.0
+    node._drive_telemetry_timeout_s = 40.0
+    _prime_stationary_gate(node, compass_hdg_deg=0.0)
+    node._stationary_since_monotonic_s = 96.0
+    node._now_s = 130.0
+
+    node._on_publish_timer()
+
+    assert node._imu_pub.messages == []
+    debug = json.loads(node._debug_pub.messages[-1].data)
+    assert debug["reason"] == "initial_guess_window_expired"
+
+
+def test_normal_mode_still_allows_long_stationary_publish() -> None:
+    node = _FakeCompassGate()
+    node._compass_max_age_s = 40.0
+    node._imu_max_age_s = 40.0
+    node._drive_telemetry_timeout_s = 40.0
+    _prime_stationary_gate(node, compass_hdg_deg=0.0)
+    node._stationary_since_monotonic_s = 96.0
+    node._now_s = 130.0
+
+    node._on_publish_timer()
+
+    assert len(node._imu_pub.messages) == 1
+    debug = json.loads(node._debug_pub.messages[-1].data)
+    assert debug["reason"] == "long_stationary"
+    assert debug["initial_guess_only"] is False

@@ -175,6 +175,7 @@ def generate_launch_description():
     )
     gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
     enable_compass_heading = LaunchConfiguration("enable_compass_heading")
+    enable_compass_initial_guess = LaunchConfiguration("enable_compass_initial_guess")
     compass_hdg_topic = LaunchConfiguration("compass_hdg_topic")
     compass_heading_topic = LaunchConfiguration("compass_heading_topic")
     compass_heading_debug_topic = LaunchConfiguration("compass_heading_debug_topic")
@@ -228,6 +229,15 @@ def generate_launch_description():
             "'.lower() == 'true' else '",
             effective_lidar_scan_topic,
             "'",
+        ]
+    )
+    effective_enable_compass_heading = PythonExpression(
+        [
+            "'",
+            enable_compass_heading,
+            "'.lower() == 'true' or '",
+            enable_compass_initial_guess,
+            "'.lower() == 'true'",
         ]
     )
     enable_legacy_scan_noise_filter = PythonExpression(
@@ -401,6 +411,7 @@ def generate_launch_description():
                 default_value="/gps/rtk_status_mavros",
             ),
             DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("enable_compass_initial_guess", default_value="false"),
             DeclareLaunchArgument("compass_hdg_topic", default_value="/mavros_node/compass_hdg"),
             DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
             DeclareLaunchArgument(
@@ -648,7 +659,7 @@ def generate_launch_description():
                 executable="compass_heading_gate",
                 name="compass_heading_gate",
                 output="screen",
-                condition=IfCondition(enable_compass_heading),
+                condition=IfCondition(effective_enable_compass_heading),
                 parameters=[
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
@@ -659,6 +670,10 @@ def generate_launch_description():
                         "output_topic": compass_heading_topic,
                         "debug_topic": compass_heading_debug_topic,
                         "base_frame": "base_footprint",
+                        "initial_guess_only": ParameterValue(
+                            enable_compass_initial_guess,
+                            value_type=bool,
+                        ),
                         "yaw_variance_rad2": ParameterValue(
                             compass_heading_yaw_variance_rad2,
                             value_type=float,
@@ -764,6 +779,7 @@ def generate_launch_description():
                     "gps_course_heading_topic": "/gps/course_heading",
                     "enable_compass_heading": enable_compass_heading,
                     "compass_heading_topic": compass_heading_topic,
+                    "enable_compass_initial_guess": enable_compass_initial_guess,
                     "enable_compass_heading_fusion": enable_compass_heading_fusion,
                     "datum_setter": "false",
                     "datum_lat": datum_lat,

@@ -47,6 +47,7 @@ class CompassHeadingGateNode(Node):
         self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("publish_hz", 5.0)
         self.declare_parameter("yaw_variance_rad2", 1.0)
+        self.declare_parameter("initial_guess_only", False)
         self.declare_parameter("startup_window_s", 10.0)
         self.declare_parameter("stationary_publish_after_s", 30.0)
         self.declare_parameter("stationary_speed_threshold_mps", 0.05)
@@ -73,6 +74,9 @@ class CompassHeadingGateNode(Node):
         publish_hz = max(1.0, float(self.get_parameter("publish_hz").value))
         self._yaw_variance_rad2 = max(
             1.0e-6, float(self.get_parameter("yaw_variance_rad2").value)
+        )
+        self._initial_guess_only = bool(
+            self.get_parameter("initial_guess_only").value
         )
         self._startup_window_s = max(
             0.0,
@@ -271,6 +275,8 @@ class CompassHeadingGateNode(Node):
         uptime_s = max(0.0, now_s - self._start_monotonic_s)
         if uptime_s <= self._startup_window_s:
             return (True, "startup_stationary", compass_age_s)
+        if self._initial_guess_only:
+            return (False, "initial_guess_window_expired", compass_age_s)
         if self._stationary_since_monotonic_s is not None:
             stationary_duration_s = now_s - self._stationary_since_monotonic_s
             if stationary_duration_s >= self._stationary_publish_after_s:
@@ -341,6 +347,7 @@ class CompassHeadingGateNode(Node):
                 "yaw_rate_rps": self._last_imu_yaw_rate_rps,
                 "stationary": self._stationary_drive_gate_active(now_s),
                 "gps_heading_valid": bool(self._gps_heading_valid),
+                "initial_guess_only": bool(self._initial_guess_only),
                 "base_frame": self._base_frame,
             },
             sort_keys=True,

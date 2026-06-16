@@ -9,4 +9,5 @@ LIDAR_TO_SCAN_PARAMS="/ros2_ws/src/navegacion_gps/config/pointcloud_to_laserscan
 ./tools/launch_real_global_v2_wifi.sh \
   custom_urdf:="${URDF_PATH}" \
   lidar_to_scan_params_file:="${LIDAR_TO_SCAN_PARAMS}" \
+  enable_compass_initial_guess:=true \
   "$@"
