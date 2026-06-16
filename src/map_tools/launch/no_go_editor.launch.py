@@ -32,6 +32,7 @@ def generate_launch_description():
     teleop_cmd_topic = LaunchConfiguration("teleop_cmd_topic")
 
     nav_snapshot_service = LaunchConfiguration("nav_snapshot_service")
+    nav_snapshot_scan_topic = LaunchConfiguration("nav_snapshot_scan_topic")
     nav_telemetry_topic = LaunchConfiguration("nav_telemetry_topic")
     camera_pan_service = LaunchConfiguration("camera_pan_service")
     camera_status_service = LaunchConfiguration("camera_status_service")
@@ -106,6 +107,10 @@ def generate_launch_description():
                 default_value="/nav_snapshot_server/get_nav_snapshot",
             ),
             DeclareLaunchArgument(
+                "nav_snapshot_scan_topic",
+                default_value="/scan",
+            ),
+            DeclareLaunchArgument(
                 "nav_telemetry_topic",
                 default_value="/nav_command_server/telemetry",
             ),
@@ -137,7 +142,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("datums_file", default_value=""),
             DeclareLaunchArgument("request_timeout_s", default_value="5.0"),
-            DeclareLaunchArgument("snapshot_request_timeout_s", default_value="2.0"),
+            DeclareLaunchArgument("snapshot_request_timeout_s", default_value="5.0"),
             DeclareLaunchArgument("set_zones_timeout_s", default_value="12.0"),
             DeclareLaunchArgument("set_goal_timeout_s", default_value="12.0"),
             Node(
@@ -184,6 +189,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "get_snapshot_service": nav_snapshot_service,
+                        "scan_topic": nav_snapshot_scan_topic,
                     }
                 ],
             ),

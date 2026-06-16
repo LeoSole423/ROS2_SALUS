@@ -46,6 +46,8 @@ class NavSnapshotServerNode(Node):
         self.declare_parameter("snapshot_global_inset_px", 160)
         self.declare_parameter("snapshot_timeout_ms", 500)
         self.declare_parameter("tf_timeout_s", 0.2)
+        self.declare_parameter("vehicle_length_m", 2.4)
+        self.declare_parameter("vehicle_width_m", 1.3)
 
         self.get_snapshot_service = str(self.get_parameter("get_snapshot_service").value)
         self.local_costmap_topic = str(self.get_parameter("local_costmap_topic").value)
@@ -76,6 +78,12 @@ class NavSnapshotServerNode(Node):
             100, int(self.get_parameter("snapshot_timeout_ms").value)
         )
         self.tf_timeout_s = max(0.05, float(self.get_parameter("tf_timeout_s").value))
+        self.vehicle_length_m = max(
+            0.5, float(self.get_parameter("vehicle_length_m").value)
+        )
+        self.vehicle_width_m = max(
+            0.3, float(self.get_parameter("vehicle_width_m").value)
+        )
 
         self._lock = threading.Lock()
         self._local_costmap: Optional[OccupancyGrid] = None
@@ -263,15 +271,15 @@ class NavSnapshotServerNode(Node):
             return False, {"layers": layers}, "missing local costmap"
 
         local_frame = local_costmap.header.frame_id or self.base_frame
-        robot_in_local = self._resolve_robot_position(local_costmap, local_frame)
-        if robot_in_local is None:
+        robot_pose_in_local = self._resolve_robot_pose(local_costmap, local_frame)
+        if robot_pose_in_local is None:
             return (
                 False,
                 {"layers": layers, "frame_id": local_frame},
                 f"missing TF {self.base_frame}->{local_frame}",
             )
 
-        center_x, center_y = robot_in_local
+        center_x, center_y, robot_yaw = robot_pose_in_local
         window = {
             "frame_id": local_frame,
             "size_px": int(self.snapshot_size_px),
@@ -312,12 +320,16 @@ class NavSnapshotServerNode(Node):
             layers["scan"] = self._draw_scan(canvas, scan, window)
 
         if plan is not None:
-            layers["plan"] = self._draw_path(canvas, plan, window, (64, 255, 64), 2)
+            layers["plan"] = self._draw_path(canvas, plan, window, (50, 240, 255), 4)
+
+        self._draw_vehicle_pose(canvas, (center_x, center_y, robot_yaw), window)
 
         if global_costmap is not None:
             layers["global_inset"] = self._draw_global_inset(
                 canvas, global_costmap, plan, keepout_mask
             )
+
+        self._draw_legend(canvas, layers)
 
         stamp = self.get_clock().now().to_msg()
         ok, png = cv2.imencode(".png", canvas)
@@ -336,24 +348,25 @@ class NavSnapshotServerNode(Node):
         }
         return True, payload, None
 
-    def _resolve_robot_position(
+    def _resolve_robot_pose(
         self, local_costmap: OccupancyGrid, local_frame: str
-    ) -> Optional[Tuple[float, float]]:
+    ) -> Optional[Tuple[float, float, float]]:
         if local_frame == self.base_frame:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         if local_frame:
             tf = self._lookup_transform(local_frame, self.base_frame)
             if tf is not None:
                 tx = float(tf.transform.translation.x)
                 ty = float(tf.transform.translation.y)
-                return tx, ty
+                yaw = self._yaw_from_quaternion(tf.transform.rotation)
+                return tx, ty, yaw
 
         info = local_costmap.info
         x = float(info.origin.position.x) + (float(info.width) * float(info.resolution) * 0.5)
         y = float(info.origin.position.y) + (
             float(info.height) * float(info.resolution) * 0.5
         )
-        return x, y
+        return x, y, 0.0
 
     def _lookup_transform(self, target_frame: str, source_frame: str) -> Optional[Any]:
         if (not target_frame) or (not source_frame):
@@ -377,15 +390,18 @@ class NavSnapshotServerNode(Node):
     ) -> Tuple[np.ndarray, np.ndarray]:
         t = tf.transform.translation
         q = tf.transform.rotation
-        yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-        )
+        yaw = self._yaw_from_quaternion(q)
         cos_yaw = math.cos(yaw)
         sin_yaw = math.sin(yaw)
         x_out = float(t.x) + (cos_yaw * x) - (sin_yaw * y)
         y_out = float(t.y) + (sin_yaw * x) + (cos_yaw * y)
         return x_out, y_out
+
+    def _yaw_from_quaternion(self, q: Any) -> float:
+        return math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
 
     def _grid_data_top_left(self, grid: OccupancyGrid) -> np.ndarray:
         arr = np.array(grid.data, dtype=np.float32)
@@ -710,11 +726,12 @@ class NavSnapshotServerNode(Node):
             return False
 
         drawn = False
-        for x, y in pts_tgt:
+        for (x, y), range_m in zip(pts_tgt, rs.tolist()):
             px = self._world_to_px(float(x), float(y), window)
             if px is None:
                 continue
-            cv2.circle(canvas, px, 1, (0, 80, 255), thickness=-1, lineType=cv2.LINE_AA)
+            radius = 2 if float(range_m) > 6.0 else 3
+            cv2.circle(canvas, px, radius, (0, 110, 255), thickness=-1, lineType=cv2.LINE_AA)
             drawn = True
         return drawn
 
@@ -736,9 +753,12 @@ class NavSnapshotServerNode(Node):
         pts_tgt = self._transform_points_2d(pts, src_frame, str(window["frame_id"]))
         if pts_tgt is None:
             return False
-        return self._draw_path_segment_clipped(
+        drawn = self._draw_path_segment_clipped(
             canvas, pts_tgt, window, color_bgr, thickness
         )
+        if drawn:
+            self._draw_path_direction_markers(canvas, pts_tgt, window, color_bgr)
+        return drawn
 
     def _draw_path_segment_clipped(
         self,
@@ -788,6 +808,158 @@ class NavSnapshotServerNode(Node):
             drawn = True
 
         return drawn
+
+    def _draw_path_direction_markers(
+        self,
+        canvas: np.ndarray,
+        pts_xy: List[Tuple[float, float]],
+        window: Dict[str, Any],
+        color_bgr: Tuple[int, int, int],
+    ) -> None:
+        if len(pts_xy) < 2:
+            return
+        total_len = 0.0
+        segments: List[Tuple[Tuple[float, float], Tuple[float, float], float]] = []
+        for idx in range(len(pts_xy) - 1):
+            p0 = pts_xy[idx]
+            p1 = pts_xy[idx + 1]
+            seg_len = math.hypot(float(p1[0] - p0[0]), float(p1[1] - p0[1]))
+            if seg_len <= 0.05:
+                continue
+            segments.append((p0, p1, seg_len))
+            total_len += seg_len
+        if total_len <= 0.2:
+            return
+
+        marker_spacing_m = max(3.0, self.snapshot_extent_m / 6.0)
+        next_marker_m = min(marker_spacing_m, total_len * 0.35)
+        travelled = 0.0
+        for p0, p1, seg_len in segments:
+            while travelled + seg_len >= next_marker_m:
+                ratio = (next_marker_m - travelled) / seg_len
+                x = float(p0[0]) + (float(p1[0] - p0[0]) * ratio)
+                y = float(p0[1]) + (float(p1[1] - p0[1]) * ratio)
+                px = self._world_to_px(x, y, window)
+                if px is not None:
+                    cv2.circle(canvas, px, 4, color_bgr, thickness=-1, lineType=cv2.LINE_AA)
+                    cv2.circle(canvas, px, 6, (20, 20, 20), thickness=1, lineType=cv2.LINE_AA)
+                next_marker_m += marker_spacing_m
+                if next_marker_m > total_len:
+                    return
+            travelled += seg_len
+
+    def _oriented_point(
+        self, pose_xy_yaw: Tuple[float, float, float], x_local: float, y_local: float
+    ) -> Tuple[float, float]:
+        x, y, yaw = pose_xy_yaw
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        return (
+            float(x) + (cos_yaw * x_local) - (sin_yaw * y_local),
+            float(y) + (sin_yaw * x_local) + (cos_yaw * y_local),
+        )
+
+    def _draw_vehicle_pose(
+        self,
+        canvas: np.ndarray,
+        pose_xy_yaw: Tuple[float, float, float],
+        window: Dict[str, Any],
+    ) -> bool:
+        length = float(self.vehicle_length_m)
+        width = float(self.vehicle_width_m)
+        body_pts = [
+            self._oriented_point(pose_xy_yaw, length * 0.52, width * 0.50),
+            self._oriented_point(pose_xy_yaw, length * 0.52, -width * 0.50),
+            self._oriented_point(pose_xy_yaw, -length * 0.48, -width * 0.50),
+            self._oriented_point(pose_xy_yaw, -length * 0.48, width * 0.50),
+        ]
+        px_pts = [self._world_to_px(x, y, window) for x, y in body_pts]
+        if any(point is None for point in px_pts):
+            return False
+
+        body_arr = np.array(px_pts, dtype=np.int32).reshape((-1, 1, 2))
+        overlay = canvas.copy()
+        cv2.fillPoly(overlay, [body_arr], (40, 55, 65), lineType=cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.82, canvas, 0.18, 0.0, dst=canvas)
+        cv2.polylines(canvas, [body_arr], True, (235, 245, 255), 2, lineType=cv2.LINE_AA)
+
+        front_left = self._oriented_point(pose_xy_yaw, length * 0.54, width * 0.34)
+        front_right = self._oriented_point(pose_xy_yaw, length * 0.54, -width * 0.34)
+        front_pts = [self._world_to_px(*front_left, window), self._world_to_px(*front_right, window)]
+        if all(point is not None for point in front_pts):
+            cv2.line(canvas, front_pts[0], front_pts[1], (0, 255, 255), 3, lineType=cv2.LINE_AA)
+
+        arrow_start = self._oriented_point(pose_xy_yaw, -length * 0.10, 0.0)
+        arrow_end = self._oriented_point(pose_xy_yaw, length * 0.85, 0.0)
+        p0 = self._world_to_px_unbounded(*arrow_start, window)
+        p1 = self._world_to_px_unbounded(*arrow_end, window)
+        if p0 is not None and p1 is not None:
+            clip_rect = (0, 0, int(window["size_px"]), int(window["size_px"]))
+            ok, c0, c1 = cv2.clipLine(clip_rect, p0, p1)
+            if ok:
+                cv2.arrowedLine(
+                    canvas,
+                    c0,
+                    c1,
+                    (0, 255, 255),
+                    3,
+                    cv2.LINE_AA,
+                    0,
+                    0.28,
+                )
+                label_x = max(4, min(int(window["size_px"]) - 56, c1[0] + 6))
+                label_y = max(16, min(int(window["size_px"]) - 6, c1[1] - 6))
+                cv2.putText(
+                    canvas,
+                    "FRONT",
+                    (label_x, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42,
+                    (0, 0, 0),
+                    3,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    canvas,
+                    "FRONT",
+                    (label_x, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+        return True
+
+    def _draw_legend(self, canvas: np.ndarray, layers: Dict[str, bool]) -> None:
+        rows = [
+            ("PLAN", (50, 240, 255), bool(layers.get("plan", False))),
+            ("LIDAR", (0, 110, 255), bool(layers.get("scan", False))),
+            ("FRONT", (0, 255, 255), True),
+            ("KEEP", (40, 40, 255), bool(layers.get("keepout_mask", False))),
+            ("STOP", (0, 0, 255), bool(layers.get("stop_zone", False))),
+        ]
+        x0 = 10
+        y0 = canvas.shape[0] - (len(rows) * 20) - 12
+        box_w = 112
+        box_h = (len(rows) * 20) + 8
+        overlay = canvas.copy()
+        cv2.rectangle(overlay, (x0 - 4, y0 - 16), (x0 + box_w, y0 + box_h), (20, 24, 28), -1)
+        cv2.addWeighted(overlay, 0.72, canvas, 0.28, 0.0, dst=canvas)
+        for idx, (label, color, enabled) in enumerate(rows):
+            y = y0 + (idx * 20)
+            draw_color = color if enabled else (110, 110, 110)
+            cv2.circle(canvas, (x0 + 7, y), 4, draw_color, -1, lineType=cv2.LINE_AA)
+            cv2.putText(
+                canvas,
+                label,
+                (x0 + 18, y + 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                draw_color,
+                1,
+                cv2.LINE_AA,
+            )
 
     def _draw_global_inset(
         self,

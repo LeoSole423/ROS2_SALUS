@@ -182,6 +182,17 @@ def generate_launch_description():
             "'.lower() == 'true' else '/scan')",
         ]
     )
+    nav_snapshot_scan_topic = PythonExpression(
+        [
+            "'",
+            scan_wifi_debug_topic,
+            "' if '",
+            enable_scan_wifi_debug,
+            "'.lower() == 'true' else '",
+            effective_lidar_scan_topic,
+            "'",
+        ]
+    )
 
     return LaunchDescription(
         [
@@ -411,6 +422,7 @@ def generate_launch_description():
                     "launch_web_app": launch_web_app,
                     "ws_host": ws_host,
                     "web_app_port": web_app_port,
+                    "nav_snapshot_scan_topic": nav_snapshot_scan_topic,
                     "enable_lidar_obstacle_filter": enable_lidar_obstacle_filter,
                     "lidar_scan_topic": lidar_scan_topic,
                     "enable_scan_noise_filter": enable_scan_noise_filter,

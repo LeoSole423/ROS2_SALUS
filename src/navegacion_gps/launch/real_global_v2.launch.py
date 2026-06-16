@@ -219,6 +219,17 @@ def generate_launch_description():
             "'.lower() == 'true' else '/scan')",
         ]
     )
+    nav_snapshot_scan_topic = PythonExpression(
+        [
+            "'",
+            scan_wifi_debug_topic,
+            "' if '",
+            enable_scan_wifi_debug,
+            "'.lower() == 'true' else '",
+            effective_lidar_scan_topic,
+            "'",
+        ]
+    )
     enable_legacy_scan_noise_filter = PythonExpression(
         [
             "'",
@@ -791,6 +802,7 @@ def generate_launch_description():
                     "launch_nav_command_server": "false",
                     "launch_route_executor": "false",
                     "teleop_cmd_topic": "/cmd_vel_teleop",
+                    "nav_snapshot_scan_topic": nav_snapshot_scan_topic,
                     "gps_status_topic": gps_rtk_status_topic,
                     "sensor_bridge_enabled": launch_web_app,
                     "sensor_bridge_http_url": "http://127.0.0.1:8000/data",
