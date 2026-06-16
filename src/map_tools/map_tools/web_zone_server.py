@@ -187,7 +187,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("odom_topic", "/odometry/local")
         self.declare_parameter("gps_broadcast_hz", 1.0)
         self.declare_parameter("request_timeout_s", 5.0)
-        self.declare_parameter("snapshot_request_timeout_s", 2.0)
+        self.declare_parameter("snapshot_request_timeout_s", 5.0)
         self.declare_parameter("set_zones_timeout_s", 12.0)
         self.declare_parameter("set_goal_timeout_s", 12.0)
         self.declare_parameter("waypoints_file", "")
