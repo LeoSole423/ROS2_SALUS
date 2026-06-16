@@ -52,6 +52,7 @@ En Global V2 la ruta LiDAR conservadora por default es `/scan -> /scan_clean`;
 | Lanzar sim WiFi con URDF realista V2 | `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh` | usa `cuatri_real_v2.urdf`, `model_name:=cuatri_real_v2`, parametros de LaserScan para LiDAR inclinado y abre RViz con el mismo URDF |
 | Probar brujula gateada en sim V2 | `./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh enable_sim_compass:=true enable_compass_heading:=true` | publica `/sim/compass_hdg`, `/imu/compass_heading` y `/imu/compass_heading/debug`; no fusiona al EKF salvo `enable_compass_heading_fusion:=true` |
 | Probar brujula gateada en robot real | `./tools/launch_real_global_v2_wifi.sh enable_compass_heading:=true` | usa `/mavros_node/compass_hdg` y deja la salida yaw-only solo como diagnostico si no se activa `enable_compass_heading_fusion` |
+| Medir bias brujula vs GPS RTK | `./tools/record_compass_calibration.sh east_run_01 60` | herramienta pasiva; no mueve el robot, guarda JSON en `/ros2_ws/artifacts/compass_calibration/` |
 | Lanzar `real_global_v2` con datum explícito | `./tools/exec.sh "source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps real_global_v2.launch.py datum_lat:=<lat> datum_lon:=<lon> datum_yaw_deg:=<yaw_deg>"` | usar cuando el sitio operativo no coincide con el default |
 
 Nota GUI Docker:
@@ -77,6 +78,7 @@ los helpers que abren RViz/Gazebo deben pasar por `tools/exec.sh` o `tools/docke
 | Herramienta | Comando | Estado |
 | --- | --- | --- |
 | Rosbag debug navegación | `./tools/record_nav_debug_bag.sh` | vigente, ahora graba GPS crudo/procesado + RTK para replay offline |
+| Calibración brújula vs GPS RTK | `./tools/record_compass_calibration.sh <label> [duration_s]` | vigente, pasivo, emite JSON para agentes y humanos |
 | Replay + compare de bag localización | `./tools/run_localization_replay_compare.sh <bag_dir>` | soporte |
 | Generador loop tipo cuadra | `./tools/generate_block_loop_benchmark.sh` | vigente |
 | Healthcheck LiDAR | `./tools/healthcheck-lidar.sh` | vigente |

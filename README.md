@@ -88,6 +88,7 @@ docker compose up -d --build
 - `./tools/launch_real_global_v2_wifi.sh`
 - `./tools/launch_real_global_v2_wifi_cuatri_real_v2.sh`
 - `./tools/record_nav_debug_bag.sh`
+- `./tools/record_compass_calibration.sh`
 - `./tools/healthcheck-lidar.sh`
 
 Scripts legacy o de referencia:

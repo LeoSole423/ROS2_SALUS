@@ -345,3 +345,92 @@ pista inicial cuando el robot todavia no pudo generar heading por avance GPS.
 - No usar la brujula para reemplazar `datum_yaw_deg` ni para auto-setear datum.
 - Si hay saltos o interferencia magnetica, dejar solo diagnostico o apagar
   `enable_compass_heading`.
+
+## Herramienta de calibracion para agentes
+Para medir el bias entre magnetometro y heading por movimiento RTK/GPS existe
+una herramienta pasiva:
+
+```bash
+./tools/record_compass_calibration.sh east_run_01 60
+```
+
+Ese wrapper guarda el JSON en:
+
+```text
+/ros2_ws/artifacts/compass_calibration/<label>_<timestamp>.json
+```
+
+Si hace falta pasar parametros extra al recorder, se agregan despues de la
+duracion:
+
+```bash
+./tools/record_compass_calibration.sh east_run_01 60 \
+  --max-abs-steer-deg 4.0 \
+  --include-samples
+```
+
+Comando ROS equivalente:
+
+```bash
+ros2 run navegacion_gps compass_calibration_recorder \
+  --duration-s 60 \
+  --label east_run_01 \
+  --output /ros2_ws/artifacts/compass_calibration/east_run_01.json
+```
+
+No publica comandos, no mueve el robot y no lanza navegacion. Solo escucha:
+
+- `/mavros_node/compass_hdg`
+- `/mavros_node/mag`
+- `/gps/course_heading`
+- `/gps/course_heading/debug`
+- `/controller/drive_telemetry`
+- `/odometry/global`
+- `/odometry/local`
+- `/imu/data`
+
+Salida:
+
+- JSON completo en stdout, siempre pensado para parseo automatico.
+- Si `--output` esta presente, guarda el mismo JSON en archivo.
+
+Ejemplo desde el robot con el launch real ya corriendo:
+
+```bash
+./tools/record_compass_calibration.sh east_run_01 60
+```
+
+Durante la medicion conviene mover el robot en linea recta y sin curvas
+pronunciadas, con RTK sano. La herramienta acepta muestras solo cuando:
+
+- `/gps/course_heading/debug.valid == true`;
+- la velocidad supera `--min-speed-mps`;
+- la direccion esta dentro de `--max-abs-steer-deg`;
+- el yaw-rate esta dentro de `--max-abs-yaw-rate-rps`;
+- el compass y el heading GPS estan cercanos en tiempo.
+
+Campos principales del JSON:
+
+- `sample_counts.valid_comparison`: cantidad de muestras usadas para bias.
+- `summaries.delta_compass_minus_gps_yaw_deg`: diferencia angular medida.
+- `summaries.mag_norm_uT`: intensidad magnetica cruda en microteslas.
+- `recommendation.recommended_yaw_bias_deg`: offset sugerido para sumar al yaw
+  ENU derivado del compass.
+- `recommendation.recommended_compass_hdg_bias_deg`: offset equivalente para
+  sumar al heading tipo brujula antes de convertir.
+- `recommendation.enough_data`: indica si la medicion alcanzo muestras y
+  dispersion suficientes.
+
+Definiciones:
+
+```text
+compass_yaw_enu = normalize(90 - compass_hdg)
+delta_yaw_compass_minus_gps = compass_yaw_enu - gps_course_yaw
+recommended_yaw_bias_deg = -mean(delta_yaw_compass_minus_gps)
+recommended_compass_hdg_bias_deg = mean(delta_yaw_compass_minus_gps)
+```
+
+Si `invalid_reasons` muestra muchos `speed_low`, falta una recta con mas
+movimiento. Si muestra `steer_high` o `yaw_rate_high`, la pasada tuvo curva o
+giro. Si `mag_norm_uT` cambia fuerte cerca del robot, priorizar reubicacion o
+calibracion fisica del magnetometro antes de fusionar.
