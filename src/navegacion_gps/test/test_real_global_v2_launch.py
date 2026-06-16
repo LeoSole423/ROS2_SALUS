@@ -26,6 +26,10 @@ def _read(relative_path: str) -> str:
     return (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _read_repo(relative_path: str) -> str:
+    return (PACKAGE_ROOT.parents[1] / relative_path).read_text(encoding="utf-8")
+
+
 def _assert_real_wifi_wrapper_parity(launch_contents: str) -> None:
     assert 'DeclareLaunchArgument("use_keepout", default_value="False")' in launch_contents
     assert 'DeclareLaunchArgument("enable_gps_course_heading", default_value="True")' in launch_contents
@@ -166,6 +170,11 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert '"allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses' in launch_contents
     assert '"enable_gps_course_heading": enable_gps_course_heading' in launch_contents
     assert '"gps_course_heading_topic": "/gps/course_heading"' in launch_contents
+    assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
+    assert "effective_enable_compass_heading = PythonExpression(" in launch_contents
+    assert 'condition=IfCondition(effective_enable_compass_heading)' in launch_contents
+    assert '"initial_guess_only": ParameterValue(' in launch_contents
+    assert '"enable_compass_initial_guess": enable_compass_initial_guess' in launch_contents
     _assert_real_wifi_wrapper_parity(launch_contents)
 
 
@@ -179,6 +188,9 @@ def test_localization_global_v2_launch_supports_datum_overrides() -> None:
     gps_heading_arg = 'DeclareLaunchArgument("enable_gps_course_heading", default_value="false")'
     gps_heading_topic_arg = (
         'DeclareLaunchArgument("gps_course_heading_topic", default_value="/gps/course_heading")'
+    )
+    compass_initial_guess_arg = (
+        'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")'
     )
 
     assert 'DeclareLaunchArgument("datum_lat"' in launch_contents
@@ -197,12 +209,16 @@ def test_localization_global_v2_launch_supports_datum_overrides() -> None:
     assert navsat_yaw_arg in launch_contents
     assert gps_heading_arg in launch_contents
     assert gps_heading_topic_arg in launch_contents
+    assert compass_initial_guess_arg in launch_contents
     assert '"use_odometry_yaw": navsat_use_odometry_yaw' in launch_contents
     assert 'DeclareLaunchArgument(\n                "map_gps_absolute_topic"' in launch_contents
     assert '{"odom1": map_gps_absolute_topic}' in launch_contents
     assert '"odom2": global_stationary_yaw_hold_topic' in launch_contents
     assert '"odom2_config": [' in launch_contents
     assert '"imu1": gps_course_heading_topic' in launch_contents
+    assert '"imu2": compass_heading_topic' in launch_contents
+    assert '"imu2_config": [' in launch_contents
+    assert "if enable_compass_heading_fusion or enable_compass_initial_guess:" in launch_contents
     assert '"datum": [datum_lat, datum_lon, datum_yaw_rad]' in launch_contents
     assert "math.radians(datum_yaw_deg)" in launch_contents
 
@@ -265,7 +281,17 @@ def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
     assert '"scan_wifi_debug_publish_hz": scan_wifi_debug_publish_hz' in launch_contents
     assert '"scan_wifi_debug_beam_stride": scan_wifi_debug_beam_stride' in launch_contents
     assert '"scan_wifi_debug_range_max_m": scan_wifi_debug_range_max_m' in launch_contents
+    assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
+    assert '"enable_compass_initial_guess": enable_compass_initial_guess' in launch_contents
     _assert_real_wifi_wrapper_parity(launch_contents)
+
+
+def test_real_cuatri_real_v2_wrapper_enables_compass_initial_guess() -> None:
+    script_contents = _read_repo("tools/launch_real_global_v2_wifi_cuatri_real_v2.sh")
+
+    assert 'URDF_PATH="/ros2_ws/src/navegacion_gps/models/cuatri_real_v2.urdf"' in script_contents
+    assert 'custom_urdf:="${URDF_PATH}"' in script_contents
+    assert "enable_compass_initial_guess:=true" in script_contents
 
 
 def test_real_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:

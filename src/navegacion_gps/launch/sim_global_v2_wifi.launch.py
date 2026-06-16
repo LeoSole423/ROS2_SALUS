@@ -115,6 +115,21 @@ def generate_launch_description():
         "gps_course_heading_rtk_status_max_age_s"
     )
     gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
+    enable_sim_compass = LaunchConfiguration("enable_sim_compass")
+    sim_compass_hdg_topic = LaunchConfiguration("sim_compass_hdg_topic")
+    sim_compass_noise_stddev_deg = LaunchConfiguration("sim_compass_noise_stddev_deg")
+    sim_compass_bias_deg = LaunchConfiguration("sim_compass_bias_deg")
+    sim_compass_publish_hz = LaunchConfiguration("sim_compass_publish_hz")
+    sim_compass_seed = LaunchConfiguration("sim_compass_seed")
+    enable_compass_heading = LaunchConfiguration("enable_compass_heading")
+    enable_compass_initial_guess = LaunchConfiguration("enable_compass_initial_guess")
+    compass_hdg_topic = LaunchConfiguration("compass_hdg_topic")
+    compass_heading_topic = LaunchConfiguration("compass_heading_topic")
+    compass_heading_debug_topic = LaunchConfiguration("compass_heading_debug_topic")
+    enable_compass_heading_fusion = LaunchConfiguration("enable_compass_heading_fusion")
+    compass_heading_yaw_variance_rad2 = LaunchConfiguration(
+        "compass_heading_yaw_variance_rad2"
+    )
     gps_profile = LaunchConfiguration("gps_profile")
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
@@ -268,6 +283,22 @@ def generate_launch_description():
                 "gps_course_heading_rtk_status_max_age_s", default_value="2.5"
             ),
             DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status"),
+            DeclareLaunchArgument("enable_sim_compass", default_value="false"),
+            DeclareLaunchArgument("sim_compass_hdg_topic", default_value="/sim/compass_hdg"),
+            DeclareLaunchArgument("sim_compass_noise_stddev_deg", default_value="0.0"),
+            DeclareLaunchArgument("sim_compass_bias_deg", default_value="0.0"),
+            DeclareLaunchArgument("sim_compass_publish_hz", default_value="5.0"),
+            DeclareLaunchArgument("sim_compass_seed", default_value="1"),
+            DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("enable_compass_initial_guess", default_value="false"),
+            DeclareLaunchArgument("compass_hdg_topic", default_value="/mavros_node/compass_hdg"),
+            DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
+            DeclareLaunchArgument(
+                "compass_heading_debug_topic",
+                default_value="/imu/compass_heading/debug",
+            ),
+            DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false"),
+            DeclareLaunchArgument("compass_heading_yaw_variance_rad2", default_value="1.0"),
             DeclareLaunchArgument("gps_profile", default_value="f9p_rtk"),
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
@@ -377,6 +408,19 @@ def generate_launch_description():
                     "gps_course_heading_allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses,
                     "gps_course_heading_rtk_status_max_age_s": gps_course_heading_rtk_status_max_age_s,
                     "gps_rtk_status_topic": gps_rtk_status_topic,
+                    "enable_sim_compass": enable_sim_compass,
+                    "sim_compass_hdg_topic": sim_compass_hdg_topic,
+                    "sim_compass_noise_stddev_deg": sim_compass_noise_stddev_deg,
+                    "sim_compass_bias_deg": sim_compass_bias_deg,
+                    "sim_compass_publish_hz": sim_compass_publish_hz,
+                    "sim_compass_seed": sim_compass_seed,
+                    "enable_compass_heading": enable_compass_heading,
+                    "enable_compass_initial_guess": enable_compass_initial_guess,
+                    "compass_hdg_topic": compass_hdg_topic,
+                    "compass_heading_topic": compass_heading_topic,
+                    "compass_heading_debug_topic": compass_heading_debug_topic,
+                    "enable_compass_heading_fusion": enable_compass_heading_fusion,
+                    "compass_heading_yaw_variance_rad2": compass_heading_yaw_variance_rad2,
                     "gps_profile": gps_profile,
                     "launch_web_app": launch_web_app,
                     "ws_host": ws_host,
