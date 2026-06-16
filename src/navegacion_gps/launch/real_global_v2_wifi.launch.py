@@ -133,6 +133,15 @@ def generate_launch_description():
         "gps_course_heading_rtk_status_max_age_s"
     )
     gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
+    enable_compass_heading = LaunchConfiguration("enable_compass_heading")
+    enable_compass_initial_guess = LaunchConfiguration("enable_compass_initial_guess")
+    compass_hdg_topic = LaunchConfiguration("compass_hdg_topic")
+    compass_heading_topic = LaunchConfiguration("compass_heading_topic")
+    compass_heading_debug_topic = LaunchConfiguration("compass_heading_debug_topic")
+    enable_compass_heading_fusion = LaunchConfiguration("enable_compass_heading_fusion")
+    compass_heading_yaw_variance_rad2 = LaunchConfiguration(
+        "compass_heading_yaw_variance_rad2"
+    )
     enable_map_gps_absolute_measurement = LaunchConfiguration(
         "enable_map_gps_absolute_measurement"
     )
@@ -278,6 +287,16 @@ def generate_launch_description():
                 "gps_rtk_status_topic",
                 default_value="/gps/rtk_status_mavros",
             ),
+            DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("enable_compass_initial_guess", default_value="false"),
+            DeclareLaunchArgument("compass_hdg_topic", default_value="/mavros_node/compass_hdg"),
+            DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
+            DeclareLaunchArgument(
+                "compass_heading_debug_topic",
+                default_value="/imu/compass_heading/debug",
+            ),
+            DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false"),
+            DeclareLaunchArgument("compass_heading_yaw_variance_rad2", default_value="1.0"),
             DeclareLaunchArgument("datum_lat", default_value=str(default_datum_lat)),
             DeclareLaunchArgument("datum_lon", default_value=str(default_datum_lon)),
             DeclareLaunchArgument("datum_yaw_deg", default_value=str(default_datum_yaw_deg)),
@@ -364,6 +383,13 @@ def generate_launch_description():
                     "gps_course_heading_allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses,
                     "gps_course_heading_rtk_status_max_age_s": gps_course_heading_rtk_status_max_age_s,
                     "gps_rtk_status_topic": gps_rtk_status_topic,
+                    "enable_compass_heading": enable_compass_heading,
+                    "enable_compass_initial_guess": enable_compass_initial_guess,
+                    "compass_hdg_topic": compass_hdg_topic,
+                    "compass_heading_topic": compass_heading_topic,
+                    "compass_heading_debug_topic": compass_heading_debug_topic,
+                    "enable_compass_heading_fusion": enable_compass_heading_fusion,
+                    "compass_heading_yaw_variance_rad2": compass_heading_yaw_variance_rad2,
                     "enable_map_gps_absolute_measurement": enable_map_gps_absolute_measurement,
                     "map_gps_absolute_topic": map_gps_absolute_topic,
                     "map_gps_pose_covariance_xy": map_gps_pose_covariance_xy,

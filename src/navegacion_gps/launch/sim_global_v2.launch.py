@@ -116,6 +116,21 @@ def generate_launch_description():
         "gps_course_heading_rtk_status_max_age_s"
     )
     gps_rtk_status_topic = LaunchConfiguration("gps_rtk_status_topic")
+    enable_sim_compass = LaunchConfiguration("enable_sim_compass")
+    sim_compass_hdg_topic = LaunchConfiguration("sim_compass_hdg_topic")
+    sim_compass_noise_stddev_deg = LaunchConfiguration("sim_compass_noise_stddev_deg")
+    sim_compass_bias_deg = LaunchConfiguration("sim_compass_bias_deg")
+    sim_compass_publish_hz = LaunchConfiguration("sim_compass_publish_hz")
+    sim_compass_seed = LaunchConfiguration("sim_compass_seed")
+    enable_compass_heading = LaunchConfiguration("enable_compass_heading")
+    enable_compass_initial_guess = LaunchConfiguration("enable_compass_initial_guess")
+    compass_hdg_topic = LaunchConfiguration("compass_hdg_topic")
+    compass_heading_topic = LaunchConfiguration("compass_heading_topic")
+    compass_heading_debug_topic = LaunchConfiguration("compass_heading_debug_topic")
+    enable_compass_heading_fusion = LaunchConfiguration("enable_compass_heading_fusion")
+    compass_heading_yaw_variance_rad2 = LaunchConfiguration(
+        "compass_heading_yaw_variance_rad2"
+    )
     gps_profile = LaunchConfiguration("gps_profile")
     launch_web_app = LaunchConfiguration("launch_web_app")
     ws_host = LaunchConfiguration("ws_host")
@@ -172,6 +187,33 @@ def generate_launch_description():
             "'.lower() == 'true' and '",
             enable_lidar_obstacle_filter,
             "'.lower() != 'true'",
+        ]
+    )
+    effective_compass_hdg_topic = PythonExpression(
+        [
+            "'",
+            sim_compass_hdg_topic,
+            "' if '",
+            enable_sim_compass,
+            "'.lower() == 'true' else '",
+            compass_hdg_topic,
+            "'",
+        ]
+    )
+    effective_enable_compass_heading = PythonExpression(
+        [
+            "'",
+            enable_compass_heading,
+            "'.lower() == 'true' or '",
+            enable_compass_initial_guess,
+            "'.lower() == 'true'",
+        ]
+    )
+    sim_compass_initial_yaw_offset_deg = PythonExpression(
+        [
+            "float('",
+            spawn_yaw,
+            "') * 180.0 / 3.141592653589793",
         ]
     )
 
@@ -273,6 +315,22 @@ def generate_launch_description():
                 default_value="2.5",
             ),
             DeclareLaunchArgument("gps_rtk_status_topic", default_value="/gps/rtk_status"),
+            DeclareLaunchArgument("enable_sim_compass", default_value="false"),
+            DeclareLaunchArgument("sim_compass_hdg_topic", default_value="/sim/compass_hdg"),
+            DeclareLaunchArgument("sim_compass_noise_stddev_deg", default_value="0.0"),
+            DeclareLaunchArgument("sim_compass_bias_deg", default_value="0.0"),
+            DeclareLaunchArgument("sim_compass_publish_hz", default_value="5.0"),
+            DeclareLaunchArgument("sim_compass_seed", default_value="1"),
+            DeclareLaunchArgument("enable_compass_heading", default_value="false"),
+            DeclareLaunchArgument("enable_compass_initial_guess", default_value="false"),
+            DeclareLaunchArgument("compass_hdg_topic", default_value="/mavros_node/compass_hdg"),
+            DeclareLaunchArgument("compass_heading_topic", default_value="/imu/compass_heading"),
+            DeclareLaunchArgument(
+                "compass_heading_debug_topic",
+                default_value="/imu/compass_heading/debug",
+            ),
+            DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false"),
+            DeclareLaunchArgument("compass_heading_yaw_variance_rad2", default_value="1.0"),
             DeclareLaunchArgument("gps_profile", default_value="f9p_rtk"),
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
@@ -338,6 +396,64 @@ def generate_launch_description():
                         # cuando el vehiculo esta quieto para que el EKF global
                         # no amplifique el jitter estacionario del GPS.
                         "gps_hold_when_stationary": True,
+                    }
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
+                executable="sim_compass_hdg",
+                name="sim_compass_hdg",
+                output="screen",
+                condition=IfCondition(enable_sim_compass),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "input_imu_topic": "/imu/data",
+                        "output_topic": sim_compass_hdg_topic,
+                        "publish_hz": ParameterValue(
+                            sim_compass_publish_hz,
+                            value_type=float,
+                        ),
+                        "noise_stddev_deg": ParameterValue(
+                            sim_compass_noise_stddev_deg,
+                            value_type=float,
+                        ),
+                        "bias_deg": ParameterValue(
+                            sim_compass_bias_deg,
+                            value_type=float,
+                        ),
+                        "initial_yaw_offset_deg": ParameterValue(
+                            sim_compass_initial_yaw_offset_deg,
+                            value_type=float,
+                        ),
+                        "seed": ParameterValue(sim_compass_seed, value_type=int),
+                    }
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
+                executable="compass_heading_gate",
+                name="compass_heading_gate",
+                output="screen",
+                condition=IfCondition(effective_enable_compass_heading),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "compass_hdg_topic": effective_compass_hdg_topic,
+                        "imu_topic": "/imu/data",
+                        "drive_telemetry_topic": "/controller/drive_telemetry",
+                        "gps_course_heading_debug_topic": "/gps/course_heading/debug",
+                        "output_topic": compass_heading_topic,
+                        "debug_topic": compass_heading_debug_topic,
+                        "base_frame": "base_footprint",
+                        "initial_guess_only": ParameterValue(
+                            enable_compass_initial_guess,
+                            value_type=bool,
+                        ),
+                        "yaw_variance_rad2": ParameterValue(
+                            compass_heading_yaw_variance_rad2,
+                            value_type=float,
+                        ),
                     }
                 ],
             ),
@@ -649,6 +765,10 @@ def generate_launch_description():
                     "navsat_use_odometry_yaw": "false",
                     "enable_gps_course_heading": enable_gps_course_heading,
                     "gps_course_heading_topic": "/gps/course_heading",
+                    "enable_compass_heading": enable_compass_heading,
+                    "compass_heading_topic": compass_heading_topic,
+                    "enable_compass_initial_guess": enable_compass_initial_guess,
+                    "enable_compass_heading_fusion": enable_compass_heading_fusion,
                     "datum_lat": datum_lat,
                     "datum_lon": datum_lon,
                     "datum_yaw_deg": datum_yaw_deg,

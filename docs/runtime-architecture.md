@@ -100,10 +100,14 @@ Estado y plan de percepcion LiDAR: [docs/lidar-perception.md](/home/leo/codigo/R
 - TF:
   - `map -> odom -> base_footprint`
 
-Idea futura para heading: usar `/mavros_node/compass_hdg` como referencia débil
-solo en arranque o reposo largo, mediante un nodo gated que publique yaw-only
-con covarianza alta. No usar `/mavros_node/mag` crudo directamente en el EKF.
-Ver [docs/heading-compass-integration-ideas.md](/home/leo/codigo/ROS2_SALUS/docs/heading-compass-integration-ideas.md).
+Heading auxiliar por brujula: `compass_heading_gate` puede usar
+`/mavros_node/compass_hdg` como referencia debil solo en arranque o reposo
+largo, publicando yaw-only en `/imu/compass_heading` y debug en
+`/imu/compass_heading/debug`. Esta ayuda esta desactivada por defecto con
+`enable_compass_heading:=false`; la fusion EKF queda detras de
+`enable_compass_heading_fusion:=false`. No usar `/mavros_node/mag` crudo
+directamente en el EKF.
+Ver [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md).
 
 ## Simulación Gazebo
 - Entrada canónica:
