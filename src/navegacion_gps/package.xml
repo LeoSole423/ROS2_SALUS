@@ -30,6 +30,7 @@
   <depend>ackermann_msgs</depend>
   <depend>pointcloud_to_laserscan</depend>
   <depend>nav_msgs</depend>
+  <depend>map_msgs</depend>
   <depend>std_msgs</depend>
   <depend>diagnostic_msgs</depend>
   <depend>tf2_ros</depend>

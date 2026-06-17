@@ -1,0 +1,134 @@
+# LiDAR — Puntos fantasma y frenados falsos: todo lo que se hizo
+
+Resumen ejecutivo de la investigación, implementación y validación (junio 2026).
+Documentos detallados: `docs/lidar_puntos_fantasma_datos_proyecto.md` (datos y
+arquitectura) y `docs/plan_correccion_puntos_fantasma.md` (plan por fases con
+mediciones).
+
+---
+
+## 1. El problema
+
+El robot frena o desacelera sin obstáculo real. Causa: el LiDAR RoboSense
+**RS16** (3D, 16 haces, montado **plano** a 0.65 m sobre `base_link`,
+adelantado 0.92 m) ve el piso cuando el chasis **cabecea** (frenadas,
+aceleraciones, rampas, juntas). Esos retornos de suelo entran al pipeline como
+obstáculos ("puntos fantasma") y disparan el costmap de Nav2 y el
+collision_monitor.
+
+Agravante: los EKF de localización usan `two_d_mode: true`, así que el
+roll/pitch real del chasis **no está en el TF** — solo existe en `/imu/data`
+(Pixhawk). Por eso ningún filtro basado en TF puede compensar el cabeceo.
+
+## 2. La investigación (a partir de dos informes de ChatGPT)
+
+Se analizaron dos PDFs de investigación ("Eliminación y filtrado de puntos
+fantasmas en un LiDAR con soporte inclinable en ROS2" y "Resumen Ejecutivo") y
+se cruzaron con el repo. Hallazgos clave:
+
+- **El pipeline 3D recomendado ya existía en el repo** pero estaba apagado:
+  `lidar_obstacle_filter.py` (compensación IMU + RANSAC de suelo + voxel
+  density), con `enable_lidar_obstacle_filter` default `False`. En producción
+  solo corría un speckle filter 2D (`scan_noise_filter`).
+- También existía la infraestructura de prueba: `worlds/slope_lidar.world`
+  (rampa de 10° con dos obstáculos reales encima) y `cuatri_real_v2.urdf`
+  (LiDAR pitcheado 10° fijo = peor caso estático), del commit `aba3e49`.
+- El collision_monitor v2 **sí** consume el scan filtrado (RewrittenYaml en
+  `nav_global_v2.launch.py:91`); su único riesgo es que el scan es su **única**
+  observation source.
+- `lidar_brake_guard` (consume `/scan` crudo) no existe en esta rama, solo en
+  `camara_lidear`/`pagina_*`.
+- Gaps que ningún nodo cubría: gate de evento de inclinación, persistencia
+  temporal multi-frame, DenoiseLayer en Nav2.
+
+## 3. Lo implementado (commit `0153b21`)
+
+En `src/navegacion_gps/navegacion_gps/lidar_obstacle_filter.py`:
+
+1. **`TiltGate`** — rechaza el frame si la actitud IMU salta > **3°** entre
+   frames (transitorio: la compensación no es confiable) o si se va a más de
+   **12°** del nominal (límite de seguridad; era 7° — ver §5). Cuando bloquea,
+   no publica nada (el costmap retiene la última observación válida) y publica
+   el estado en `/lidar_obstacle_filter/tilt_gate_blocked` (Bool).
+2. **`VoxelPersistenceFilter`** — un voxel ocupado debe verse en ≥**2 de los
+   últimos 3 frames** para salir en `/scan_filtered`. Un fantasma de un solo
+   frame nunca llega a Nav2; un obstáculo real entra con ~100 ms de retraso.
+
+Todo parametrizable (`tilt_gate_*`, `persistence_*`), sin tocar launches.
+**23 tests** en `test_lidar_obstacle_filter.py` (todos pasan en el contenedor
+`ros2-humble-perception-ws-salus`).
+
+## 4. La validación en simulación (commit `cd19db1`, ejecutada por Codex)
+
+Sin robot disponible: todo en Gazebo headless + replays de bags
+(`/tmp/salus_lidar_validation/`).
+
+| Medición | Resultado |
+|---|---|
+| Baseline rampa 10° (pipeline viejo) | **174,946 celdas FP** acumuladas, 5 slowdown + 4 stop falsos |
+| URDF inclinado con TF correcto | 0 FP (el caso estático lo resuelve el TF; el problema real es solo el cabeceo dinámico sin TF) |
+| Filtro 3D activado, RANSAC barrido {0.05/0.08/0.12/0.18} | gana **0.05**: 77 beams residuales, mejor detección de ambos obstáculos |
+| Live end-to-end con threshold 0.05 | **194 celdas FP** (−99.9%), **0 frenados falsos**, obstáculos reales detectados, latencia p95 **9.6 ms** |
+| Nav2 sim: DenoiseLayer (`minimal_group_size: 2`) | aplicado — baja FP sin perder obstáculos |
+| Nav2 sim: `observation_persistence` 0.6 → 0.0 | aplicado — baja FP sin perder obstáculos |
+| Nav2 sim: `mark_threshold: 2` y `min_obstacle_height: 0.10` | **descartados — estructural**: la fuente es LaserScan a z=0 (1 voxel por columna, todos los retornos en z≈0) → matan el 100% de las detecciones. Solo valdrían con fuente PointCloud2. NO reintentar en el yaml real. |
+
+## 5. Correcciones post-review (sin commitear aún)
+
+- **Gate 7° → 12°**: el 7° bloqueaba rampas sostenidas de 10° (323/374 frames
+  bloqueados en la corrida live). La inclinación *sostenida* es compensable
+  (IMU+RANSAC, demostrado por el barrido offline); el rol del gate son los
+  *transitorios* (salto 3°). Y bloquear sostenido deja al collision_monitor sin
+  su única fuente (`source_timeout: 1.0`) → manejar ciego o stop fail-safe.
+  Cambio + 2 tests de regresión. **Pendiente: re-correr live A2 esperando ~0
+  bloqueos en rampa.**
+- Caveats documentados: conteos de detección live inflados por retención del
+  costmap; unidades beams vs celdas entre tablas; no-monotonicidad RANSAC.
+
+## 6. Corrección de deployment
+
+- **El workspace canónico es ROS2_SALUS, no 2antenas** (corregido en docs y
+  memoria).
+- Causa del desvío: `docker-compose.yml` monta con rutas **relativas** → el
+  contenedor `ros2_salus` actual se levantó desde `/home/franco/final/2antenas`
+  y corre ese código.
+- **`docker-compose.salus.yml` fue reescrito** (antes era un stub roto que
+  creaba un contenedor sin montajes): ahora es autónomo con rutas absolutas a
+  este repo. Migración:
+  ```bash
+  docker rm -f ros2_salus   # corta lo que esté corriendo
+  docker compose -f /home/franco/final/ROS2_SALUS/docker-compose.salus.yml up -d ros2
+  docker exec -it ros2_salus bash -lc 'cd /ros2_ws && colcon build --symlink-install'
+  ```
+
+## 7. Estado de git
+
+- Rama local `feature/lidar-ghost-validation`, **sin push**.
+- Commits: `0153b21` (gate + persistencia + docs) y `cd19db1` (validación sim
+  + Nav2 sim yaml).
+- Sin commitear: gate 12° + tests, correcciones de docs, compose nuevo, este
+  archivo.
+
+## 8. Qué falta
+
+1. Re-correr live A2 con gate 12° (Codex, sim).
+2. Commitear lo pendiente del working tree.
+3. A5: `enable_lidar_obstacle_filter` default `True` en launch de sim,
+   actualizar `REAL_GLOBAL_V2_CHECKLIST.md`, script de bags de campo.
+4. Push + PR.
+5. Recrear contenedor local con el compose nuevo (decisión de Franco).
+6. **Etapa B (con el robot)**: verificar montajes del contenedor del robot →
+   bags reales de frenadas fuertes (lo único que la sim no reproduce; calibra
+   el salto de 3° del gate) → confirmar RANSAC 0.05 con suelo real → recién ahí
+   portar los cambios de Nav2 y defaults a los yaml/launches **reales** →
+   validar en campo contra el baseline.
+7. Opcional (solo si hace falta distinguir persona vs objeto): el pipeline
+   LiDAR solo dice "obstáculo sí/no"; la semántica conviene sacarla de la
+   fusión con YOLO (`lidar_camara`), no de clasificar la nube — el RS16 da
+   pocos puntos por peatón a distancia.
+
+## 9. Cifra para recordar
+
+Rampa de 10° en sim: **174,946 celdas fantasma y 9 frenados falsos → 194 celdas
+y 0 frenados** con el filtro 3D activado (RANSAC 0.05 + gate + persistencia),
+con 9.6 ms p95 de latencia.

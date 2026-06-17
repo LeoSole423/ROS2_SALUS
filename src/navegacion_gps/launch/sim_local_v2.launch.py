@@ -29,12 +29,19 @@ def generate_launch_description():
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml_arg = LaunchConfiguration("keepout_mask_yaml")
+    nav_to_pose_bt_xml = LaunchConfiguration("nav_to_pose_bt_xml")
     pose_covariance_xy = LaunchConfiguration("pose_covariance_xy")
     pose_covariance_yaw = LaunchConfiguration("pose_covariance_yaw")
     twist_covariance_vx = LaunchConfiguration("twist_covariance_vx")
     twist_covariance_vy = LaunchConfiguration("twist_covariance_vy")
     twist_covariance_yaw_rate = LaunchConfiguration("twist_covariance_yaw_rate")
     gps_profile = LaunchConfiguration("gps_profile")
+    collision_backup_recovery_enabled = LaunchConfiguration(
+        "collision_backup_recovery_enabled"
+    )
+    collision_backup_distance_m = LaunchConfiguration("collision_backup_distance_m")
+    collision_backup_speed_mps = LaunchConfiguration("collision_backup_speed_mps")
+    collision_backup_cooldown_s = LaunchConfiguration("collision_backup_cooldown_s")
 
     return LaunchDescription(
         [
@@ -61,6 +68,17 @@ def generate_launch_description():
                 default_value=os.path.join(gps_wpf_dir, "config", "collision_monitor_v2.yaml"),
             ),
             DeclareLaunchArgument("keepout_mask_yaml", default_value=keepout_mask_yaml),
+            DeclareLaunchArgument(
+                "nav_to_pose_bt_xml",
+                default_value=os.path.join(
+                    gps_wpf_dir,
+                    "config",
+                    "navigate_to_pose_w_replanning_and_recovery_no_spin.xml",
+                ),
+                description="BT de NavigateToPose reenviado a nav_local_v2. Default "
+                "= el de main (con BackUp). Pasá el '..._no_backup.xml' para sim "
+                "sin retroceso.",
+            ),
             DeclareLaunchArgument("pose_covariance_xy", default_value="0.05"),
             DeclareLaunchArgument("pose_covariance_yaw", default_value="0.1"),
             DeclareLaunchArgument("twist_covariance_vx", default_value="0.05"),
@@ -71,6 +89,28 @@ def generate_launch_description():
             # - f9p_rtk: RTK-fixed approximation
             # - m8n: degraded single-band GPS
             DeclareLaunchArgument("gps_profile", default_value="ideal"),
+            # Escenario/pipeline LiDAR (se reenvían a sim_v2_base). Defaults =
+            # comportamiento actual (mundo vacío, URDF plano, filtro de suelo off).
+            DeclareLaunchArgument(
+                "world",
+                default_value=os.path.join(gps_wpf_dir, "worlds", "vacio.world"),
+            ),
+            DeclareLaunchArgument(
+                "custom_urdf",
+                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+            ),
+            DeclareLaunchArgument("enable_scan_ground_filter", default_value="False"),
+            DeclareLaunchArgument("scan_ground_min_height", default_value="0.10"),
+            DeclareLaunchArgument("scan_ground_max_height", default_value="2.50"),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument(
+                "lidar_obstacle_ground_distance_threshold", default_value="0.05"
+            ),
+            DeclareLaunchArgument("collision_backup_recovery_enabled", default_value="False"),
+            DeclareLaunchArgument("collision_backup_distance_m", default_value="0.50"),
+            DeclareLaunchArgument("collision_backup_speed_mps", default_value="0.25"),
+            DeclareLaunchArgument("collision_backup_cooldown_s", default_value="8.0"),
+            DeclareLaunchArgument("gz_args", default_value="-r "),
             Node(
                 package="navegacion_gps",
                 executable="sim_sensor_normalizer_v2",
@@ -88,7 +128,27 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     os.path.join(gps_wpf_dir, "launch", "sim_v2_base.launch.py")
                 ),
-                launch_arguments={"use_sim_time": use_sim_time}.items(),
+                launch_arguments={
+                    "use_sim_time": use_sim_time,
+                    "world": LaunchConfiguration("world"),
+                    "custom_urdf": LaunchConfiguration("custom_urdf"),
+                    "enable_scan_ground_filter": LaunchConfiguration(
+                        "enable_scan_ground_filter"
+                    ),
+                    "scan_ground_min_height": LaunchConfiguration(
+                        "scan_ground_min_height"
+                    ),
+                    "scan_ground_max_height": LaunchConfiguration(
+                        "scan_ground_max_height"
+                    ),
+                    "enable_lidar_obstacle_filter": LaunchConfiguration(
+                        "enable_lidar_obstacle_filter"
+                    ),
+                    "lidar_obstacle_ground_distance_threshold": LaunchConfiguration(
+                        "lidar_obstacle_ground_distance_threshold"
+                    ),
+                    "gz_args": LaunchConfiguration("gz_args"),
+                }.items(),
             ),
             Node(
                 package="controller_server",
@@ -144,6 +204,7 @@ def generate_launch_description():
                         "fromll_frame": "odom",
                         "map_frame": "odom",
                         "gps_topic": "/gps/fix",
+                        "cmd_vel_raw_topic": "/cmd_vel",
                         "cmd_vel_safe_topic": "/cmd_vel_safe",
                         "cmd_vel_final_topic": "/cmd_vel_final",
                         "forward_cmd_vel_safe_without_goal": True,
@@ -152,6 +213,18 @@ def generate_launch_description():
                         "teleop_cmd_topic": "/cmd_vel_teleop",
                         "brake_publish_count": 5,
                         "brake_publish_interval_s": 0.1,
+                        "collision_backup_recovery_enabled": ParameterValue(
+                            collision_backup_recovery_enabled, value_type=bool
+                        ),
+                        "collision_backup_distance_m": ParameterValue(
+                            collision_backup_distance_m, value_type=float
+                        ),
+                        "collision_backup_speed_mps": ParameterValue(
+                            collision_backup_speed_mps, value_type=float
+                        ),
+                        "collision_backup_cooldown_s": ParameterValue(
+                            collision_backup_cooldown_s, value_type=float
+                        ),
                         "manual_cmd_timeout_s": 0.4,
                         "manual_watchdog_hz": 10.0,
                         "nav_telemetry_hz": 5.0,
@@ -194,6 +267,7 @@ def generate_launch_description():
                             "nav2_params_file": nav2_params_file,
                             "collision_monitor_params_file": collision_monitor_params_file,
                             "keepout_mask_yaml": keepout_mask_yaml_arg,
+                            "nav_to_pose_bt_xml": nav_to_pose_bt_xml,
                         }.items(),
                     )
                 ],

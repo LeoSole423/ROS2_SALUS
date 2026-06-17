@@ -1,4 +1,5 @@
 import math
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
@@ -10,7 +11,7 @@ from rclpy.time import Time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Header
+from std_msgs.msg import Bool, Header
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -37,6 +38,100 @@ class LidarObstacleFilterConfig:
     range_max: float = 12.0
     ransac_iterations: int = 64
     min_ground_points: int = 24
+
+
+@dataclass(frozen=True)
+class TiltGateConfig:
+    enabled: bool = True
+    nominal_roll_deg: float = 0.0
+    nominal_pitch_deg: float = 0.0
+    # El offset debe quedar por ENCIMA de la pendiente operativa maxima:
+    # la inclinacion sostenida es compensable (IMU + RANSAC) y ademas el
+    # collision_monitor usa este scan como unica fuente (source_timeout 1.0 s),
+    # asi que un bloqueo sostenido lo deja ciego. Los transitorios los corta
+    # el limite de salto, no este.
+    max_offset_deg: float = 12.0
+    max_jump_deg: float = 3.0
+
+
+class TiltGate:
+    """Rechaza frames capturados con el LiDAR fuera de su actitud nominal o
+    cambiando demasiado rapido para confiar en la compensacion IMU."""
+
+    def __init__(self, config: TiltGateConfig) -> None:
+        self._config = config
+        self._last_roll: Optional[float] = None
+        self._last_pitch: Optional[float] = None
+
+    def update(self, roll: float, pitch: float) -> bool:
+        """Devuelve True si el frame se acepta. Llamar una vez por frame."""
+        if not self._config.enabled:
+            return True
+        max_offset = math.radians(self._config.max_offset_deg)
+        max_jump = math.radians(self._config.max_jump_deg)
+        roll_offset = abs(roll - math.radians(self._config.nominal_roll_deg))
+        pitch_offset = abs(
+            pitch - math.radians(self._config.nominal_pitch_deg)
+        )
+        jump_ok = True
+        if self._last_roll is not None and self._last_pitch is not None:
+            jump_ok = (
+                abs(roll - self._last_roll) <= max_jump
+                and abs(pitch - self._last_pitch) <= max_jump
+            )
+        self._last_roll = roll
+        self._last_pitch = pitch
+        return (
+            roll_offset <= max_offset
+            and pitch_offset <= max_offset
+            and jump_ok
+        )
+
+
+@dataclass(frozen=True)
+class VoxelPersistenceConfig:
+    enabled: bool = True
+    min_hits: int = 2
+    window: int = 3
+
+
+class VoxelPersistenceFilter:
+    """Solo deja pasar voxels vistos en al menos min_hits de los ultimos
+    window frames: un fantasma de un solo frame nunca llega al scan."""
+
+    def __init__(
+        self,
+        config: VoxelPersistenceConfig,
+        voxel_size_x: float,
+        voxel_size_y: float,
+    ) -> None:
+        self._config = config
+        self._voxel_size = np.maximum(
+            np.array([voxel_size_x, voxel_size_y], dtype=np.float32),
+            1.0e-3,
+        )
+        self._history: deque = deque(maxlen=max(1, config.window))
+
+    def filter(self, points: np.ndarray) -> np.ndarray:
+        points = np.asarray(points, dtype=np.float32).reshape((-1, 3))
+        if not self._config.enabled or self._config.min_hits <= 1:
+            return points
+        if len(points) == 0:
+            self._history.append(frozenset())
+            return points
+        indices = np.floor(points[:, :2] / self._voxel_size).astype(np.int32)
+        keys = [tuple(index) for index in indices]
+        self._history.append(frozenset(keys))
+        hits: dict = {}
+        for frame_keys in self._history:
+            for key in frame_keys:
+                hits[key] = hits.get(key, 0) + 1
+        keep = np.fromiter(
+            (hits[key] >= self._config.min_hits for key in keys),
+            dtype=bool,
+            count=len(keys),
+        )
+        return points[keep]
 
 
 def quaternion_to_roll_pitch(
@@ -359,6 +454,18 @@ class LidarObstacleFilterNode(Node):
         self.declare_parameter("angle_increment", 0.00872664626)
         self.declare_parameter("range_min", 0.4)
         self.declare_parameter("range_max", 12.0)
+        self.declare_parameter("tilt_gate_enabled", True)
+        self.declare_parameter("tilt_gate_nominal_roll_deg", 0.0)
+        self.declare_parameter("tilt_gate_nominal_pitch_deg", 0.0)
+        self.declare_parameter("tilt_gate_max_offset_deg", 12.0)
+        self.declare_parameter("tilt_gate_max_jump_deg", 3.0)
+        self.declare_parameter(
+            "tilt_gate_state_topic",
+            "/lidar_obstacle_filter/tilt_gate_blocked",
+        )
+        self.declare_parameter("persistence_enabled", True)
+        self.declare_parameter("persistence_min_hits", 2)
+        self.declare_parameter("persistence_window", 3)
 
         self._cloud_topic = str(self.get_parameter("cloud_topic").value)
         self._imu_topic = str(self.get_parameter("imu_topic").value)
@@ -377,6 +484,32 @@ class LidarObstacleFilterNode(Node):
         self._last_roll_pitch: Optional[Tuple[float, float]] = None
         self._last_imu_time_s: Optional[float] = None
         self._config = self._read_config()
+        self._tilt_gate = TiltGate(
+            TiltGateConfig(
+                enabled=bool(self.get_parameter("tilt_gate_enabled").value),
+                nominal_roll_deg=float(
+                    self.get_parameter("tilt_gate_nominal_roll_deg").value
+                ),
+                nominal_pitch_deg=float(
+                    self.get_parameter("tilt_gate_nominal_pitch_deg").value
+                ),
+                max_offset_deg=float(
+                    self.get_parameter("tilt_gate_max_offset_deg").value
+                ),
+                max_jump_deg=float(
+                    self.get_parameter("tilt_gate_max_jump_deg").value
+                ),
+            )
+        )
+        self._persistence = VoxelPersistenceFilter(
+            VoxelPersistenceConfig(
+                enabled=bool(self.get_parameter("persistence_enabled").value),
+                min_hits=int(self.get_parameter("persistence_min_hits").value),
+                window=int(self.get_parameter("persistence_window").value),
+            ),
+            voxel_size_x=self._config.voxel_size_x,
+            voxel_size_y=self._config.voxel_size_y,
+        )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -392,6 +525,11 @@ class LidarObstacleFilterNode(Node):
         self._cloud_pub = self.create_publisher(
             PointCloud2,
             self._obstacles_cloud_topic,
+            output_qos,
+        )
+        self._gate_state_pub = self.create_publisher(
+            Bool,
+            str(self.get_parameter("tilt_gate_state_topic").value),
             output_qos,
         )
         self._cloud_sub = self.create_subscription(
@@ -513,12 +651,27 @@ class LidarObstacleFilterNode(Node):
             return
 
         roll, pitch = self._current_roll_pitch()
+        gate_open = self._tilt_gate.update(roll, pitch)
+        self._gate_state_pub.publish(Bool(data=not gate_open))
+        if not gate_open:
+            # Frame capturado durante un transitorio de inclinacion: no se
+            # publica nada (el costmap retiene la ultima observacion valida)
+            # en lugar de insertar suelo como obstaculo o limpiar de mas.
+            self.get_logger().warning(
+                "tilt gate blocked frame "
+                f"(roll={math.degrees(roll):.1f} deg, "
+                f"pitch={math.degrees(pitch):.1f} deg)",
+                throttle_duration_sec=5.0,
+            )
+            return
+
         obstacles = filter_obstacle_points(
             points,
             self._config,
             roll=roll,
             pitch=pitch,
         )
+        obstacles = self._persistence.filter(obstacles)
         header = Header()
         header.stamp = msg.header.stamp
         header.frame_id = self._output_frame

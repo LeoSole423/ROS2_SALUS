@@ -317,6 +317,9 @@ def generate_launch_description():
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument("enable_scan_ground_filter", default_value="False"),
+            DeclareLaunchArgument("scan_ground_min_height", default_value="0.10"),
+            DeclareLaunchArgument("scan_ground_max_height", default_value="2.50"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
             DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
             DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
@@ -427,6 +430,15 @@ def generate_launch_description():
                     "web_app_port": web_app_port,
                     "nav_snapshot_scan_topic": nav_snapshot_scan_topic,
                     "enable_lidar_obstacle_filter": enable_lidar_obstacle_filter,
+                    "enable_scan_ground_filter": LaunchConfiguration(
+                        "enable_scan_ground_filter"
+                    ),
+                    "scan_ground_min_height": LaunchConfiguration(
+                        "scan_ground_min_height"
+                    ),
+                    "scan_ground_max_height": LaunchConfiguration(
+                        "scan_ground_max_height"
+                    ),
                     "lidar_scan_topic": lidar_scan_topic,
                     "enable_scan_noise_filter": enable_scan_noise_filter,
                     "scan_noise_filter_output": scan_noise_filter_output,

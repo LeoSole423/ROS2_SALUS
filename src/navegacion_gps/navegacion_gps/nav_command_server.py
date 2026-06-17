@@ -1,6 +1,7 @@
 import math
 import threading
 import time
+import copy
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -10,7 +11,7 @@ from action_msgs.msg import GoalStatus
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geographic_msgs.msg import GeoPoint
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist
-from nav2_msgs.action import FollowWaypoints, NavigateThroughPoses
+from nav2_msgs.action import BackUp, FollowWaypoints, NavigateThroughPoses
 from nav2_msgs.msg import CollisionMonitorState
 from rcl_interfaces.msg import Log
 from rclpy.action import ActionClient
@@ -81,6 +82,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("tf_lookup_timeout_s", 0.5)
         self.declare_parameter("gps_topic", "/gps/fix")
+        self.declare_parameter("cmd_vel_raw_topic", "/cmd_vel")
         self.declare_parameter("cmd_vel_safe_topic", "/cmd_vel_safe")
         self.declare_parameter("cmd_vel_final_topic", "/cmd_vel_final")
         self.declare_parameter("forward_cmd_vel_safe_without_goal", False)
@@ -93,6 +95,15 @@ class NavCommandServerNode(Node):
         self.declare_parameter("critical_slow_brake_enabled", True)
         self.declare_parameter("critical_slow_polygon_name", "critical_slow_zone")
         self.declare_parameter("critical_slow_brake_pct", 100)
+        self.declare_parameter("collision_backup_recovery_enabled", False)
+        self.declare_parameter("collision_backup_distance_m", 0.5)
+        self.declare_parameter("collision_backup_speed_mps", 0.25)
+        self.declare_parameter("collision_backup_cooldown_s", 8.0)
+        self.declare_parameter("collision_backup_brake_hold_s", 0.3)
+        self.declare_parameter("collision_backup_publish_hz", 10.0)
+        self.declare_parameter("collision_backup_stop_speed_epsilon_mps", 0.03)
+        self.declare_parameter("collision_backup_min_forward_mps", 0.10)
+        self.declare_parameter("collision_backup_raw_timeout_s", 0.5)
         self.declare_parameter("manual_cmd_timeout_s", 0.4)
         self.declare_parameter("manual_watchdog_hz", 10.0)
         self.declare_parameter("nav_telemetry_hz", 5.0)
@@ -105,6 +116,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("get_state_service", "/nav_command_server/get_state")
         self.declare_parameter("follow_waypoints_action", "follow_waypoints")
         self.declare_parameter("navigate_through_poses_action", "navigate_through_poses")
+        self.declare_parameter("backup_action", "backup")
         self.declare_parameter("loop_segment_size", 2)
         self.declare_parameter("waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("nav_failure_hint_window_s", 25.0)
@@ -148,6 +160,7 @@ class NavCommandServerNode(Node):
             0.05, float(self.get_parameter("tf_lookup_timeout_s").value)
         )
         self.gps_topic = str(self.get_parameter("gps_topic").value)
+        self.cmd_vel_raw_topic = str(self.get_parameter("cmd_vel_raw_topic").value)
         self.cmd_vel_safe_topic = str(self.get_parameter("cmd_vel_safe_topic").value)
         self.cmd_vel_final_topic = str(self.get_parameter("cmd_vel_final_topic").value)
         self.forward_cmd_vel_safe_without_goal = bool(
@@ -172,6 +185,33 @@ class NavCommandServerNode(Node):
         self.critical_slow_brake_pct = int(
             max(0, min(100, int(self.get_parameter("critical_slow_brake_pct").value)))
         )
+        self.collision_backup_recovery_enabled = bool(
+            self.get_parameter("collision_backup_recovery_enabled").value
+        )
+        self.collision_backup_distance_m = max(
+            0.0, float(self.get_parameter("collision_backup_distance_m").value)
+        )
+        self.collision_backup_speed_mps = max(
+            0.01, float(self.get_parameter("collision_backup_speed_mps").value)
+        )
+        self.collision_backup_cooldown_s = max(
+            0.0, float(self.get_parameter("collision_backup_cooldown_s").value)
+        )
+        self.collision_backup_brake_hold_s = max(
+            0.0, float(self.get_parameter("collision_backup_brake_hold_s").value)
+        )
+        self.collision_backup_publish_hz = max(
+            1.0, float(self.get_parameter("collision_backup_publish_hz").value)
+        )
+        self.collision_backup_stop_speed_epsilon_mps = max(
+            0.0, float(self.get_parameter("collision_backup_stop_speed_epsilon_mps").value)
+        )
+        self.collision_backup_min_forward_mps = max(
+            0.0, float(self.get_parameter("collision_backup_min_forward_mps").value)
+        )
+        self.collision_backup_raw_timeout_s = max(
+            0.05, float(self.get_parameter("collision_backup_raw_timeout_s").value)
+        )
         self.manual_cmd_timeout_s = max(
             0.1, float(self.get_parameter("manual_cmd_timeout_s").value)
         )
@@ -194,6 +234,7 @@ class NavCommandServerNode(Node):
         self.navigate_through_poses_action = str(
             self.get_parameter("navigate_through_poses_action").value
         )
+        self.backup_action = str(self.get_parameter("backup_action").value)
         self.loop_segment_size = max(2, int(self.get_parameter("loop_segment_size").value))
         self.waypoint_reached_tolerance_m = max(
             0.05, float(self.get_parameter("waypoint_reached_tolerance_m").value)
@@ -208,11 +249,15 @@ class NavCommandServerNode(Node):
         self._last_manual_cmd = CmdVelFinal()
         self._last_manual_cmd_time: Optional[float] = None
         self._manual_watchdog_stop_sent = False
+        self._last_cmd_vel_raw: Optional[Twist] = None
+        self._last_cmd_vel_raw_monotonic: Optional[float] = None
         self._last_cmd_vel_safe: Optional[Twist] = None
         self._is_navigating = False
         self._auto_mode = "idle"
         self._collision_stop_active = False
         self._critical_slow_brake_active = False
+        self._collision_backup_active = False
+        self._collision_backup_last_start_s: Optional[float] = None
         self._last_robot_pose: Optional[Dict[str, float]] = None
         self._last_gps_fix_monotonic: Optional[float] = None
         self._last_telemetry_sent: Optional[float] = None
@@ -229,6 +274,7 @@ class NavCommandServerNode(Node):
         self._failure_code = ""
         self._failure_component = ""
         self._recent_nav_failure_hints: List[Tuple[float, str, str, str]] = []
+        self._nav_action_results_to_ignore = 0
         self._event_seq = 0
         self._last_collision_stop_active = False
         self._last_critical_slow_brake_active = False
@@ -265,6 +311,12 @@ class NavCommandServerNode(Node):
             self,
             NavigateThroughPoses,
             self.navigate_through_poses_action,
+            callback_group=self._client_group,
+        )
+        self._backup_client = ActionClient(
+            self,
+            BackUp,
+            self.backup_action,
             callback_group=self._client_group,
         )
 
@@ -308,6 +360,9 @@ class NavCommandServerNode(Node):
         self._gps_sub = self.create_subscription(
             NavSatFix, self.gps_topic, self._on_gps_fix, qos_profile_sensor_data
         )
+        self._cmd_vel_raw_sub = self.create_subscription(
+            Twist, self.cmd_vel_raw_topic, self._on_cmd_vel_raw, 10
+        )
         self._cmd_vel_sub = self.create_subscription(
             Twist, self.cmd_vel_safe_topic, self._on_cmd_vel_safe, 10
         )
@@ -331,10 +386,13 @@ class NavCommandServerNode(Node):
             f"brake={self.brake_service}, telemetry={self.telemetry_topic}, "
             f"events={self.event_topic}, "
             f"teleop_topic={self.teleop_cmd_topic}, "
+            f"cmd_vel_raw_topic={self.cmd_vel_raw_topic}, "
             f"forward_without_goal={self.forward_cmd_vel_safe_without_goal}, "
+            f"collision_backup_recovery={self.collision_backup_recovery_enabled}, "
             f"cmd_vel_final_topic={self.cmd_vel_final_topic}, "
             f"follow_waypoints_action={self.follow_waypoints_action}, "
-            f"navigate_through_poses_action={self.navigate_through_poses_action})"
+            f"navigate_through_poses_action={self.navigate_through_poses_action}, "
+            f"backup_action={self.backup_action})"
         )
         self.get_logger().info(
             "Callback groups configured (services=MutuallyExclusive, clients=Reentrant)"
@@ -886,6 +944,206 @@ class NavCommandServerNode(Node):
         )
         thread.start()
 
+    def _send_nav2_backup_goal(self, distance_m: float, speed_mps: float) -> Tuple[bool, str]:
+        if not self._backup_client.wait_for_server(timeout_sec=2.0):
+            return False, "BackUp action server not available"
+
+        goal = BackUp.Goal()
+        goal.target.x = -abs(float(distance_m))
+        goal.target.y = 0.0
+        goal.target.z = 0.0
+        goal.speed = abs(float(speed_mps))
+        time_allowance_s = max(3.0, abs(float(distance_m)) / max(0.01, abs(speed_mps)) + 3.0)
+        goal.time_allowance = Duration(seconds=time_allowance_s).to_msg()
+
+        future = self._backup_client.send_goal_async(goal)
+        goal_handle = self._wait_for_future(future, timeout_sec=5.0)
+        if goal_handle is None:
+            return False, "timeout sending BackUp goal"
+        if not goal_handle.accepted:
+            return False, "BackUp goal rejected"
+
+        result_future = goal_handle.get_result_async()
+        result_msg = self._wait_for_future(result_future, timeout_sec=time_allowance_s + 2.0)
+        if result_msg is None:
+            return False, "timeout waiting BackUp result"
+        status = int(getattr(result_msg, "status", int(GoalStatus.STATUS_UNKNOWN)))
+        if status != int(GoalStatus.STATUS_SUCCEEDED):
+            return False, f"BackUp result: {self._goal_status_label(status)}"
+        return True, "BackUp succeeded"
+
+    def _start_collision_backup_recovery(self) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            if self._collision_backup_active:
+                return False
+            if self._manual_enabled:
+                return False
+            if self._current_goal_handle is None or not self._loop_waypoint_poses:
+                return False
+            last_start = self._collision_backup_last_start_s
+            if (
+                last_start is not None
+                and (now - float(last_start)) < self.collision_backup_cooldown_s
+            ):
+                return False
+            self._collision_backup_active = True
+            self._collision_backup_last_start_s = now
+            snapshot = {
+                "handle": self._current_goal_handle,
+                "poses": copy.deepcopy(self._loop_waypoint_poses),
+                "loop_enabled": bool(self._loop_enabled),
+                "loop_original_poses": copy.deepcopy(self._loop_original_poses),
+                "loop_segment_start_index": int(self._loop_segment_start_index),
+                "auto_mode": str(self._auto_mode),
+                "active_action": str(self._active_action),
+                "suppress_success_brake": bool(self._suppress_success_brake),
+            }
+            distance_m = float(self.collision_backup_distance_m)
+            speed_mps = float(self.collision_backup_speed_mps)
+            hold_s = float(self.collision_backup_brake_hold_s)
+
+        if distance_m <= 0.0:
+            with self._lock:
+                self._collision_backup_active = False
+            return False
+
+        def _run() -> None:
+            resumed = False
+            failed_code = ""
+            failed_message = ""
+            try:
+                self._publish_event(
+                    DiagnosticStatus.WARN,
+                    "collision_monitor",
+                    "COLLISION_BACKUP_STARTED",
+                    "Collision backup recovery started via Nav2 BackUp",
+                    details={
+                        "distance_m": float(distance_m),
+                        "speed_mps": float(speed_mps),
+                        "resume_action": str(snapshot["active_action"]),
+                    },
+                )
+
+                with self._lock:
+                    if self._manual_enabled:
+                        failed_code = "COLLISION_BACKUP_ABORTED"
+                        failed_message = "manual mode enabled"
+                        return
+                    if self._current_goal_handle is not snapshot["handle"]:
+                        failed_code = "COLLISION_BACKUP_ABORTED"
+                        failed_message = "active goal changed"
+                        return
+                    handle = self._detach_goal_handle_locked(clear_loop_config=False)
+                    self._nav_action_results_to_ignore += 1
+                    self._auto_mode = "collision_backup"
+                    self._active_action = "collision_backup"
+                    NavCommandServerNode._set_nav_result_locked(
+                        self,
+                        int(GoalStatus.STATUS_EXECUTING),
+                        "collision backup recovery active",
+                        increment_event=True,
+                    )
+
+                cancel_ok, cancel_msg = self._cancel_goal_handle_blocking(handle)
+                if not cancel_ok and cancel_msg != "no active goal":
+                    with self._lock:
+                        self._nav_action_results_to_ignore = max(
+                            0, self._nav_action_results_to_ignore - 1
+                        )
+                    failed_code = "COLLISION_BACKUP_CANCEL_FAILED"
+                    failed_message = cancel_msg
+                    return
+
+                if hold_s > 0.0:
+                    time.sleep(hold_s)
+
+                backup_ok, backup_msg = self._send_nav2_backup_goal(distance_m, speed_mps)
+                if not backup_ok:
+                    failed_code = "COLLISION_BACKUP_FAILED"
+                    failed_message = backup_msg
+                    return
+
+                with self._lock:
+                    if self._manual_enabled:
+                        failed_code = "COLLISION_BACKUP_ABORTED"
+                        failed_message = "manual mode enabled before goal resume"
+                        return
+
+                ok, err = self._send_nav_goal_for_poses(
+                    poses=snapshot["poses"],
+                    loop_enabled=bool(snapshot["loop_enabled"]),
+                    reason="collision_backup_resume",
+                    details={
+                        "resumed_after_backup": True,
+                        "backup_distance_m": float(distance_m),
+                        "backup_speed_mps": float(speed_mps),
+                    },
+                    suppress_success_brake=bool(snapshot["suppress_success_brake"]),
+                )
+                if not ok:
+                    failed_code = "COLLISION_BACKUP_RESUME_FAILED"
+                    failed_message = err
+                    return
+
+                with self._lock:
+                    if (
+                        bool(snapshot["loop_enabled"])
+                        and len(snapshot["loop_original_poses"]) > 1
+                    ):
+                        self._loop_original_poses = copy.deepcopy(
+                            snapshot["loop_original_poses"]
+                        )
+                        self._loop_waypoint_poses = copy.deepcopy(snapshot["poses"])
+                        self._loop_segment_start_index = int(
+                            snapshot["loop_segment_start_index"]
+                        )
+                        self._loop_enabled = True
+                        self._auto_mode = "loop"
+                resumed = True
+                self._publish_event(
+                    DiagnosticStatus.OK,
+                    "collision_monitor",
+                    "COLLISION_BACKUP_FINISHED",
+                    "Collision backup recovery finished and goal resumed",
+                    details={
+                        "distance_m": float(distance_m),
+                        "speed_mps": float(speed_mps),
+                        "resume_action": str(snapshot["active_action"]),
+                    },
+                )
+            finally:
+                if not resumed and failed_code:
+                    with self._lock:
+                        self._is_navigating = False
+                        self._auto_mode = "idle"
+                        self._active_action = "idle"
+                        self._set_failure_locked(failed_code, "collision_monitor")
+                        NavCommandServerNode._set_nav_result_locked(
+                            self,
+                            int(GoalStatus.STATUS_ABORTED),
+                            failed_message,
+                            increment_event=True,
+                        )
+                    self._publish_event(
+                        DiagnosticStatus.WARN,
+                        "collision_monitor",
+                        failed_code,
+                        "Collision backup recovery failed",
+                        details={"error": failed_message},
+                    )
+                with self._lock:
+                    self._collision_backup_active = False
+                self._publish_telemetry(force=True)
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="collision_backup_recovery",
+        )
+        thread.start()
+        return True
+
     def _detach_goal_handle_locked(self, clear_loop_config: bool = True) -> Any:
         handle = self._current_goal_handle
         self._current_goal_handle = None
@@ -1081,19 +1339,54 @@ class NavCommandServerNode(Node):
                 str(getattr(msg, "msg", "")),
             )
 
+    def _on_cmd_vel_raw(self, msg: Twist) -> None:
+        with self._lock:
+            self._last_cmd_vel_raw = msg
+            self._last_cmd_vel_raw_monotonic = time.monotonic()
+
     def _on_cmd_vel_safe(self, msg: Twist) -> None:
+        now = time.monotonic()
         with self._lock:
             self._last_cmd_vel_safe = msg
-            self._last_cmd_vel_safe_monotonic = time.monotonic()
+            self._last_cmd_vel_safe_monotonic = now
             manual_enabled = bool(self._manual_enabled)
             is_navigating = bool(self._is_navigating)
             collision_stop_active = bool(self._collision_stop_active)
             critical_slow_brake_active = bool(self._critical_slow_brake_active)
+            collision_backup_active = bool(self._collision_backup_active)
             forward_without_goal = bool(self.forward_cmd_vel_safe_without_goal)
+            backup_recovery_enabled = bool(self.collision_backup_recovery_enabled)
+            has_recoverable_goal = (
+                self._current_goal_handle is not None and bool(self._loop_waypoint_poses)
+            )
+            last_raw = self._last_cmd_vel_raw
+            last_raw_time = self._last_cmd_vel_raw_monotonic
 
         if manual_enabled or ((not is_navigating) and (not forward_without_goal)):
             self._publish_telemetry(force=False)
             return
+
+        if collision_backup_active and float(msg.linear.x) > 0.0:
+            self._publish_telemetry(force=False)
+            return
+
+        raw_is_recent = (
+            last_raw is not None
+            and last_raw_time is not None
+            and (now - float(last_raw_time)) <= self.collision_backup_raw_timeout_s
+        )
+        raw_forward = (
+            raw_is_recent
+            and float(last_raw.linear.x) >= self.collision_backup_min_forward_mps
+        )
+        safe_stopped = (
+            abs(float(msg.linear.x)) <= self.collision_backup_stop_speed_epsilon_mps
+            and abs(float(msg.angular.z)) <= self.collision_backup_stop_speed_epsilon_mps
+        )
+        if backup_recovery_enabled and has_recoverable_goal and raw_forward and safe_stopped:
+            if self._start_collision_backup_recovery():
+                self._publish_telemetry(force=False)
+                return
 
         if collision_stop_active:
             self._publish_stop(brake_pct=100)
@@ -1134,7 +1427,24 @@ class NavCommandServerNode(Node):
             self._last_critical_slow_brake_active = critical_slow_active
             manual_enabled = bool(self._manual_enabled)
             is_navigating = bool(self._is_navigating)
-        if (not manual_enabled) and is_navigating and stop_active:
+            forward_without_goal = bool(self.forward_cmd_vel_safe_without_goal)
+            backup_recovery_enabled = bool(self.collision_backup_recovery_enabled)
+            has_recoverable_goal = (
+                self._current_goal_handle is not None and bool(self._loop_waypoint_poses)
+            )
+
+        backup_started = False
+        if (
+            stop_active
+            and (not was_stop_active)
+            and backup_recovery_enabled
+            and has_recoverable_goal
+            and (not manual_enabled)
+            and (is_navigating or forward_without_goal)
+        ):
+            backup_started = self._start_collision_backup_recovery()
+
+        if (not manual_enabled) and is_navigating and stop_active and not backup_started:
             self._publish_brake_sequence(brake_pct=100)
         if (
             (not manual_enabled)
@@ -1740,6 +2050,19 @@ class NavCommandServerNode(Node):
                 missed_waypoints = [int(v) for v in getattr(result, "missed_waypoints", [])]
         except Exception as exc:
             self.get_logger().warning(f"{action_name} result callback failed: {exc}")
+
+        with self._lock:
+            if self._nav_action_results_to_ignore > 0:
+                self._nav_action_results_to_ignore -= 1
+                ignore_result = True
+            else:
+                ignore_result = False
+        if ignore_result:
+            self.get_logger().info(
+                f"Ignoring {action_name} result from goal cancelled for collision recovery"
+            )
+            self._publish_telemetry(force=True)
+            return
 
         restart_goal_poses: Optional[List[PoseStamped]] = None
         restart_reason = ""
