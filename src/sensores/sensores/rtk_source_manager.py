@@ -278,6 +278,7 @@ class RtkSourceManager(Node):
             self._last_error = ""
 
         self.get_logger().info(f"Switching RTK source to {requested_id}")
+        self._publish_metadata()
         self._close_socket()
         self._wake_connect.set()
 

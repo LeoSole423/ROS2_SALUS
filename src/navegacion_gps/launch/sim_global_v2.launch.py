@@ -335,14 +335,16 @@ def generate_launch_description():
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
-            DeclareLaunchArgument(
-                "nav_snapshot_scan_topic",
-                default_value=effective_lidar_scan_topic,
-            ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
             DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
             DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
+            # Declared after the four arguments its default (effective_lidar_scan_topic)
+            # depends on, so the LaunchConfiguration references resolve correctly.
+            DeclareLaunchArgument(
+                "nav_snapshot_scan_topic",
+                default_value=effective_lidar_scan_topic,
+            ),
             DeclareLaunchArgument("scan_noise_filter_range_min_m", default_value="0.4"),
             DeclareLaunchArgument("scan_noise_filter_range_max_m", default_value="20.0"),
             DeclareLaunchArgument("scan_noise_filter_speckle_window", default_value="2"),

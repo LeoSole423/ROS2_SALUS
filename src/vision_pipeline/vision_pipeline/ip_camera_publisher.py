@@ -70,15 +70,15 @@ class IpCameraPublisherNode(Node):
         self.declare_parameter('camera_k3', 0.0)   # coeficiente de distorsión radial k3
 
         # ── Lectura de parámetros ─────────────────────────────────────────────
-        self._stream_url = str(self.get_parameter('stream_url').value) #viene del .sh para lanzar la transmicion 
+        self._stream_url = str(self.get_parameter('stream_url').value) #viene del .sh para lanzar la transmicion
         self._image_topic = str(self.get_parameter('image_topic').value) #viene de ymal 
         self._frame_id = str(self.get_parameter('frame_id').value) # id del topico 
-        self._target_fps = max(1.0, float(self.get_parameter('target_fps').value))  # mínimo 1 FPS 
+        self._target_fps = max(1.0, float(self.get_parameter('target_fps').value))  # mínimo 1 FPS
         self._width = max(0, int(self.get_parameter('width').value))
         self._height = max(0, int(self.get_parameter('height').value))
-        self._reconnect_interval_sec = max(0.5, float(self.get_parameter('reconnect_interval_sec').value))
-        self._read_timeout_sec = max(0.5, float(self.get_parameter('read_timeout_sec').value))
-        self._use_mjpeg = bool(self.get_parameter('use_mjpeg').value)
+        self._reconnect_interval_sec = max(0.5, float(self.get_parameter('reconnect_interval_sec').value)) #tiempo de reconeccion
+        self._read_timeout_sec = max(0.5, float(self.get_parameter('read_timeout_sec').value)) #cuantos frames tiempo tiene que pasar para que decidir si la camara se cayo
+        self._use_mjpeg = bool(self.get_parameter('use_mjpeg').value) #se fija si el stream es MJPEG en vez de RTCP (se puede quitar ya que no es necesario porque usamos RTCP )
         self._rtsp_transport = self._normalize_rtsp_transport(
             str(self.get_parameter('rtsp_transport').value)
         )
@@ -105,9 +105,9 @@ class IpCameraPublisherNode(Node):
             )
 
         # ── Configuración de CameraInfo (parámetros intrínsecos) ──────────────
-        self._publish_camera_info = bool(self.get_parameter('publish_camera_info').value)
+        self._publish_camera_info = bool(self.get_parameter('publish_camera_info').value) #viene en falso por defecto
         # Solo construye el mensaje si se va a publicar (ahorra memoria)
-        self._camera_info_msg = self._build_camera_info() if self._publish_camera_info else None
+        self._camera_info_msg = self._build_camera_info() if self._publish_camera_info else None #da el mismo resultado que arriba
 
         # ── Bridge OpenCV ↔ ROS e inicialización de publicadores ─────────────
         self._bridge = CvBridge()
@@ -163,7 +163,7 @@ class IpCameraPublisherNode(Node):
 
     # ── Construcción del mensaje CameraInfo ───────────────────────────────────
     def _build_camera_info(self) -> CameraInfo:
-        """Construye el mensaje CameraInfo con parámetros intrínsecos de la cámara.
+        """Construye el mensaje CameraInfo con parámetros  de la cámara.
 
         Los parámetros intrínsecos definen la geometría de proyección de la cámara:
           - fx, fy: longitudes focales (cómo se escala la profundidad a píxeles)
@@ -306,26 +306,27 @@ class IpCameraPublisherNode(Node):
         Usa FFMPEG como backend para mejor soporte de RTSP y H.264.
         """
         now = time.monotonic()
-        # Evita reconectar demasiado rápido (espera reconnect_interval_sec)
+        # Evita reconectar demasiado rápido (espera reconnect_interval_sec), _last_connect_attempt_monotonic es el reitento
+        # que se hizo para reconectar cada 2 segundos
         if now - self._last_connect_attempt_monotonic < self._reconnect_interval_sec:
             return
         self._last_connect_attempt_monotonic = now
 
-        backend = cv2.CAP_FFMPEG  # usa FFMPEG para decodificar H.264/H.265
+        backend = cv2.CAP_FFMPEG  # usa FFMPEG para decodificar H.264/H.265 (hay que descomprimir el video)
         capture = cv2.VideoCapture()
-        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)         # buffer interno de OpenCV mínimo (1 frame)
-        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000.0)  # timeout de conexión: 8 segundos
-        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000.0)  # timeout de lectura: 5 segundos
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)              # El buffer es como una fila de frames esperando,  solo guarda el último frames
+        capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000.0)  # si tarda mas de 8 segundos, abandona
+        capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000.0)  # si una lectura tarda más de 5s, falla
 
         # Aplica opciones FFMPEG para latencia baja antes de abrir el stream
-        ffmpeg_capture_options = self._merge_ffmpeg_capture_options()
-        if ffmpeg_capture_options:
-            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = ffmpeg_capture_options
+        ffmpeg_capture_options = self._merge_ffmpeg_capture_options() #llama a la funcion para que le de el diccionario completo del RTSP
+        if ffmpeg_capture_options: #si hay opciones del diccionario
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = ffmpeg_capture_options  # las mete en la env var que OpenCV lee al abrir
 
         capture.open(self._stream_url, backend)  # abre el stream (puede tardar varios segundos)
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # vuelve a forzar buffer=1 (open puede resetearlo)
 
-        # Para dispositivos locales (USB): configura resolución y FPS antes de leer
+        # Para dispositivos locales (USB): configura resolución y FPS antes de leer (no creo que sea importante porque no se conecta por USB)
         if not self._is_network_stream:
             if self._width > 0:
                 capture.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
@@ -343,19 +344,20 @@ class IpCameraPublisherNode(Node):
                 self._capture = None  # marca como sin conexión
             return
 
-        # Reemplaza la captura anterior con la nueva (thread-safe)
+        # Reemplaza la captura anterior con la nueva (capture es la nueva)
         with self._capture_lock:
             if self._capture is not None:
-                self._capture.release()   # libera la conexión anterior
+                self._capture.release()   # cerras la conexión vieja
             self._capture = capture       # activa la nueva conexión
 
+        #muestra mensaje en ROS2
         self.get_logger().info(
             'ip_camera_publisher connected '
             f'(topic={self._image_topic}, fps={self._target_fps}, '
             f'url={self._stream_url}, rtsp_transport={self._rtsp_transport})'
         )
 
-    # ── Normalización del frame (color y resolución) ──────────────────────────
+    # HAY QUE REVISAR ESTO PORQUE A VECES SALE GRIS
     def _normalize_frame(self, frame):
         """Convierte el frame al formato y resolución correctos.
 
@@ -373,7 +375,7 @@ class IpCameraPublisherNode(Node):
         ):
             # El stream de red entrega resolución diferente a la configurada: redimensiona
             # Se hace aquí en lugar de configurar RTSP porque muchas cámaras ignoran esa propiedad
-            frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(frame, (self._width, self._height), interpolation=cv2.INTER_AREA) #renderiza a altura y ancho y area
         return frame
 
     # ── Hilo lector: elige entre modo snapshot y modo stream ──────────────────
@@ -397,11 +399,10 @@ class IpCameraPublisherNode(Node):
             t0 = time.monotonic()
             try:
                 # Hace la petición HTTP con timeout de 3 segundos
-                with self._snapshot_opener.open(self._stream_url, timeout=3) as resp:
+                with self._snapshot_opener.open(self._stream_url, timeout=3) as resp: #abre la conexión a la URL y trae la respuesta. resp es esa respuesta
                     data = resp.read()  # descarga los bytes de la imagen JPEG
 
-                # Verifica que los datos comienzan con el magic bytes de JPEG (FF D8)
-                if data and data[:2] == b'\xff\xd8':
+                if data and data[:2] == b'\xff\xd8':  # los primeros 2 bytes sean FF D8
                     arr = np.frombuffer(data, dtype=np.uint8)         # bytes → array NumPy
                     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)        # decodifica JPEG → BGR
                     if frame is not None:
