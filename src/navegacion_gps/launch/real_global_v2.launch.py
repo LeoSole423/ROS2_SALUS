@@ -56,6 +56,67 @@ def _build_robot_state_publisher(context):
     ]
 
 
+def _build_scan_ground_pipeline(context, *, scan_ground_params_file: str):
+    """scan_ground_filter (opcional) + pointcloud_to_laserscan.
+
+    Con `enable_scan_ground_filter:=True` se intercala el filtro de suelo (estilo
+    Autoware) entre `/scan_3d` y el `pointcloud_to_laserscan`, que pasa a consumir
+    `/scan_3d/no_ground` y a usar la ventana `min_height`/`max_height` ampliada
+    (el piso ya se quitó en 3D). Es una alternativa al `lidar_obstacle_filter`:
+    no uses ambos a la vez. El `scan_noise_filter` aguas abajo sigue igual.
+    """
+    use_sim_time = (
+        LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+    )
+    p2l_params_file = LaunchConfiguration("lidar_to_scan_params_file").perform(context)
+    enabled = LaunchConfiguration("enable_scan_ground_filter").perform(
+        context
+    ).lower() in ("true", "1")
+
+    nodes = []
+    cloud_in = "/scan_3d"
+    p2l_overrides = []
+
+    if enabled:
+        cloud_in = "/scan_3d/no_ground"
+        min_height = float(
+            LaunchConfiguration("scan_ground_min_height").perform(context)
+        )
+        max_height = float(
+            LaunchConfiguration("scan_ground_max_height").perform(context)
+        )
+        p2l_overrides = [{"min_height": min_height, "max_height": max_height}]
+        nodes.append(
+            Node(
+                package="navegacion_gps",
+                executable="scan_ground_filter",
+                name="scan_ground_filter",
+                output="screen",
+                parameters=[
+                    scan_ground_params_file,
+                    {"use_sim_time": use_sim_time},
+                ],
+            )
+        )
+
+    nodes.append(
+        Node(
+            package="pointcloud_to_laserscan",
+            executable="pointcloud_to_laserscan_node",
+            name="pointcloud_to_laserscan",
+            output="screen",
+            parameters=[
+                p2l_params_file,
+                {"use_sim_time": use_sim_time},
+                {"output_qos": "sensor_data"},
+                *p2l_overrides,
+            ],
+            remappings=[("cloud_in", cloud_in), ("scan", "/scan")],
+        )
+    )
+    return nodes
+
+
 def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     map_tools_dir = get_package_share_directory("map_tools")
@@ -64,6 +125,9 @@ def generate_launch_description():
     default_rviz = _resolve_config_file_path(gps_wpf_dir, "rviz_global_v2.rviz")
     default_lidar_to_scan_params = _resolve_config_file_path(
         gps_wpf_dir, "pointcloud_to_laserscan_real.yaml"
+    )
+    default_scan_ground_params = _resolve_config_file_path(
+        gps_wpf_dir, "scan_ground_filter.param.yaml"
     )
     default_global_localization_params = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
@@ -300,6 +364,25 @@ def generate_launch_description():
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument(
+                "enable_scan_ground_filter",
+                default_value="False",
+                description="Intercala el scan_ground_filter (estilo Autoware) "
+                "entre /scan_3d y pointcloud_to_laserscan. Alternativa a "
+                "enable_lidar_obstacle_filter; no usar ambos a la vez.",
+            ),
+            DeclareLaunchArgument(
+                "scan_ground_min_height",
+                default_value="0.10",
+                description="min_height del pointcloud_to_laserscan cuando el "
+                "filtro de suelo está activo (el piso ya se quitó en 3D).",
+            ),
+            DeclareLaunchArgument(
+                "scan_ground_max_height",
+                default_value="2.50",
+                description="max_height del pointcloud_to_laserscan cuando el "
+                "filtro de suelo está activo.",
+            ),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
             DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
             DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
@@ -453,17 +536,9 @@ def generate_launch_description():
                     "use_cyclone_dds": use_cyclone_dds,
                 }.items(),
             ),
-            Node(
-                package="pointcloud_to_laserscan",
-                executable="pointcloud_to_laserscan_node",
-                name="pointcloud_to_laserscan",
-                output="screen",
-                parameters=[
-                    lidar_to_scan_params_file,
-                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
-                    {"output_qos": "sensor_data"},
-                ],
-                remappings=[("cloud_in", "/scan_3d"), ("scan", "/scan")],
+            OpaqueFunction(
+                function=_build_scan_ground_pipeline,
+                kwargs={"scan_ground_params_file": default_scan_ground_params},
             ),
             Node(
                 package="navegacion_gps",
