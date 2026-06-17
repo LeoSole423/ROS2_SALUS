@@ -36,6 +36,7 @@ class ControllerServerNode(Node):
         self.declare_parameter("vx_min_effective_mps", 0.75)
         self.declare_parameter("wheelbase_m", 0.94)
         self.declare_parameter("steering_limit_rad", 0.5235987756)
+        self.declare_parameter("operational_steering_limit_rad", 0.3141592654)
         self.declare_parameter("reverse_brake_pct", 20)
         self.declare_parameter("invert_steer_from_cmd_vel", False)
         self.declare_parameter("auto_drive_enabled", True)
@@ -96,6 +97,18 @@ class ControllerServerNode(Node):
                 "Invalid steering_limit_rad; using default 0.5235987756 rad"
             )
             self._steering_limit_rad = 0.5235987756
+        self._operational_steering_limit_rad = abs(
+            float(self.get_parameter("operational_steering_limit_rad").value)
+        )
+        if self._operational_steering_limit_rad < 1.0e-6:
+            self.get_logger().warn(
+                "Invalid operational_steering_limit_rad; using steering_limit_rad"
+            )
+            self._operational_steering_limit_rad = self._steering_limit_rad
+        self._effective_steering_limit_rad = min(
+            self._steering_limit_rad,
+            self._operational_steering_limit_rad,
+        )
         self._reverse_brake_pct = int(self.get_parameter("reverse_brake_pct").value)
         self._invert_steer_from_cmd_vel = bool(
             self.get_parameter("invert_steer_from_cmd_vel").value
@@ -196,6 +209,7 @@ class ControllerServerNode(Node):
             invert_steer=self._invert_steer_from_cmd_vel,
             auto_drive_enabled=self._auto_drive_enabled,
             reverse_brake_pct=self._reverse_brake_pct,
+            operational_steering_limit_rad=self._operational_steering_limit_rad,
         )
         self._auto_cmd = cmd
         self._auto_stamp_s = time.monotonic()
@@ -206,7 +220,7 @@ class ControllerServerNode(Node):
                 f"angular_z={cmd.requested_angular_z_rps:.3f} rad/s, "
                 f"requested_curvature={cmd.requested_curvature_inv_m:.3f} 1/m, "
                 f"requested_steer={math.degrees(cmd.requested_steer_rad):.2f} deg, "
-                f"limit={math.degrees(self._steering_limit_rad):.2f} deg)"
+                f"limit={math.degrees(self._effective_steering_limit_rad):.2f} deg)"
             )
         elif (not cmd.steer_saturated) and self._last_steer_saturated:
             self.get_logger().info("Ackermann steer saturation cleared")
@@ -276,6 +290,12 @@ class ControllerServerNode(Node):
             "ackermann_limits": {
                 "wheelbase_m": self._wheelbase_m,
                 "steering_limit_deg": math.degrees(self._steering_limit_rad),
+                "operational_steering_limit_deg": math.degrees(
+                    self._operational_steering_limit_rad
+                ),
+                "effective_steering_limit_deg": math.degrees(
+                    self._effective_steering_limit_rad
+                ),
             },
             "timestamp": time.time(),
         }

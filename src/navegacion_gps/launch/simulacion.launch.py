@@ -834,6 +834,7 @@ def generate_launch_description():
             {"vx_deadband_mps": 0.10},
             {"vx_min_effective_mps": 0.75},
             {"max_abs_angular_z": 0.4},
+            {"operational_steering_limit_rad": 0.3141592654},
             {"invert_steer_from_cmd_vel": False},
             {"auto_drive_enabled": True},
             {"reverse_brake_pct": 20},

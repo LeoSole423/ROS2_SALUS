@@ -5,8 +5,16 @@
         <RateController hz="0.666" name="RateController">
           <RecoveryNode number_of_retries="2" name="ComputePath">
             <ReactiveSequence name="PruneAndComputePathThroughPoses">
-              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.8"/>
-              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>
+              <Fallback name="FallbackComputePathThroughPoses">
+                <ReactiveSequence name="CheckIfNewPathNeeded">
+                  <Inverter>
+                    <GlobalUpdatedGoal/>
+                  </Inverter>
+                  <IsPathValid path="{path}"/>
+                </ReactiveSequence>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              </Fallback>
             </ReactiveSequence>
             <ClearEntireCostmap
               name="ClearGlobalCostmap-Context"

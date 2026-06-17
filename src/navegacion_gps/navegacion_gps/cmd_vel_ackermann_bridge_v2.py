@@ -39,6 +39,7 @@ class CmdVelAckermannBridgeV2Node(Node):
         self.declare_parameter("max_abs_angular_z", 0.4)
         self.declare_parameter("wheelbase_m", 0.94)
         self.declare_parameter("steering_limit_rad", 0.5235987756)
+        self.declare_parameter("operational_steering_limit_rad", 0.3141592654)
         self.declare_parameter("invert_steer_from_cmd_vel", False)
         self.declare_parameter("auto_drive_enabled", True)
         self.declare_parameter("reverse_brake_pct", 20)
@@ -66,6 +67,11 @@ class CmdVelAckermannBridgeV2Node(Node):
         self._steering_limit_rad = abs(
             float(self.get_parameter("steering_limit_rad").value)
         )
+        self._operational_steering_limit_rad = abs(
+            float(self.get_parameter("operational_steering_limit_rad").value)
+        )
+        if self._operational_steering_limit_rad < 1.0e-6:
+            self._operational_steering_limit_rad = self._steering_limit_rad
         self._invert_steer_from_cmd_vel = bool(
             self.get_parameter("invert_steer_from_cmd_vel").value
         )
@@ -133,6 +139,7 @@ class CmdVelAckermannBridgeV2Node(Node):
             invert_steer=self._invert_steer_from_cmd_vel,
             auto_drive_enabled=self._auto_drive_enabled,
             reverse_brake_pct=self._reverse_brake_pct,
+            operational_steering_limit_rad=self._operational_steering_limit_rad,
         )
 
         out = Twist()

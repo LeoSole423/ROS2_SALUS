@@ -67,11 +67,26 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
 
 - BTs sin spin: `navigate_to_pose_w_replanning_and_recovery_no_spin.xml` y
   `navigate_through_poses_..._no_spin.xml`.
+- Los BTs globales evaluan replanning a `0.666 Hz` (~1.5 s), pero solo llaman a
+  Smac cuando cambia la meta (`GlobalUpdatedGoal`) o el path actual queda
+  invalido (`IsPathValid` falla). Si el robot viene siguiendo bien la curva, se
+  conserva el path vigente para evitar que un replan desde una pose lateralmente
+  corrida genere un giro Dubins en O.
+- En `NavigateThroughPoses`, `RemovePassedGoals` usa `radius=1.2`, alineado con
+  `xy_goal_tolerance=1.2`, para no conservar waypoints ya aceptables cuando un
+  obstaculo invalida el path y fuerza un replan.
+- En reintentos por bloqueo (`blocked_retry_*`), el re-anclaje usa el tramo activo
+  de la ruta como barrera de progreso. En rutas `loop=True`, no puede volver a un
+  indice anterior ya consumido antes de cruzar el cierre del loop; solo puede
+  envolver a 0 cuando el chunk activo ya atraviesa ese cierre.
 - El **scan efectivo** se inyecta vía `RewrittenYaml` en
   `local_costmap.voxel_layer.scan_*.topic`, `global_costmap.obstacle_layer.scan.topic`
   y `collision_monitor.scan.topic` (`nav_global_v2.launch.py:65-96`).
 - Params: `nav2_global_v2_real_rolling_params.yaml` (real),
   `nav2_global_v2_sim_rolling_params.yaml` (sim), variantes `_wifi`.
+- En perfiles `_wifi` se mantiene `desired_linear_vel=1.6`, pero el lookahead
+  escalado queda acotado a `1.4..3.0 m` con `lookahead_time=1.5`. La intención es
+  reducir la corrección tardía sin cambiar la velocidad nominal de patrulla.
 - Overrides keepout: `nav2_local_v2_keepout_overrides.yaml` vs
   `nav2_local_v2_no_keepout_overrides.yaml` según `use_keepout`.
 
@@ -128,11 +143,32 @@ Publica `/controller/status`, `/controller/telemetry` (JSON) y
 ### 2.2 Conversión cmd_vel → Ackermann (`command_from_cmd_vel`)
 
 - Curvatura deseada desde `linear_x`/`angular_z`; ángulo de dirección desde
-  `wheelbase_m` y `steering_limit_rad`; reporta **saturación** de steering
-  (`steer_saturated`) con warning (`controller_server_node.py:202-213`).
+  `wheelbase_m`; recorte operativo con `operational_steering_limit_rad` y
+  recorte físico final con `steering_limit_rad`.
+- Reporta **saturación** de steering (`steer_saturated`) con warning
+  (`controller_server_node.py:202-213`).
 - `vx_deadband_mps`: zona muerta de velocidad.
 - `vx_min_effective_mps`: piso de velocidad efectiva (evita comandos que no mueven).
 - `invert_steer_from_cmd_vel`: inversión de signo de dirección (default True real).
+
+La fuente de verdad de giro automático es el límite operativo de dirección:
+
+```text
+radio = wheelbase_m / tan(operational_steering_limit_rad)
+0.94m / tan(18deg) = 2.89m
+1.6m/s / 0.4rad/s = 4.0m -> Nav2 global V2 usa 4.0m
+```
+
+`steering_limit_rad=30deg` queda como límite físico/hard cap. El radio de
+planificación global se tunea con margen sobre el límite operativo: `4.0m` deja
+reserva entre la curva planificada (~13° a wheelbase 0.94m) y el límite
+automático de dirección (18°) para que el controlador pueda corregir seguimiento
+sin que el planner tenga que inventar giros cerrados.
+
+Los obstaculos no dependen de replanning por reloj: cuando el global costmap
+marca un obstaculo sobre el path, `IsPathValid` invalida la trayectoria y el BT
+recalcula. El `collision_monitor` sigue siendo la capa reactiva para frenar o
+reducir velocidad aunque el path global todavia no haya cambiado.
 
 ### 2.3 Límites (defaults del nodo)
 
@@ -140,8 +176,9 @@ Publica `/controller/status`, `/controller/telemetry` (JSON) y
 |---|---|---|---|
 | `max_speed_mps` | 4.0 | (default) | velocidad máx adelante |
 | `max_reverse_mps` | 1.30 | 1.30 | velocidad máx atrás |
-| `max_abs_angular_z` | 0.4 | 0.4 | giro máx (rad/s) |
-| `steering_limit_rad` | 0.5236 (30°) | 0.5236 | tope de dirección |
+| `max_abs_angular_z` | 0.4 | 0.4 | legacy/compat; no define el radio operativo |
+| `steering_limit_rad` | 0.5236 (30°) | 0.5236 | tope físico de dirección |
+| `operational_steering_limit_rad` | 0.3142 (18°) | 0.3142 | tope automático de dirección |
 | `wheelbase_m` | 0.94 | 0.94 | batalla Ackermann |
 | `vx_deadband_mps` | 0.10 | 0.01 | zona muerta |
 | `vx_min_effective_mps` | 0.75 | 0.5 | piso efectivo |

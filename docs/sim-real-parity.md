@@ -1,16 +1,23 @@
 # Politica de Paridad Sim/Real
 
 Estado: actual
-Alcance: regla de mantenimiento para cambios en `sim_global_v2`, `real_global_v2` y `real_global_v2_wifi`
+Alcance: regla de mantenimiento para cambios en `sim_global_v2`, `sim_global_v2_wifi`, `real_global_v2` y `real_global_v2_wifi`
 Fuente de verdad: launches, YAML Nav2, tests de `navegacion_gps` y validaciones estaticas del checkout actual
 
 La simulacion global V2 y la navegacion real global V2 deben mantenerse sincronizadas en comportamiento de navegacion. La simulacion no es un perfil de tuning separado: es el banco de prueba del comportamiento que se espera en el robot real.
 
 ## Regla principal
-- `sim_global_v2`, `real_global_v2` y `real_global_v2_wifi` deben compartir la misma logica de Nav2, localizacion global, heading GPS, keepout, route execution y arbitraje de comandos.
+- `sim_global_v2`, `sim_global_v2_wifi`, `real_global_v2` y `real_global_v2_wifi` deben compartir la misma logica de Nav2, localizacion global, heading GPS, keepout, route execution y arbitraje de comandos.
 - Cualquier cambio en planner, controller, smoother, behavior server, waypoint follower, costmaps, filters, collision monitor, `nav_command_server`, `route_executor`, localizacion global, heading GPS o parametros Ackermann debe revisarse contra sim y real.
 - No crear defaults divergentes entre sim y real salvo que la diferencia sea necesaria por hardware, sensores, `use_sim_time`, topicos fisicos, disponibilidad RTK o reduccion de trafico WiFi.
 - Las diferencias intencionales deben quedar documentadas cerca del cambio: comentario en launch/YAML, test de contrato o este documento.
+- Los perfiles globales deben mantener juntos el limite operativo Ackermann
+  (`operational_steering_limit_rad`) y el radio Nav2 (`minimum_turning_radius`
+  / `regulated_linear_scaling_min_radius`).
+- La cadencia de replanificacion del BT y el lookahead del RPP tambien son parte
+  del contrato sim/real. Mantener evaluacion normal (`0.666 Hz`), pero
+  replanificar por evento (`GlobalUpdatedGoal` o `IsPathValid` falso) para no
+  pedir rutas Dubins nuevas mientras el path vigente sigue siendo transitable.
 
 ## Diferencias permitidas
 - `use_sim_time`: sim usa tiempo simulado; real usa tiempo del sistema/ROS real.
@@ -24,6 +31,9 @@ La simulacion global V2 y la navegacion real global V2 deben mantenerse sincroni
   - Los perfiles WiFi pueden bajar trafico o visualizacion remota.
   - No deben cambiar la logica principal de navegacion.
   - Diferencias aceptadas: `publish_frequency`, `publish_voxel_map`, `always_send_full_costmap` cuando sea para costmaps remotos.
+  - Diferencias aceptadas de seguimiento: `desired_linear_vel=1.6` y lookahead
+    RPP `1.4..3.0 m` en WiFi, siempre espejadas entre `sim_global_v2_wifi` y
+    `real_global_v2_wifi`. El radio de giro global sigue siendo `4.0 m`.
 
 ## Keepout
 - `use_keepout=True` debe activar keepout de la misma forma en sim y real.

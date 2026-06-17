@@ -379,12 +379,26 @@ Archivos principales:
 | Parametro | Default actual | Donde se usa |
 | --- | --- | --- |
 | `wheelbase_m` | `0.94` | `ackermann_odometry`, modelo Ackermann |
+| `operational_steering_limit_rad` | `0.3142` (18°) | `vehicle_controller_server`, límite automático |
+| `steering_limit_rad` | `0.5236` (30°) | `vehicle_controller_server`, tope físico |
 | `vx_deadband_mps` | `0.01` | `vehicle_controller_server` |
 | `vx_min_effective_mps` | `0.5` | `vehicle_controller_server` |
 | `xy_goal_tolerance` | `1.2` | `PositionGoalChecker` |
 | `desired_linear_vel` | `1.2` | `RegulatedPurePursuitController` |
 | `lookahead_dist` | `1.6` | `RegulatedPurePursuitController` |
 | `minimum_turning_radius` | `2.2` | `SmacPlannerHybrid` |
+
+En perfiles globales V2 actuales, el radio de planificación es `4.0m`: sale del
+limite operativo de patrulla `1.6m/s / 0.4rad/s = 4.0m`. No confundir con el
+radio por direccion a 18° (~2.89m) ni con el radio físico a 30° (~1.63m).
+
+Los perfiles globales V2 sin spin evaluan replanning a `0.666 Hz`, pero solo
+llaman a Smac si cambia la meta o si `IsPathValid` invalida el path por costmap.
+`RemovePassedGoals` usa `radius=1.2`, igual que `xy_goal_tolerance`, para evitar
+que queden waypoints ya alcanzados dentro de la lista al replanificar.
+En los perfiles `_wifi`, el RPP conserva `desired_linear_vel=1.6`, pero limita
+la mirada a `1.4..3.0 m` con `lookahead_time=1.5` para que el robot corrija antes
+sin pedir curvas por debajo del radio de planificacion.
 
 ### Defaults de sim
 - `use_sim_time = True`

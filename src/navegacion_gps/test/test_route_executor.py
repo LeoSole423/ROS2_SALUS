@@ -674,6 +674,82 @@ def test_blocked_retry_reanchor_never_moves_non_loop_route_backwards():
     assert resolution.reason == "no_forward_reanchor"
 
 
+def test_blocked_retry_reanchor_never_moves_loop_route_backwards_before_closure():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0003, yaw_deg=0.0),
+    ]
+
+    resolution = resolve_blocked_retry_start(
+        route,
+        current_start_index=2,
+        current_target_index=3,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.00005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=8.0,
+        reanchor_enabled=True,
+    )
+
+    assert resolution.requested_start_index == 2
+    assert resolution.resolved_start_index == 2
+    assert resolution.reanchored is False
+    assert resolution.reason == "no_forward_reanchor_loop"
+
+
+def test_blocked_retry_reanchor_does_not_repeat_second_waypoint_in_two_point_loop():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=180.0),
+    ]
+
+    resolution = resolve_blocked_retry_start(
+        route,
+        current_start_index=0,
+        current_target_index=0,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.00018,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=8.0,
+        reanchor_enabled=True,
+    )
+
+    assert resolution.requested_start_index == 0
+    assert resolution.resolved_start_index == 0
+    assert resolution.reanchored is False
+    assert resolution.reason == "no_forward_reanchor_loop"
+
+
+def test_blocked_retry_reanchor_allows_loop_wrap_after_closure():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0003, yaw_deg=0.0),
+    ]
+
+    resolution = resolve_blocked_retry_start(
+        route,
+        current_start_index=3,
+        current_target_index=1,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.00005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=8.0,
+        reanchor_enabled=True,
+    )
+
+    assert resolution.requested_start_index == 3
+    assert resolution.resolved_start_index == 1
+    assert resolution.reanchored is True
+    assert resolution.reason == "nearest_segment"
+
+
 def test_blocked_retry_reanchor_falls_back_without_pose_or_match():
     route = [
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),

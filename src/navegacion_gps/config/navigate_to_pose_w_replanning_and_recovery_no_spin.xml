@@ -4,7 +4,15 @@
       <PipelineSequence>
         <RateController hz="0.666" name="RateControllerComputePathToPose">
           <RecoveryNode number_of_retries="1" name="RecoveryComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
+            <Fallback name="FallbackComputePathToPose">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal />
+                </Inverter>
+                <IsPathValid path="{path}" />
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" />
+            </Fallback>
             <Wait name="WaitGlobalRetry-Context" wait_duration="1" />
           </RecoveryNode>
         </RateController>

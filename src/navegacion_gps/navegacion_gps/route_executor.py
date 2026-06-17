@@ -513,6 +513,7 @@ def resolve_blocked_retry_start(
     route: Sequence[RouteWaypoint],
     *,
     current_start_index: int,
+    current_target_index: Optional[int] = None,
     loop: bool,
     robot_lat: Optional[float],
     robot_lon: Optional[float],
@@ -585,7 +586,24 @@ def resolve_blocked_retry_start(
     if candidate is None:
         return BlockedRetryStartResolution(current, current, False, "no_match", nearest_distance_m)
 
-    resolved = candidate % total if loop else max(current, min(candidate, total - 1))
+    if loop:
+        target = current if current_target_index is None else int(current_target_index) % total
+        candidate_mod = int(candidate) % total
+        if target >= current:
+            candidate_is_forward = current <= candidate_mod <= target
+        else:
+            candidate_is_forward = candidate_mod >= current or candidate_mod <= target
+        if not candidate_is_forward:
+            return BlockedRetryStartResolution(
+                current,
+                current,
+                False,
+                "no_forward_reanchor_loop",
+                match_distance_m,
+            )
+        resolved = candidate_mod
+    else:
+        resolved = max(current, min(candidate, total - 1))
     if resolved == current:
         return BlockedRetryStartResolution(
             current,
@@ -1181,6 +1199,7 @@ class RouteExecutorNode(Node):
     def _run_blocked_retry(self) -> None:
         with self._lock:
             requested_start_index = int(self._current_start_index)
+            requested_target_index = int(self._current_target_index)
             route = list(self._route_expanded)
             loop_enabled = bool(self._mission_loop)
             robot_pose = self._last_robot_pose
@@ -1191,6 +1210,7 @@ class RouteExecutorNode(Node):
         resolution = resolve_blocked_retry_start(
             route,
             current_start_index=requested_start_index,
+            current_target_index=requested_target_index,
             loop=loop_enabled,
             robot_lat=None if robot_pose is None else float(robot_pose[0]),
             robot_lon=None if robot_pose is None else float(robot_pose[1]),
@@ -1210,6 +1230,7 @@ class RouteExecutorNode(Node):
                 "retry_attempt": retry_attempt,
                 "retry_max_attempts": self.blocked_retry_max_attempts,
                 "requested_start_index": requested_start_index,
+                "requested_target_index": requested_target_index,
                 "resolved_start_index": start_index,
                 "reanchored": bool(resolution.reanchored),
                 "reanchor_reason": resolution.reason,

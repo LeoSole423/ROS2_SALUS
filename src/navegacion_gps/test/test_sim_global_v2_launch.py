@@ -392,7 +392,15 @@ def test_recovery_behavior_uses_intermediate_ackermann_backup() -> None:
 
     assert '<BackUp backup_dist="1.0" backup_speed="0.7"/>' in through_poses_bt
     assert '<BackUp backup_dist="1.0" backup_speed="0.7" />' in to_pose_bt
+    assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>' in through_poses_bt
     assert '<RateController hz="0.666" name="RateControllerComputePathToPose">' in to_pose_bt
+    assert '<RateController hz="0.666" name="RateController">' in through_poses_bt
+    assert '<Fallback name="FallbackComputePathToPose">' in to_pose_bt
+    assert '<GlobalUpdatedGoal />' in to_pose_bt
+    assert '<IsPathValid path="{path}" />' in to_pose_bt
+    assert '<Fallback name="FallbackComputePathThroughPoses">' in through_poses_bt
+    assert '<GlobalUpdatedGoal/>' in through_poses_bt
+    assert '<IsPathValid path="{path}"/>' in through_poses_bt
     assert "<ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\" />" in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath" />' in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in through_poses_bt
@@ -400,7 +408,6 @@ def test_recovery_behavior_uses_intermediate_ackermann_backup() -> None:
     assert "SmoothPath" not in through_poses_bt
     assert "smoothed_path" not in to_pose_bt
     assert "smoothed_path" not in through_poses_bt
-    assert "IsPathValid" not in to_pose_bt
     assert "spin" not in through_poses_bt.lower()
     assert "spin" not in to_pose_bt.lower()
     assert "simulate_ahead_time: 2.0" in real_wifi_params

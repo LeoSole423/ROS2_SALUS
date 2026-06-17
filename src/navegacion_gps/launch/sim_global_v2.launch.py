@@ -335,14 +335,14 @@ def generate_launch_description():
             DeclareLaunchArgument("launch_web_app", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
+            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
+            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
+            DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
             DeclareLaunchArgument(
                 "nav_snapshot_scan_topic",
                 default_value=effective_lidar_scan_topic,
             ),
-            DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
-            DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
-            DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
-            DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
             DeclareLaunchArgument("scan_noise_filter_range_min_m", default_value="0.4"),
             DeclareLaunchArgument("scan_noise_filter_range_max_m", default_value="20.0"),
             DeclareLaunchArgument("scan_noise_filter_speckle_window", default_value="2"),
@@ -586,6 +586,7 @@ def generate_launch_description():
                         "max_abs_angular_z": 0.4,
                         "wheelbase_m": 0.94,
                         "steering_limit_rad": 0.5235987756,
+                        "operational_steering_limit_rad": 0.3141592654,
                         "vx_deadband_mps": ParameterValue(
                             vx_deadband_mps, value_type=float
                         ),

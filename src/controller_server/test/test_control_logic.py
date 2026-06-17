@@ -11,6 +11,7 @@ from controller_server.control_logic import (
 ACKERMANN_KWARGS = {
     "wheelbase_m": 0.94,
     "steering_limit_rad": 0.5235987756,
+    "operational_steering_limit_rad": 0.3141592654,
 }
 
 
@@ -175,7 +176,8 @@ def test_command_from_cmd_vel_invert_steer() -> None:
         auto_drive_enabled=True,
         reverse_brake_pct=25,
     )
-    assert cmd.steer_pct == -69
+    assert cmd.steer_pct == -60
+    assert math.degrees(cmd.applied_steer_rad) == pytest.approx(18.0)
 
 
 def test_command_from_cmd_vel_below_deadband_maps_to_zero() -> None:
@@ -215,7 +217,7 @@ def test_command_from_cmd_vel_between_deadband_and_min_maps_to_min() -> None:
     assert cmd.min_speed_enforced is True
 
 
-def test_command_from_cmd_vel_preserves_curvature_when_min_is_applied() -> None:
+def test_command_from_cmd_vel_clamps_to_operational_limit_when_min_is_applied() -> None:
     cmd = command_from_cmd_vel(
         linear_x=0.20,
         angular_z=0.10,
@@ -231,9 +233,13 @@ def test_command_from_cmd_vel_preserves_curvature_when_min_is_applied() -> None:
         reverse_brake_pct=25,
     )
     assert cmd.speed_mps == 0.50
-    assert cmd.steer_pct == 84
+    assert cmd.steer_pct == 60
     assert cmd.requested_curvature_inv_m == pytest.approx(0.5)
-    assert cmd.applied_curvature_inv_m == pytest.approx(0.5)
+    assert cmd.applied_curvature_inv_m == pytest.approx(
+        math.tan(math.radians(18.0)) / 0.94,
+        abs=1.0e-6,
+    )
+    assert cmd.steer_saturated is True
 
 
 def test_command_from_cmd_vel_above_min_keeps_value() -> None:
@@ -272,7 +278,28 @@ def test_command_from_cmd_vel_min_effective_is_clamped_by_max_speed() -> None:
     assert cmd.speed_mps == 0.60
 
 
-def test_command_from_cmd_vel_saturates_when_curvature_is_infeasible() -> None:
+def test_command_from_cmd_vel_keeps_legacy_angular_at_patrol_speed_near_18deg() -> None:
+    cmd = command_from_cmd_vel(
+        linear_x=1.2,
+        angular_z=0.4,
+        brake_pct=0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        vx_deadband_mps=0.10,
+        vx_min_effective_mps=0.50,
+        max_abs_angular_z=0.4,
+        **ACKERMANN_KWARGS,
+        invert_steer=False,
+        auto_drive_enabled=True,
+        reverse_brake_pct=25,
+    )
+    assert cmd.speed_mps == 1.2
+    assert cmd.steer_pct == 58
+    assert math.degrees(cmd.applied_steer_rad) == pytest.approx(17.40, abs=0.01)
+    assert cmd.steer_saturated is False
+
+
+def test_command_from_cmd_vel_saturates_at_operational_limit() -> None:
     cmd = command_from_cmd_vel(
         linear_x=1.0,
         angular_z=2.0,
@@ -288,9 +315,31 @@ def test_command_from_cmd_vel_saturates_when_curvature_is_infeasible() -> None:
         reverse_brake_pct=25,
     )
     assert cmd.speed_mps == 1.0
-    assert cmd.steer_pct == 100
+    assert cmd.steer_pct == 60
     assert cmd.steer_saturated is True
     assert math.degrees(cmd.requested_steer_rad) > 30.0
+    assert math.degrees(cmd.applied_steer_rad) == pytest.approx(18.0)
+
+
+def test_command_from_cmd_vel_never_exceeds_physical_limit() -> None:
+    cmd = command_from_cmd_vel(
+        linear_x=1.0,
+        angular_z=2.0,
+        brake_pct=0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        vx_deadband_mps=0.10,
+        vx_min_effective_mps=0.50,
+        max_abs_angular_z=0.4,
+        wheelbase_m=0.94,
+        steering_limit_rad=0.5235987756,
+        operational_steering_limit_rad=1.0,
+        invert_steer=False,
+        auto_drive_enabled=True,
+        reverse_brake_pct=25,
+    )
+    assert cmd.steer_pct == 100
+    assert cmd.steer_saturated is True
     assert math.degrees(cmd.applied_steer_rad) == pytest.approx(30.0)
 
 
@@ -310,7 +359,8 @@ def test_command_from_cmd_vel_zero_linear_uses_virtual_speed_for_steer_alignment
         reverse_brake_pct=25,
     )
     assert cmd.speed_mps == 0.0
-    assert cmd.steer_pct == 69
+    assert cmd.steer_pct == 60
+    assert math.degrees(cmd.applied_steer_rad) == pytest.approx(18.0)
     assert cmd.used_steering_speed_fallback is True
 
 

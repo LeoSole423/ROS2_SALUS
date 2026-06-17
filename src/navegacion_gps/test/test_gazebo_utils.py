@@ -28,12 +28,14 @@ class _FakeCmdBridgeNode:
         self.vx_deadband_mps = 0.10
         self.vx_min_effective_mps = 0.75
         self.max_abs_angular_z = 0.4
+        self.operational_steering_limit_rad = 0.3141592654
         self.invert_steer_from_cmd_vel = False
         self.auto_drive_enabled = True
         self.reverse_brake_pct = 20
         self.sim_max_forward_mps = 4.0
         self.sim_max_reverse_mps = 1.3
         self.sim_max_abs_angular_z = 0.4
+        self.sim_max_steering_angle_rad = 0.5235987756
 
     _publish_cmd_vel_gazebo = GazeboUtilsNode._publish_cmd_vel_gazebo
     _translate_cmd_vel_final_to_gazebo = GazeboUtilsNode._translate_cmd_vel_final_to_gazebo
@@ -149,7 +151,7 @@ def test_realistic_bridge_preserves_curvature_when_min_effective_speed_applies()
 
     published = node.cmd_vel_gazebo_pub.messages[-1]
     assert float(published.linear.x) == 0.5
-    assert float(published.angular.z) == 0.4
+    assert float(published.angular.z) == 0.24
 
 
 def test_realistic_bridge_applies_deadband_and_zeroes_small_reverse() -> None:
@@ -181,7 +183,7 @@ def test_realistic_bridge_clamps_speed_and_angular_mapping() -> None:
 
     published = node.cmd_vel_gazebo_pub.messages[-1]
     assert float(published.linear.x) == 3.0
-    assert float(published.angular.z) == 0.6
+    assert float(published.angular.z) == 0.132
 
 
 def test_realistic_bridge_clamps_reverse_speed() -> None:
@@ -197,7 +199,7 @@ def test_realistic_bridge_clamps_reverse_speed() -> None:
 
     published = node.cmd_vel_gazebo_pub.messages[-1]
     assert float(published.linear.x) == -1.0
-    assert float(published.angular.z) == -0.4
+    assert float(published.angular.z) == 0.128
 
 
 def test_cmd_vel_final_with_brake_publishes_zero_twist() -> None:

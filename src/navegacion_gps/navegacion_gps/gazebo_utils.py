@@ -41,6 +41,7 @@ def _fallback_command_from_cmd_vel(
     invert_steer: bool,
     auto_drive_enabled: bool,
     reverse_brake_pct: int,
+    operational_steering_limit_rad: float | None = None,
 ):
     del max_abs_angular_z
     del reverse_brake_pct
@@ -51,6 +52,13 @@ def _fallback_command_from_cmd_vel(
     min_effective = min(max(float(vx_min_effective_mps), 0.0), max_speed)
     wheelbase = max(1.0e-6, abs(float(wheelbase_m)))
     steering_limit = max(1.0e-6, abs(float(steering_limit_rad)))
+    if operational_steering_limit_rad is None:
+        applied_limit = steering_limit
+    else:
+        applied_limit = min(
+            steering_limit,
+            max(1.0e-6, abs(float(operational_steering_limit_rad))),
+        )
 
     linear = float(linear_x)
     steer_angular = float(angular_z)
@@ -78,7 +86,7 @@ def _fallback_command_from_cmd_vel(
         steer_pct = 0
     else:
         steer_angle_rad = math.atan(wheelbase * steer_angular / reference_speed)
-        steer_angle_rad = max(-steering_limit, min(steering_limit, steer_angle_rad))
+        steer_angle_rad = max(-applied_limit, min(applied_limit, steer_angle_rad))
         steer_pct = int(round((steer_angle_rad / steering_limit) * 100.0))
     if bool(invert_steer):
         steer_pct = -steer_pct
@@ -212,6 +220,7 @@ class GazeboUtilsNode(Node):
         self.declare_parameter("vx_deadband_mps", 0.10)
         self.declare_parameter("vx_min_effective_mps", 0.75)
         self.declare_parameter("max_abs_angular_z", 0.4)
+        self.declare_parameter("operational_steering_limit_rad", 0.3141592654)
         self.declare_parameter("invert_steer_from_cmd_vel", False)
         self.declare_parameter("auto_drive_enabled", True)
         self.declare_parameter("reverse_brake_pct", 20)
@@ -258,6 +267,9 @@ class GazeboUtilsNode(Node):
             self.max_speed_mps,
         )
         self.max_abs_angular_z = float(self.get_parameter("max_abs_angular_z").value)
+        self.operational_steering_limit_rad = abs(
+            float(self.get_parameter("operational_steering_limit_rad").value)
+        )
         self.invert_steer_from_cmd_vel = bool(
             self.get_parameter("invert_steer_from_cmd_vel").value
         )
@@ -625,6 +637,7 @@ class GazeboUtilsNode(Node):
             invert_steer=self.invert_steer_from_cmd_vel,
             auto_drive_enabled=self.auto_drive_enabled,
             reverse_brake_pct=self.reverse_brake_pct,
+            operational_steering_limit_rad=self.operational_steering_limit_rad,
         )
         if (
             bool(desired_command.estop)

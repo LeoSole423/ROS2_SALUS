@@ -38,6 +38,7 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `telemetry_pub_hz`
 - `auto_timeout_s`
 - `max_abs_angular_z`
+- `operational_steering_limit_rad`
 - `vx_deadband_mps`
 - `vx_min_effective_mps`
 - `reverse_brake_pct`

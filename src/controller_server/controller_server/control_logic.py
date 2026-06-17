@@ -53,9 +53,15 @@ def _compute_ackermann_steer_command(
     vx_min_effective_mps: float,
     wheelbase_m: float,
     steering_limit_rad: float,
+    operational_steering_limit_rad: float | None = None,
 ) -> tuple[int, float, float, float, float, float, bool, bool]:
     wheelbase = max(1.0e-6, abs(float(wheelbase_m)))
     steering_limit = max(1.0e-6, abs(float(steering_limit_rad)))
+    if operational_steering_limit_rad is None:
+        applied_limit = steering_limit
+    else:
+        operational_limit = max(1.0e-6, abs(float(operational_steering_limit_rad)))
+        applied_limit = min(steering_limit, operational_limit)
     deadband = max(0.0, float(vx_deadband_mps))
     min_effective = max(0.0, float(vx_min_effective_mps))
     requested_linear = float(linear_x)
@@ -71,7 +77,7 @@ def _compute_ackermann_steer_command(
 
     requested_curvature = requested_angular / reference_speed
     requested_steer_rad = math.atan(wheelbase * requested_curvature)
-    applied_steer_rad = clamp(requested_steer_rad, -steering_limit, steering_limit)
+    applied_steer_rad = clamp(requested_steer_rad, -applied_limit, applied_limit)
     applied_curvature = math.tan(applied_steer_rad) / wheelbase
     steer_saturated = abs(requested_steer_rad - applied_steer_rad) > 1.0e-6
     steer_pct = int(round((applied_steer_rad / steering_limit) * 100.0))
@@ -103,6 +109,7 @@ def command_from_cmd_vel(
     invert_steer: bool,
     auto_drive_enabled: bool,
     reverse_brake_pct: int,
+    operational_steering_limit_rad: float | None = None,
 ) -> DesiredCommand:
     max_speed = max(0.0, float(max_speed_mps))
     max_reverse = max(0.0, float(max_reverse_mps))
@@ -148,6 +155,7 @@ def command_from_cmd_vel(
         vx_min_effective_mps=min_effective,
         wheelbase_m=wheelbase_m,
         steering_limit_rad=steering_limit_rad,
+        operational_steering_limit_rad=operational_steering_limit_rad,
     )
     if bool(invert_steer):
         steer = -steer

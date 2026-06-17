@@ -564,6 +564,7 @@ def generate_launch_description():
                         "max_abs_angular_z": 0.4,
                         "wheelbase_m": 0.94,
                         "steering_limit_rad": 0.5235987756,
+                        "operational_steering_limit_rad": 0.3141592654,
                         "vx_deadband_mps": ParameterValue(
                             vx_deadband_mps, value_type=float
                         ),
