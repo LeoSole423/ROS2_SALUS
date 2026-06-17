@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     TimerAction,
 )
@@ -36,7 +37,9 @@ def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
 
 def _build_robot_state_publisher(context):
     custom_urdf = LaunchConfiguration("custom_urdf").perform(context)
-    use_sim_time = LaunchConfiguration("use_sim_time").perform(context) == "True"
+    use_sim_time = (
+        LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+    )
     robot_description = _read_file(custom_urdf)
     return [
         Node(
@@ -64,7 +67,9 @@ def _build_lidar_pipeline(context, *, scan_ground_params_file: str):
     `min_height`/`max_height` del proyector 3D->2D. `enable_lidar_obstacle_filter`
     tiene precedencia y publica `/scan` él mismo (compensa cabeceo con la IMU).
     """
-    use_sim_time = LaunchConfiguration("use_sim_time").perform(context) == "True"
+    use_sim_time = (
+        LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+    )
     p2l_params_file = LaunchConfiguration("lidar_to_scan_params_file").perform(context)
     enabled = LaunchConfiguration("enable_scan_ground_filter").perform(context).lower() in (
         "true",
@@ -73,6 +78,15 @@ def _build_lidar_pipeline(context, *, scan_ground_params_file: str):
     lof_enabled = LaunchConfiguration(
         "enable_lidar_obstacle_filter"
     ).perform(context).lower() in ("true", "1")
+
+    # Mutuamente excluyentes: el lidar_obstacle_filter reemplaza al
+    # pointcloud_to_laserscan, así que un scan_ground_filter en paralelo no se
+    # usaría. Fallar temprano en vez de correr el filtro equivocado en silencio.
+    if enabled and lof_enabled:
+        raise RuntimeError(
+            "enable_scan_ground_filter y enable_lidar_obstacle_filter son "
+            "mutuamente excluyentes: elegí uno solo."
+        )
 
     # lidar_obstacle_filter tiene precedencia: publica /scan él mismo (compensa
     # cabeceo con la IMU), así que reemplaza al pointcloud_to_laserscan.
@@ -115,6 +129,18 @@ def _build_lidar_pipeline(context, *, scan_ground_params_file: str):
             LaunchConfiguration("scan_ground_max_height").perform(context)
         )
         p2l_overrides = [{"min_height": min_height, "max_height": max_height}]
+        nodes.append(
+            LogInfo(
+                msg=(
+                    "[scan_ground_filter] nivela la nube usando el TF "
+                    "lidar_link->base_footprint (target_frame=base_footprint). "
+                    "Si el RS16 va montado con pitch, lanzá con "
+                    "custom_urdf:=.../cuatri_real_v2.urdf (pitch 10°); el default "
+                    "cuatri_real.urdf tiene el lidar plano y la clasificación de "
+                    "suelo saldría mal."
+                )
+            )
+        )
         nodes.append(
             Node(
                 package="navegacion_gps",

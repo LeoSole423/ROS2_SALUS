@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     TimerAction,
 )
@@ -72,6 +73,19 @@ def _build_scan_ground_pipeline(context, *, scan_ground_params_file: str):
     enabled = LaunchConfiguration("enable_scan_ground_filter").perform(
         context
     ).lower() in ("true", "1")
+    lof_enabled = LaunchConfiguration("enable_lidar_obstacle_filter").perform(
+        context
+    ).lower() in ("true", "1")
+
+    # Mutuamente excluyentes: con el lidar_obstacle_filter activo, Nav2 consume su
+    # /scan_filtered (effective_lidar_scan_topic), así que un scan_ground_filter en
+    # paralelo no afecta la navegación y el KPI mediría el obstacle filter, no el
+    # ground filter. Fallar temprano en vez de medir algo engañoso.
+    if enabled and lof_enabled:
+        raise RuntimeError(
+            "enable_scan_ground_filter y enable_lidar_obstacle_filter son "
+            "mutuamente excluyentes: elegí uno solo."
+        )
 
     nodes = []
     cloud_in = "/scan_3d"
@@ -86,6 +100,18 @@ def _build_scan_ground_pipeline(context, *, scan_ground_params_file: str):
             LaunchConfiguration("scan_ground_max_height").perform(context)
         )
         p2l_overrides = [{"min_height": min_height, "max_height": max_height}]
+        nodes.append(
+            LogInfo(
+                msg=(
+                    "[scan_ground_filter] nivela la nube usando el TF "
+                    "lidar_link->base_footprint (target_frame=base_footprint). "
+                    "Si el RS16 va montado con pitch, lanzá con "
+                    "custom_urdf:=.../cuatri_real_v2.urdf (pitch 10°); el default "
+                    "cuatri_real.urdf tiene el lidar plano y la clasificación de "
+                    "suelo saldría mal."
+                )
+            )
+        )
         nodes.append(
             Node(
                 package="navegacion_gps",
@@ -147,7 +173,6 @@ def generate_launch_description():
     wheelbase_m = LaunchConfiguration("wheelbase_m")
     invert_measured_steer_sign = LaunchConfiguration("invert_measured_steer_sign")
     enable_rtk = LaunchConfiguration("enable_rtk")
-    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     lidar_config_path = LaunchConfiguration("lidar_config_path")
     fcu_url = LaunchConfiguration("fcu_url")
     use_cyclone_dds = LaunchConfiguration("use_cyclone_dds")
