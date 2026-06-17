@@ -167,7 +167,8 @@ def generate_launch_description():
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
             DeclareLaunchArgument(
                 "custom_urdf",
-                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+                # RS16 montado con pitch 10° -> URDF v2 (ver real_global_v2).
+                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf"),
             ),
             DeclareLaunchArgument(
                 "lidar_to_scan_params_file",

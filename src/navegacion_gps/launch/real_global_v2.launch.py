@@ -129,10 +129,9 @@ def _build_scan_ground_pipeline(context, *, scan_ground_params_file: str):
                 msg=(
                     "[scan_ground_filter] nivela la nube usando el TF "
                     "lidar_link->base_footprint (target_frame=base_footprint). "
-                    "Si el RS16 va montado con pitch, lanzá con "
-                    "custom_urdf:=.../cuatri_real_v2.urdf (pitch 10°); el default "
-                    "cuatri_real.urdf tiene el lidar plano y la clasificación de "
-                    "suelo saldría mal."
+                    "El default custom_urdf=cuatri_real_v2.urdf refleja el pitch "
+                    "10° del RS16; NO lo sobrescribas con cuatri_real.urdf (plano) "
+                    "o la clasificación de suelo saldría mal."
                 )
             )
         )
@@ -377,7 +376,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "custom_urdf",
-                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+                # El RS16 real va montado con pitch 10°: el URDF v2 lo refleja
+                # (lidar_link rpy 0 0.1745 0). Necesario para que el TF y el
+                # scan_ground_filter (target_frame base_footprint) nivelen bien.
+                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf"),
             ),
             DeclareLaunchArgument(
                 "lidar_to_scan_params_file",
