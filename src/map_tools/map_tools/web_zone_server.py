@@ -365,6 +365,20 @@ class WebZoneServerNode(Node):
             "linear_x": 0.0,
             "angular_z": 0.0,
         }
+        self._drive_telemetry = {
+            "available": False,
+            "ready": False,
+            "fresh": False,
+            "drive_enabled": False,
+            "estop": False,
+            "reverse_requested": False,
+            "speed_valid": False,
+            "steer_valid": False,
+            "control_source": "NONE",
+            "speed_mps_measured": 0.0,
+            "steer_deg_measured": 0.0,
+            "brake_applied_pct": 0,
+        }
         self._manual_control = {
             "enabled": False,
             "linear_x_cmd": 0.0,
@@ -480,6 +494,12 @@ class WebZoneServerNode(Node):
             SetManualMode, self.nav_set_manual_mode_service
         )
         self._teleop_cmd_pub = self.create_publisher(CmdVelFinal, self.teleop_cmd_topic, 10)
+        self._rtk_source_select_pub = self.create_publisher(String, "/gps/rtk_source/select", 10)
+        self._rtk_source_manage_pub = self.create_publisher(String, "/gps/rtk_source/manage_json", 10)
+        self._rtk_sources_list = []
+        self._rtk_source_status = {}
+        self.create_subscription(String, "/gps/rtk_sources/json", self._rtk_sources_cb, 2)
+        self.create_subscription(String, "/gps/rtk_source/status_json", self._rtk_source_status_cb, 2)
         self._nav_get_state_client = self.create_client(GetNavState, self.nav_get_state_service)
         self._route_set_client = self.create_client(SetRouteMissionLL, self.route_set_service)
         self._route_cancel_client = self.create_client(
@@ -571,6 +591,7 @@ class WebZoneServerNode(Node):
                 "robot_pose": self._last_robot_pose,
                 "gps_status": dict(self._gps_status_payload),
                 "cmd_vel_safe": dict(self._cmd_vel_safe),
+                "drive_telemetry": dict(self._drive_telemetry),
                 "manual_control": dict(self._manual_control),
                 "goal_active": bool(self._goal_active),
                 "nav_result_status": int(self._nav_result_status),
@@ -583,12 +604,15 @@ class WebZoneServerNode(Node):
                 "camera_status": dict(self._camera_status),
                 "datum": dict(self._datum_snapshot),
                 "datums": datums_payload,
+                "rtk_source_state": dict(self._rtk_source_status) if self._rtk_source_status else None,
+                "rtk_sources": [dict(item) for item in self._rtk_sources_list],
                 **connection_status,
             }
 
     def _build_nav_telemetry_payload(self) -> Dict[str, Any]:
         with self._lock:
             cmd_vel_safe = dict(self._cmd_vel_safe)
+            drive_telemetry = dict(self._drive_telemetry)
             manual_control = dict(self._manual_control)
             goal_active = bool(self._goal_active)
             nav_result_status = int(self._nav_result_status)
@@ -602,6 +626,7 @@ class WebZoneServerNode(Node):
         return {
             "op": "nav_telemetry",
             "cmd_vel_safe": cmd_vel_safe,
+            "drive_telemetry": drive_telemetry,
             "manual_control": manual_control,
             "goal_active": goal_active,
             "nav_result_status": nav_result_status,
@@ -997,6 +1022,43 @@ class WebZoneServerNode(Node):
             raise ValueError("sensor bridge response must be a JSON object")
         return payload
 
+    def _rtk_sources_cb(self, msg: String) -> None:
+        try:
+            payload = json.loads(str(msg.data) or "{}")
+        except (ValueError, TypeError):
+            return
+        sources = payload.get("sources") if isinstance(payload, dict) else None
+        if isinstance(sources, list):
+            next_sources = [dict(item) for item in sources if isinstance(item, dict)]
+            with self._lock:
+                self._rtk_sources_list = [dict(item) for item in next_sources]
+                current_status = dict(self._rtk_source_status)
+            self._broadcast_from_thread(
+                {
+                    "op": "state",
+                    "rtk_sources": next_sources,
+                    "rtk_source_state": current_status if current_status else None,
+                }
+            )
+
+    def _rtk_source_status_cb(self, msg: String) -> None:
+        try:
+            payload = json.loads(str(msg.data) or "{}")
+        except (ValueError, TypeError):
+            return
+        if isinstance(payload, dict):
+            next_status = dict(payload)
+            with self._lock:
+                self._rtk_source_status = dict(next_status)
+                current_sources = [dict(item) for item in self._rtk_sources_list]
+            self._broadcast_from_thread(
+                {
+                    "op": "state",
+                    "rtk_source_state": next_status,
+                    "rtk_sources": current_sources,
+                }
+            )
+
     @staticmethod
     def _precision_from_gps_snapshot(snapshot: Dict[str, Any]) -> Optional[float]:
         gps_meta = snapshot.get("gps_meta")
@@ -1151,6 +1213,16 @@ class WebZoneServerNode(Node):
             if isinstance(bridge_snapshot.get("rtk_source_state"), dict)
             else self._fallback_rtk_source_state(gps_status)
         )
+        rtk_sources = list(bridge_snapshot.get("rtk_sources") or [])
+        # Prefer live data straight from rtk_source_manager (works even when the
+        # sensor bridge is disabled, e.g. in simulation).
+        with self._lock:
+            mgr_status = dict(self._rtk_source_status)
+            mgr_sources = [dict(item) for item in self._rtk_sources_list]
+        if mgr_status:
+            rtk_source_state = mgr_status
+        if mgr_sources:
+            rtk_sources = mgr_sources
         diagnostics = (
             dict(bridge_snapshot.get("diagnostics"))
             if isinstance(bridge_snapshot.get("diagnostics"), dict)
@@ -1161,7 +1233,7 @@ class WebZoneServerNode(Node):
             "gps_meta": gps_meta,
             "gps_status": gps_status,
             "rtk_source_state": rtk_source_state,
-            "rtk_sources": list(bridge_snapshot.get("rtk_sources") or []),
+            "rtk_sources": rtk_sources,
             "datum": datum_snapshot,
             "datums": self._build_datums_state_payload(),
             "diagnostics": diagnostics,
@@ -1989,6 +2061,26 @@ class WebZoneServerNode(Node):
 
     def _on_drive_telemetry(self, msg: DriveTelemetry) -> None:
         try:
+            payload = {
+                "available": True,
+                "ready": bool(msg.ready),
+                "fresh": bool(msg.fresh),
+                "drive_enabled": bool(msg.drive_enabled),
+                "estop": bool(msg.estop),
+                "reverse_requested": bool(msg.reverse_requested),
+                "speed_valid": bool(msg.speed_valid),
+                "steer_valid": bool(msg.steer_valid),
+                "control_source": str(msg.control_source),
+                "speed_mps_measured": self._safe_float(msg.speed_mps_measured),
+                "steer_deg_measured": self._safe_float(msg.steer_deg_measured),
+                "brake_applied_pct": self._safe_int(msg.brake_applied_pct),
+            }
+            with self._lock:
+                self._drive_telemetry = dict(payload)
+            self._broadcast_from_thread(
+                {"op": "drive_telemetry", "drive_telemetry": payload}
+            )
+
             key = f"{msg.estop}:{msg.drive_enabled}"
             should_record = False
             with self._lock:
@@ -2002,13 +2094,13 @@ class WebZoneServerNode(Node):
                     "t": time.time(),
                     "topic": "/controller/drive_telemetry",
                     "data": {
-                        "estop": bool(msg.estop),
-                        "drive_enabled": bool(msg.drive_enabled),
-                        "speed_mps_measured": self._safe_float(msg.speed_mps_measured),
-                        "steer_deg_measured": self._safe_float(msg.steer_deg_measured),
-                        "brake_applied_pct": self._safe_int(msg.brake_applied_pct),
-                        "ready": bool(msg.ready),
-                        "fresh": bool(msg.fresh),
+                        "estop": payload["estop"],
+                        "drive_enabled": payload["drive_enabled"],
+                        "speed_mps_measured": payload["speed_mps_measured"],
+                        "steer_deg_measured": payload["steer_deg_measured"],
+                        "brake_applied_pct": payload["brake_applied_pct"],
+                        "ready": payload["ready"],
+                        "fresh": payload["fresh"],
                     },
                 }
             )
@@ -2906,6 +2998,83 @@ class WebZoneServerNode(Node):
             return False, f"datum not found: {datum_id}", self._build_datums_state_payload()
         return self._save_datums_doc(build_datums_doc(datums, datum_id))
 
+    def select_rtk_source(self, source_id: str) -> Tuple[bool, str]:
+        source_id = str(source_id or "").strip()
+        if not source_id:
+            return False, "source id is required"
+        with self._lock:
+            known_sources = [dict(item) for item in self._rtk_sources_list]
+            current_status = dict(self._rtk_source_status)
+        if known_sources and not any(str(item.get("id") or "").strip() == source_id for item in known_sources):
+            return False, f"unknown RTK source: {source_id}"
+        selected_source = next(
+            (item for item in known_sources if str(item.get("id") or "").strip() == source_id),
+            None,
+        )
+        optimistic_status = {
+            **current_status,
+            "active_source_id": source_id,
+            "active_source_label": str(
+                (selected_source or {}).get("label")
+                or (selected_source or {}).get("name")
+                or current_status.get("active_source_label")
+                or source_id
+            ),
+            "connected": False,
+            "last_error": "",
+            "rtcm_age_s": None,
+        }
+        with self._lock:
+            self._rtk_source_status = dict(optimistic_status)
+        try:
+            self._rtk_source_select_pub.publish(String(data=source_id))
+        except Exception as exc:  # pragma: no cover - defensive
+            return False, f"failed to publish rtk source select: {exc}"
+        self._broadcast_from_thread(
+            {
+                "op": "state",
+                "rtk_source_state": optimistic_status,
+                "rtk_sources": known_sources,
+            }
+        )
+        return True, ""
+
+    def upsert_rtk_source(self, payload: Dict[str, Any]) -> Tuple[bool, str]:
+        if not isinstance(payload, dict):
+            return False, "payload must be an object"
+        source_id = str(payload.get("id") or "").strip()
+        host = str(payload.get("host") or "").strip()
+        mountpoint = str(payload.get("mountpoint") or "").strip()
+        if not source_id:
+            return False, "source id is required"
+        if not host:
+            return False, "host is required"
+        if not mountpoint:
+            return False, "mountpoint is required"
+        try:
+            port = int(payload.get("port") or 2101)
+        except (TypeError, ValueError):
+            return False, "port must be a number"
+        if port <= 0 or port > 65535:
+            return False, "port must be between 1 and 65535"
+
+        message = {
+            "action": "upsert",
+            "id": source_id,
+            "label": str(payload.get("label") or source_id).strip() or source_id,
+            "host": host,
+            "port": port,
+            "mountpoint": mountpoint,
+            "username": str(payload.get("username") or "").strip(),
+            "password": str(payload.get("password") or "").strip(),
+            "activate": bool(payload.get("activate", True)),
+        }
+        try:
+            self._rtk_source_manage_pub.publish(String(data=json.dumps(message)))
+        except Exception as exc:  # pragma: no cover - defensive
+            return False, f"failed to publish rtk source management: {exc}"
+        return True, ""
+
     def capture_current_gps_datum(
         self,
         name: str,
@@ -3708,6 +3877,34 @@ class WebSocketApi:
                 err,
                 client_req_id=client_req_id,
                 extra=datums_payload,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "select_rtk_source":
+            source_id = str(msg.get("id") or msg.get("source_id") or "")
+            ok, err = await asyncio.to_thread(self.node.select_rtk_source, source_id)
+            await self._send_ack(
+                ws,
+                "select_rtk_source",
+                ok,
+                err,
+                client_req_id=client_req_id,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "upsert_rtk_source":
+            source_payload = msg.get("source") if isinstance(msg.get("source"), dict) else msg
+            ok, err = await asyncio.to_thread(self.node.upsert_rtk_source, source_payload)
+            await self._send_ack(
+                ws,
+                "upsert_rtk_source",
+                ok,
+                err,
+                client_req_id=client_req_id,
             )
             if ok:
                 await self.node._broadcast(self.node.snapshot_state())

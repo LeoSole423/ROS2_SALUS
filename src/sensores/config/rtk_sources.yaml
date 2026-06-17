@@ -6,3 +6,10 @@ sources:
   mountpoint: CASISA
   username: a.eye.bionics@gmail.com
   password: none
+- id: igm_bsas
+  label: IGM Buenos Aires
+  host: rtk2go.com
+  port: 2101
+  mountpoint: IGM_BSAS
+  username: a.eye.bionics@gmail.com
+  password: none
