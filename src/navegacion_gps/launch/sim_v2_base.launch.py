@@ -172,6 +172,14 @@ def _build_lidar_pipeline(context, *, scan_ground_params_file: str):
         "enable_lidar_obstacle_filter"
     ).perform(context).lower() in ("true", "1")
 
+    # Mutuamente excluyentes: con los dos activos se mediría el filtro equivocado
+    # en silencio (el obstacle filter gana). Fallar temprano.
+    if enabled and lof_enabled:
+        raise RuntimeError(
+            "enable_scan_ground_filter y enable_lidar_obstacle_filter son "
+            "mutuamente excluyentes: elegí uno solo."
+        )
+
     # lidar_obstacle_filter tiene precedencia: publica /scan él mismo (compensa
     # cabeceo con la IMU), así que reemplaza al pointcloud_to_laserscan.
     if lof_enabled:

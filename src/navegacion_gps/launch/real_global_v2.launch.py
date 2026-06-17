@@ -87,6 +87,30 @@ def _build_scan_ground_pipeline(context, *, scan_ground_params_file: str):
             "mutuamente excluyentes: elegí uno solo."
         )
 
+    # Guardas contra tópicos reservados del pipeline: un override que apunte a
+    # /scan (lo publica p2l), /scan_3d (rslidar) o /scan_3d/no_ground
+    # (scan_ground_filter) crearía doble publisher o un lazo de realimentación.
+    raw_reserved = {"/scan_3d", "/scan_3d/no_ground"}
+    noise_out = LaunchConfiguration("scan_noise_filter_output").perform(context).strip()
+    if noise_out in ({"/scan"} | raw_reserved):
+        raise RuntimeError(
+            f"scan_noise_filter_output={noise_out} colisiona con un tópico "
+            "reservado del pipeline; usá otro nombre (default /scan_clean)."
+        )
+    lof_out = LaunchConfiguration("lidar_scan_topic").perform(context).strip()
+    if lof_out in raw_reserved:
+        raise RuntimeError(
+            f"lidar_scan_topic={lof_out} colisiona con un tópico reservado del "
+            "pipeline; usá otro nombre (default /scan_filtered)."
+        )
+
+    # lidar_obstacle_filter (nodo aparte, gated) publica el scan efectivo y
+    # reemplaza al pointcloud_to_laserscan. No lanzar p2l para no dejar un /scan
+    # crudo sin consumidor (y evitar doble publisher si lidar_scan_topic:=/scan),
+    # igual que la precedencia de real_local_v2/sim_v2_base.
+    if lof_enabled:
+        return []
+
     nodes = []
     cloud_in = "/scan_3d"
     p2l_overrides = []
@@ -302,11 +326,11 @@ def generate_launch_description():
             lidar_scan_topic,
             "' if '",
             enable_lidar_obstacle_filter,
-            "'.lower() == 'true' else ('",
+            "'.lower() in ('true', '1') else ('",
             scan_noise_filter_output,
             "' if '",
             enable_scan_noise_filter,
-            "'.lower() == 'true' else '/scan')",
+            "'.lower() in ('true', '1') else '/scan')",
         ]
     )
     nav_snapshot_scan_topic = PythonExpression(
@@ -333,9 +357,9 @@ def generate_launch_description():
         [
             "'",
             enable_scan_noise_filter,
-            "'.lower() == 'true' and '",
+            "'.lower() in ('true', '1') and '",
             enable_lidar_obstacle_filter,
-            "'.lower() != 'true'",
+            "'.lower() not in ('true', '1')",
         ]
     )
 
