@@ -54,6 +54,98 @@ def _build_robot_state_publisher(context):
     ]
 
 
+def _build_lidar_pipeline(context, *, scan_ground_params_file: str):
+    """Arma scan_ground_filter (opcional) + pointcloud_to_laserscan.
+
+    Mismo pipeline que `sim_v2_base._build_lidar_pipeline`, para poder correr la
+    misma validación/A/B en el robot real. Con `enable_scan_ground_filter:=True`
+    se intercala el filtro de suelo entre `/scan_3d` y `pointcloud_to_laserscan`
+    (que pasa a consumir `/scan_3d/no_ground`) y se ajusta la ventana
+    `min_height`/`max_height` del proyector 3D->2D. `enable_lidar_obstacle_filter`
+    tiene precedencia y publica `/scan` él mismo (compensa cabeceo con la IMU).
+    """
+    use_sim_time = LaunchConfiguration("use_sim_time").perform(context) == "True"
+    p2l_params_file = LaunchConfiguration("lidar_to_scan_params_file").perform(context)
+    enabled = LaunchConfiguration("enable_scan_ground_filter").perform(context).lower() in (
+        "true",
+        "1",
+    )
+    lof_enabled = LaunchConfiguration(
+        "enable_lidar_obstacle_filter"
+    ).perform(context).lower() in ("true", "1")
+
+    # lidar_obstacle_filter tiene precedencia: publica /scan él mismo (compensa
+    # cabeceo con la IMU), así que reemplaza al pointcloud_to_laserscan.
+    if lof_enabled:
+        ground_thr = float(
+            LaunchConfiguration(
+                "lidar_obstacle_ground_distance_threshold"
+            ).perform(context)
+        )
+        return [
+            Node(
+                package="navegacion_gps",
+                executable="lidar_obstacle_filter",
+                name="lidar_obstacle_filter",
+                output="screen",
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "cloud_topic": "/scan_3d",
+                        "imu_topic": "/imu/data",
+                        "obstacles_cloud_topic": "/obstacles_cloud",
+                        "scan_topic": "/scan",
+                        "output_frame": "base_footprint",
+                        "ground_distance_threshold": ground_thr,
+                    }
+                ],
+            )
+        ]
+
+    nodes = []
+    cloud_in = "/scan_3d"
+    p2l_overrides = []
+
+    if enabled:
+        cloud_in = "/scan_3d/no_ground"
+        min_height = float(
+            LaunchConfiguration("scan_ground_min_height").perform(context)
+        )
+        max_height = float(
+            LaunchConfiguration("scan_ground_max_height").perform(context)
+        )
+        p2l_overrides = [{"min_height": min_height, "max_height": max_height}]
+        nodes.append(
+            Node(
+                package="navegacion_gps",
+                executable="scan_ground_filter",
+                name="scan_ground_filter",
+                output="screen",
+                parameters=[
+                    scan_ground_params_file,
+                    {"use_sim_time": use_sim_time},
+                ],
+            )
+        )
+
+    nodes.append(
+        Node(
+            package="pointcloud_to_laserscan",
+            executable="pointcloud_to_laserscan_node",
+            name="pointcloud_to_laserscan",
+            output="screen",
+            parameters=[
+                p2l_params_file,
+                {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
+                {"output_qos": "sensor_data"},
+                *p2l_overrides,
+            ],
+            remappings=[("cloud_in", cloud_in), ("scan", "/scan")],
+        )
+    )
+    return nodes
+
+
 def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     map_tools_dir = get_package_share_directory("map_tools")
@@ -62,6 +154,9 @@ def generate_launch_description():
 
     lidar_to_scan_params = _resolve_config_file_path(
         gps_wpf_dir, "pointcloud_to_laserscan.yaml"
+    )
+    scan_ground_params = _resolve_config_file_path(
+        gps_wpf_dir, "scan_ground_filter.param.yaml"
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -92,6 +187,41 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="False"),
+            DeclareLaunchArgument(
+                "lidar_to_scan_params_file",
+                default_value=lidar_to_scan_params,
+            ),
+            DeclareLaunchArgument(
+                "enable_scan_ground_filter",
+                default_value="False",
+                description="Intercala el scan_ground_filter (estilo Autoware) "
+                "entre /scan_3d y pointcloud_to_laserscan en el robot real.",
+            ),
+            DeclareLaunchArgument(
+                "scan_ground_min_height",
+                default_value="0.10",
+                description="min_height del pointcloud_to_laserscan cuando el "
+                "filtro de suelo está activo (el piso ya se quitó en 3D).",
+            ),
+            DeclareLaunchArgument(
+                "scan_ground_max_height",
+                default_value="2.50",
+                description="max_height del pointcloud_to_laserscan cuando el "
+                "filtro de suelo está activo.",
+            ),
+            DeclareLaunchArgument(
+                "enable_lidar_obstacle_filter",
+                default_value="False",
+                description="Usa el lidar_obstacle_filter (IMU + RANSAC + tilt "
+                "gate + persistencia) que publica /scan directo. Tiene "
+                "precedencia sobre enable_scan_ground_filter.",
+            ),
+            DeclareLaunchArgument(
+                "lidar_obstacle_ground_distance_threshold",
+                default_value="0.05",
+                description="ground_distance_threshold (RANSAC) del "
+                "lidar_obstacle_filter.",
+            ),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument(
                 "invert_measured_steer_sign",
@@ -157,17 +287,9 @@ def generate_launch_description():
                     "use_cyclone_dds": use_cyclone_dds,
                 }.items(),
             ),
-            Node(
-                package="pointcloud_to_laserscan",
-                executable="pointcloud_to_laserscan_node",
-                name="pointcloud_to_laserscan",
-                output="screen",
-                parameters=[
-                    lidar_to_scan_params,
-                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
-                    {"output_qos": "sensor_data"},
-                ],
-                remappings=[("cloud_in", "/scan_3d"), ("scan", "/scan")],
+            OpaqueFunction(
+                function=_build_lidar_pipeline,
+                kwargs={"scan_ground_params_file": scan_ground_params},
             ),
             Node(
                 package="controller_server",
