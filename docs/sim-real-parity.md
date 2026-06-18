@@ -16,8 +16,12 @@ La simulacion global V2 y la navegacion real global V2 deben mantenerse sincroni
   / `regulated_linear_scaling_min_radius`).
 - La cadencia de replanificacion del BT y el lookahead del RPP tambien son parte
   del contrato sim/real. Mantener evaluacion normal (`0.666 Hz`), pero
-  replanificar por evento (`GlobalUpdatedGoal` o `IsPathValid` falso) para no
-  pedir rutas Dubins nuevas mientras el path vigente sigue siendo transitable.
+  replanificar por evento (`GlobalUpdatedGoal`, `IsPathValid` falso o
+  `IsPathClearanceValid` falso) para no pedir rutas Dubins nuevas mientras el
+  path vigente sigue siendo transitable y mantiene margen lateral.
+- `path_clearance_validator` y sus thresholds deben mantenerse espejados entre
+  los cuatro perfiles globales V2; el gris inflado del costmap es una zona de
+  margen, no solo visualizacion.
 
 ## Diferencias permitidas
 - `use_sim_time`: sim usa tiempo simulado; real usa tiempo del sistema/ROS real.

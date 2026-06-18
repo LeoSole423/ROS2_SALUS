@@ -393,7 +393,8 @@ limite operativo de patrulla `1.6m/s / 0.4rad/s = 4.0m`. No confundir con el
 radio por direccion a 18° (~2.89m) ni con el radio físico a 30° (~1.63m).
 
 Los perfiles globales V2 sin spin evaluan replanning a `0.666 Hz`, pero solo
-llaman a Smac si cambia la meta o si `IsPathValid` invalida el path por costmap.
+llaman a Smac si cambia la meta, si `IsPathValid` invalida el path por costmap o
+si `IsPathClearanceValid` detecta inflacion alta en los proximos `12m` del path.
 `RemovePassedGoals` usa `radius=1.2`, igual que `xy_goal_tolerance`, para evitar
 que queden waypoints ya alcanzados dentro de la lista al replanificar.
 En los perfiles `_wifi`, el RPP conserva `desired_linear_vel=1.6`, pero limita

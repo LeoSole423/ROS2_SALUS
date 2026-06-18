@@ -68,10 +68,15 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
 - BTs sin spin: `navigate_to_pose_w_replanning_and_recovery_no_spin.xml` y
   `navigate_through_poses_..._no_spin.xml`.
 - Los BTs globales evaluan replanning a `0.666 Hz` (~1.5 s), pero solo llaman a
-  Smac cuando cambia la meta (`GlobalUpdatedGoal`) o el path actual queda
-  invalido (`IsPathValid` falla). Si el robot viene siguiendo bien la curva, se
-  conserva el path vigente para evitar que un replan desde una pose lateralmente
-  corrida genere un giro Dubins en O.
+  Smac cuando cambia la meta (`GlobalUpdatedGoal`), el path actual queda invalido
+  por colision (`IsPathValid` falla) o pierde margen lateral en costo inflado
+  (`IsPathClearanceValid` falla). Si el robot viene siguiendo bien la curva y el
+  path mantiene margen, se conserva el path vigente para evitar que un replan
+  desde una pose lateralmente corrida genere un giro Dubins en O.
+- `path_clearance_validator` revisa `/global_costmap/costmap_raw` sobre los
+  proximos `12m` del path con umbral de costo `100`, offsets laterales
+  `0.0, +/-0.45m` y falla abierto si no tiene costmap fresco. Esto fuerza replan
+  cuando el path pasa por la zona gris/inflada alrededor de autos u obstaculos.
 - En `NavigateThroughPoses`, `RemovePassedGoals` usa `radius=1.2`, alineado con
   `xy_goal_tolerance=1.2`, para no conservar waypoints ya aceptables cuando un
   obstaculo invalida el path y fuerza un replan.
@@ -167,8 +172,10 @@ sin que el planner tenga que inventar giros cerrados.
 
 Los obstaculos no dependen de replanning por reloj: cuando el global costmap
 marca un obstaculo sobre el path, `IsPathValid` invalida la trayectoria y el BT
-recalcula. El `collision_monitor` sigue siendo la capa reactiva para frenar o
-reducir velocidad aunque el path global todavia no haya cambiado.
+recalcula. Si el path no colisiona pero atraviesa inflacion alta, el validador de
+clearance tambien fuerza replan. El `collision_monitor` sigue siendo la capa
+reactiva para frenar o reducir velocidad aunque el path global todavia no haya
+cambiado.
 
 ### 2.3 Límites (defaults del nodo)
 

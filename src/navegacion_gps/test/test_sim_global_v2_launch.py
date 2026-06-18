@@ -384,23 +384,30 @@ def test_collision_monitor_v2_keeps_contact_stop_and_uses_approach_zone() -> Non
     assert 'action_type: "slowdown"' in params_contents
 
 
-def test_recovery_behavior_uses_intermediate_ackermann_backup() -> None:
+def test_recovery_behavior_uses_clearance_guard_without_backup() -> None:
     through_poses_bt = _read("config/navigate_through_poses_w_replanning_and_recovery_no_spin.xml")
     to_pose_bt = _read("config/navigate_to_pose_w_replanning_and_recovery_no_spin.xml")
     real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
     sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
 
-    assert '<BackUp backup_dist="1.0" backup_speed="0.7"/>' in through_poses_bt
-    assert '<BackUp backup_dist="1.0" backup_speed="0.7" />' in to_pose_bt
+    assert "BackUp" not in through_poses_bt
+    assert "BackUp" not in to_pose_bt
+    assert '<Sequence name="WaitAndReplan">' in through_poses_bt
+    assert '<Sequence name="WaitAndReplan">' in to_pose_bt
     assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>' in through_poses_bt
     assert '<RateController hz="0.666" name="RateControllerComputePathToPose">' in to_pose_bt
     assert '<RateController hz="0.666" name="RateController">' in through_poses_bt
     assert '<Fallback name="FallbackComputePathToPose">' in to_pose_bt
     assert '<GlobalUpdatedGoal />' in to_pose_bt
     assert '<IsPathValid path="{path}" />' in to_pose_bt
+    assert '<IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" />' in to_pose_bt
+    assert '<Sequence name="ComputeClearPathToPose">' in to_pose_bt
+    assert '<Sequence name="ComputeClearRecoveryPathToPose">' in to_pose_bt
     assert '<Fallback name="FallbackComputePathThroughPoses">' in through_poses_bt
     assert '<GlobalUpdatedGoal/>' in through_poses_bt
     assert '<IsPathValid path="{path}"/>' in through_poses_bt
+    assert '<IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid"/>' in through_poses_bt
+    assert '<Sequence name="ComputeClearPathThroughPoses">' in through_poses_bt
     assert "<ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\" />" in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath" />' in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in through_poses_bt
@@ -432,6 +439,14 @@ def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
         assert "cost_scaling_factor: 1.3" in params_contents
         assert "inflation_radius: 1.5" in params_contents
         assert "cost_scaling_factor: 1.4" in params_contents
+        assert "path_clearance_validator:" in params_contents
+        assert "max_check_distance_m: 12.0" in params_contents
+        assert "sample_step_m: 0.25" in params_contents
+        assert "high_cost_threshold: 100" in params_contents
+        assert "lethal_cost_threshold: 253" in params_contents
+        assert "min_consecutive_high_cost_samples: 3" in params_contents
+        assert "lateral_offsets_m: [0.0, 0.45, -0.45]" in params_contents
+        assert "nav2_is_path_clearance_valid_condition_bt_node" in params_contents
 
 
 def test_wifi_nav2_costmaps_use_real_safe_and_sim_long_lidar_marking_ranges() -> None:

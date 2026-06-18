@@ -90,4 +90,6 @@ def test_global_v2_lidar_scan_topic_contract_is_reversible() -> None:
     ) in nav_global
     assert "global_costmap.global_costmap.ros__parameters.obstacle_layer.scan.topic" in nav_global
     assert "collision_monitor.ros__parameters.scan.topic" in nav_global
+    assert 'executable="path_clearance_validator"' in nav_global
+    assert 'name="path_clearance_validator"' in nav_global
     assert "DeclareLaunchArgument(\"lidar_scan_topic\", default_value=\"/scan\")" in nav_global

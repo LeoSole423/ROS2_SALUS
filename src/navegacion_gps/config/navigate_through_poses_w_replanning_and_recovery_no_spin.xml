@@ -12,8 +12,12 @@
                     <GlobalUpdatedGoal/>
                   </Inverter>
                   <IsPathValid path="{path}"/>
+                  <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid"/>
                 </ReactiveSequence>
-                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                <Sequence name="ComputeClearPathThroughPoses">
+                  <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                  <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid"/>
+                </Sequence>
               </Fallback>
             </ReactiveSequence>
             <ClearEntireCostmap
@@ -39,8 +43,7 @@
               name="ClearGlobalCostmap-Subtree"
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Sequence name="BackUpAndReplan">
-            <BackUp backup_dist="1.0" backup_speed="0.7"/>
+          <Sequence name="WaitAndReplan">
             <Wait wait_duration="2"/>
           </Sequence>
         </RoundRobin>

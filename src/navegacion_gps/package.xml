@@ -46,6 +46,7 @@
   <exec_depend>sensores</exec_depend>
   <exec_depend>controller_server</exec_depend>
   <exec_depend>map_tools</exec_depend>
+  <exec_depend>navegacion_gps_bt</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

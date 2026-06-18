@@ -181,6 +181,17 @@ def generate_launch_description():
                 remappings=remappings,
             ),
             Node(
+                package="navegacion_gps",
+                executable="path_clearance_validator",
+                name="path_clearance_validator",
+                output="screen",
+                parameters=[
+                    configured_nav2_params,
+                    configured_nav2_overrides,
+                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
+                ],
+            ),
+            Node(
                 package="nav2_behaviors",
                 executable="behavior_server",
                 name="behavior_server",

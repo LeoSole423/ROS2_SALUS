@@ -54,6 +54,7 @@ setup(
             'nav_benchmark_runner = navegacion_gps.nav_benchmark_runner:main',
             'nav_snapshot_server = navegacion_gps.nav_snapshot_server:main',
             'nav_observability = navegacion_gps.nav_observability:main',
+            'path_clearance_validator = navegacion_gps.path_clearance_validator:main',
             'polygon_stamped_republisher = navegacion_gps.polygon_stamped_republisher:main',
             'replay_localization_compare = navegacion_gps.replay_localization_compare:main',
             'route_executor = navegacion_gps.route_executor:main',

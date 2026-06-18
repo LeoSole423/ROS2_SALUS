@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>navegacion_gps_bt</name>
+  <version>0.0.1</version>
+  <description>Custom Nav2 behavior tree nodes for ROS2_SALUS navigation.</description>
+  <maintainer email="todo@example.com">TODO</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>behaviortree_cpp_v3</depend>
+  <depend>nav2_behavior_tree</depend>
+  <depend>nav2_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rclcpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
