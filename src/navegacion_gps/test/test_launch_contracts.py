@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PACKAGE_ROOT.parents[1]
 LAUNCH_DIR = PACKAGE_ROOT / "launch"
 
 
@@ -93,3 +94,12 @@ def test_global_v2_lidar_scan_topic_contract_is_reversible() -> None:
     assert 'executable="path_clearance_validator"' in nav_global
     assert 'name="path_clearance_validator"' in nav_global
     assert "DeclareLaunchArgument(\"lidar_scan_topic\", default_value=\"/scan\")" in nav_global
+
+
+def test_path_clearance_bt_plugin_exports_behavior_tree_entrypoint() -> None:
+    cmake_contents = (REPO_ROOT / "src/navegacion_gps_bt/CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "nav2_is_path_clearance_valid_condition_bt_node" in cmake_contents
+    assert "BT_PLUGIN_EXPORT" in cmake_contents

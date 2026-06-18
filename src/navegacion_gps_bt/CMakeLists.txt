@@ -16,6 +16,10 @@ add_library(nav2_is_path_clearance_valid_condition_bt_node SHARED
   src/is_path_clearance_valid_condition.cpp
 )
 
+target_compile_definitions(nav2_is_path_clearance_valid_condition_bt_node
+  PRIVATE BT_PLUGIN_EXPORT
+)
+
 target_include_directories(nav2_is_path_clearance_valid_condition_bt_node
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
