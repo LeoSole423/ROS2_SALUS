@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Perfil CycloneDDS para enlace LAN cableado directo PC <-> robot.
+
+  Por que existe: el PC operador y la Raspberry suelen estar en la MISMA subred
+  192.168.1.0/24 pero en redes fisicas distintas (el PC tiene el wifi para
+  internet y un ethernet directo al robot; ambos 192.168.1.x). Con
+  autodetermine, CycloneDDS puede atar la interfaz equivocada (docker0 172.17.x,
+  tailscale0 100.x o el wifi) y los dos extremos no se descubren.
+
+  Este perfil fija la placa CABLEADA en cada maquina y descarta el resto:
+    - Raspberry: eth0   (ej. 192.168.1.208)
+    - PC operador: eno1 (ej. 192.168.1.195)
+  presence_required="false" -> cada maquina usa la que tenga; ignora la ausente.
+
+  Ademas declara peers unicast explicitos (ademas del SPDP multicast) para que el
+  descubrimiento ande aunque el multicast no cruce. Si el robot opera por wifi
+  real (no cable), usar cyclonedds_wifi.xml en su lugar.
+
+  Requisito en el PC (ruta de host al robot por el cable, deja internet por wifi):
+    sudo ip route add 192.168.1.208/32 dev eno1 src 192.168.1.195
+-->
+<CycloneDDS
+  xmlns="https://cdds.io/config"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd"
+>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="eth0" presence_required="false" priority="default" multicast="default" />
+        <NetworkInterface name="eno1" presence_required="false" priority="default" multicast="default" />
+      </Interfaces>
+      <AllowMulticast>spdp</AllowMulticast>
+      <MaxMessageSize>1400B</MaxMessageSize>
+      <MaxRexmitMessageSize>1400B</MaxRexmitMessageSize>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.1.208" />
+        <Peer address="192.168.1.195" />
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

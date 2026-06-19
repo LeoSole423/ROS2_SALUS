@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     TimerAction,
 )
@@ -56,6 +57,115 @@ def _build_robot_state_publisher(context):
     ]
 
 
+def _build_scan_ground_pipeline(context, *, scan_ground_params_file: str):
+    """scan_ground_filter (opcional) + pointcloud_to_laserscan.
+
+    Con `enable_scan_ground_filter:=True` se intercala el filtro de suelo (estilo
+    Autoware) entre `/scan_3d` y el `pointcloud_to_laserscan`, que pasa a consumir
+    `/scan_3d/no_ground` y a usar la ventana `min_height`/`max_height` ampliada
+    (el piso ya se quitó en 3D). Es una alternativa al `lidar_obstacle_filter`:
+    no uses ambos a la vez. El `scan_noise_filter` aguas abajo sigue igual.
+    """
+    use_sim_time = (
+        LaunchConfiguration("use_sim_time").perform(context).lower() == "true"
+    )
+    p2l_params_file = LaunchConfiguration("lidar_to_scan_params_file").perform(context)
+    enabled = LaunchConfiguration("enable_scan_ground_filter").perform(
+        context
+    ).lower() in ("true", "1")
+    lof_enabled = LaunchConfiguration("enable_lidar_obstacle_filter").perform(
+        context
+    ).lower() in ("true", "1")
+
+    # Mutuamente excluyentes: con el lidar_obstacle_filter activo, Nav2 consume su
+    # /scan_filtered (effective_lidar_scan_topic), así que un scan_ground_filter en
+    # paralelo no afecta la navegación y el KPI mediría el obstacle filter, no el
+    # ground filter. Fallar temprano en vez de medir algo engañoso.
+    if enabled and lof_enabled:
+        raise RuntimeError(
+            "enable_scan_ground_filter y enable_lidar_obstacle_filter son "
+            "mutuamente excluyentes: elegí uno solo."
+        )
+
+    # Guardas contra tópicos reservados del pipeline: un override que apunte a
+    # /scan (lo publica p2l), /scan_3d (rslidar) o /scan_3d/no_ground
+    # (scan_ground_filter) crearía doble publisher o un lazo de realimentación.
+    raw_reserved = {"/scan_3d", "/scan_3d/no_ground"}
+    noise_out = LaunchConfiguration("scan_noise_filter_output").perform(context).strip()
+    if noise_out in ({"/scan"} | raw_reserved):
+        raise RuntimeError(
+            f"scan_noise_filter_output={noise_out} colisiona con un tópico "
+            "reservado del pipeline; usá otro nombre (default /scan_clean)."
+        )
+    lof_out = LaunchConfiguration("lidar_scan_topic").perform(context).strip()
+    if lof_out in raw_reserved:
+        raise RuntimeError(
+            f"lidar_scan_topic={lof_out} colisiona con un tópico reservado del "
+            "pipeline; usá otro nombre (default /scan_filtered)."
+        )
+
+    # lidar_obstacle_filter (nodo aparte, gated) publica el scan efectivo y
+    # reemplaza al pointcloud_to_laserscan. No lanzar p2l para no dejar un /scan
+    # crudo sin consumidor (y evitar doble publisher si lidar_scan_topic:=/scan),
+    # igual que la precedencia de real_local_v2/sim_v2_base.
+    if lof_enabled:
+        return []
+
+    nodes = []
+    cloud_in = "/scan_3d"
+    p2l_overrides = []
+
+    if enabled:
+        cloud_in = "/scan_3d/no_ground"
+        min_height = float(
+            LaunchConfiguration("scan_ground_min_height").perform(context)
+        )
+        max_height = float(
+            LaunchConfiguration("scan_ground_max_height").perform(context)
+        )
+        p2l_overrides = [{"min_height": min_height, "max_height": max_height}]
+        nodes.append(
+            LogInfo(
+                msg=(
+                    "[scan_ground_filter] nivela la nube usando el TF "
+                    "lidar_link->base_footprint (target_frame=base_footprint). "
+                    "El default custom_urdf=cuatri_real_v2.urdf refleja el pitch "
+                    "10° del RS16; NO lo sobrescribas con cuatri_real.urdf (plano) "
+                    "o la clasificación de suelo saldría mal."
+                )
+            )
+        )
+        nodes.append(
+            Node(
+                package="navegacion_gps",
+                executable="scan_ground_filter",
+                name="scan_ground_filter",
+                output="screen",
+                parameters=[
+                    scan_ground_params_file,
+                    {"use_sim_time": use_sim_time},
+                ],
+            )
+        )
+
+    nodes.append(
+        Node(
+            package="pointcloud_to_laserscan",
+            executable="pointcloud_to_laserscan_node",
+            name="pointcloud_to_laserscan",
+            output="screen",
+            parameters=[
+                p2l_params_file,
+                {"use_sim_time": use_sim_time},
+                {"output_qos": "sensor_data"},
+                *p2l_overrides,
+            ],
+            remappings=[("cloud_in", cloud_in), ("scan", "/scan")],
+        )
+    )
+    return nodes
+
+
 def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     map_tools_dir = get_package_share_directory("map_tools")
@@ -64,6 +174,9 @@ def generate_launch_description():
     default_rviz = _resolve_config_file_path(gps_wpf_dir, "rviz_global_v2.rviz")
     default_lidar_to_scan_params = _resolve_config_file_path(
         gps_wpf_dir, "pointcloud_to_laserscan_real.yaml"
+    )
+    default_scan_ground_params = _resolve_config_file_path(
+        gps_wpf_dir, "scan_ground_filter.param.yaml"
     )
     default_global_localization_params = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
@@ -83,7 +196,6 @@ def generate_launch_description():
     wheelbase_m = LaunchConfiguration("wheelbase_m")
     invert_measured_steer_sign = LaunchConfiguration("invert_measured_steer_sign")
     enable_rtk = LaunchConfiguration("enable_rtk")
-    lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     lidar_config_path = LaunchConfiguration("lidar_config_path")
     fcu_url = LaunchConfiguration("fcu_url")
     use_cyclone_dds = LaunchConfiguration("use_cyclone_dds")
@@ -213,11 +325,11 @@ def generate_launch_description():
             lidar_scan_topic,
             "' if '",
             enable_lidar_obstacle_filter,
-            "'.lower() == 'true' else ('",
+            "'.lower() in ('true', '1') else ('",
             scan_noise_filter_output,
             "' if '",
             enable_scan_noise_filter,
-            "'.lower() == 'true' else '/scan')",
+            "'.lower() in ('true', '1') else '/scan')",
         ]
     )
     nav_snapshot_scan_topic = PythonExpression(
@@ -244,9 +356,9 @@ def generate_launch_description():
         [
             "'",
             enable_scan_noise_filter,
-            "'.lower() == 'true' and '",
+            "'.lower() in ('true', '1') and '",
             enable_lidar_obstacle_filter,
-            "'.lower() != 'true'",
+            "'.lower() not in ('true', '1')",
         ]
     )
 
@@ -264,7 +376,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "custom_urdf",
-                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+                # El RS16 real va montado con pitch 10°: el URDF v2 lo refleja
+                # (lidar_link rpy 0 0.1745 0). Necesario para que el TF y el
+                # scan_ground_filter (target_frame base_footprint) nivelen bien.
+                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf"),
             ),
             DeclareLaunchArgument(
                 "lidar_to_scan_params_file",
@@ -300,6 +415,25 @@ def generate_launch_description():
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument(
+                "enable_scan_ground_filter",
+                default_value="False",
+                description="Intercala el scan_ground_filter (estilo Autoware) "
+                "entre /scan_3d y pointcloud_to_laserscan. Alternativa a "
+                "enable_lidar_obstacle_filter; no usar ambos a la vez.",
+            ),
+            DeclareLaunchArgument(
+                "scan_ground_min_height",
+                default_value="0.10",
+                description="min_height del pointcloud_to_laserscan cuando el "
+                "filtro de suelo está activo (el piso ya se quitó en 3D).",
+            ),
+            DeclareLaunchArgument(
+                "scan_ground_max_height",
+                default_value="2.50",
+                description="max_height del pointcloud_to_laserscan cuando el "
+                "filtro de suelo está activo.",
+            ),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
             DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
             DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
@@ -453,17 +587,9 @@ def generate_launch_description():
                     "use_cyclone_dds": use_cyclone_dds,
                 }.items(),
             ),
-            Node(
-                package="pointcloud_to_laserscan",
-                executable="pointcloud_to_laserscan_node",
-                name="pointcloud_to_laserscan",
-                output="screen",
-                parameters=[
-                    lidar_to_scan_params_file,
-                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
-                    {"output_qos": "sensor_data"},
-                ],
-                remappings=[("cloud_in", "/scan_3d"), ("scan", "/scan")],
+            OpaqueFunction(
+                function=_build_scan_ground_pipeline,
+                kwargs={"scan_ground_params_file": default_scan_ground_params},
             ),
             Node(
                 package="navegacion_gps",

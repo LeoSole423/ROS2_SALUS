@@ -59,6 +59,9 @@ def generate_launch_description():
     scan_wifi_debug_beam_stride = LaunchConfiguration("scan_wifi_debug_beam_stride")
     scan_wifi_debug_range_max_m = LaunchConfiguration("scan_wifi_debug_range_max_m")
     enable_lidar_obstacle_filter = LaunchConfiguration("enable_lidar_obstacle_filter")
+    enable_scan_ground_filter = LaunchConfiguration("enable_scan_ground_filter")
+    scan_ground_min_height = LaunchConfiguration("scan_ground_min_height")
+    scan_ground_max_height = LaunchConfiguration("scan_ground_max_height")
     lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
     enable_scan_noise_filter = LaunchConfiguration("enable_scan_noise_filter")
     scan_noise_filter_output = LaunchConfiguration("scan_noise_filter_output")
@@ -164,7 +167,8 @@ def generate_launch_description():
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
             DeclareLaunchArgument(
                 "custom_urdf",
-                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+                # RS16 montado con pitch 10° -> URDF v2 (ver real_global_v2).
+                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf"),
             ),
             DeclareLaunchArgument(
                 "lidar_to_scan_params_file",
@@ -199,6 +203,9 @@ def generate_launch_description():
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
+            DeclareLaunchArgument("enable_scan_ground_filter", default_value="False"),
+            DeclareLaunchArgument("scan_ground_min_height", default_value="0.10"),
+            DeclareLaunchArgument("scan_ground_max_height", default_value="2.50"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),
             DeclareLaunchArgument("enable_scan_noise_filter", default_value="True"),
             DeclareLaunchArgument("scan_noise_filter_output", default_value="/scan_clean"),
@@ -327,6 +334,9 @@ def generate_launch_description():
                     "scan_wifi_debug_beam_stride": scan_wifi_debug_beam_stride,
                     "scan_wifi_debug_range_max_m": scan_wifi_debug_range_max_m,
                     "enable_lidar_obstacle_filter": enable_lidar_obstacle_filter,
+                    "enable_scan_ground_filter": enable_scan_ground_filter,
+                    "scan_ground_min_height": scan_ground_min_height,
+                    "scan_ground_max_height": scan_ground_max_height,
                     "lidar_scan_topic": lidar_scan_topic,
                     "enable_scan_noise_filter": enable_scan_noise_filter,
                     "scan_noise_filter_output": scan_noise_filter_output,

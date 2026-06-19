@@ -23,7 +23,7 @@ from geometry_msgs.msg import Twist
 from map_msgs.msg import OccupancyGridUpdate
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 
 @dataclass
@@ -156,17 +156,24 @@ class ScanGroundValidationNode(Node):
             occupied_threshold=int(self._p("occupied_threshold"))
         )
 
-        # costmap: el OccupancyGrid full se publica latched/transient-local
-        costmap_qos = QoSProfile(depth=1)
-        costmap_qos.reliability = ReliabilityPolicy.RELIABLE
+        # El OccupancyGrid full se publica latched (transient_local): hay que
+        # suscribirse con la misma durabilidad o, si el validador arranca tarde,
+        # nunca llega el grid base y se descartan todos los updates (que son
+        # parches relativos). Los updates van por un tópico volátil aparte.
+        full_costmap_qos = QoSProfile(depth=1)
+        full_costmap_qos.reliability = ReliabilityPolicy.RELIABLE
+        full_costmap_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        updates_qos = QoSProfile(depth=10)
+        updates_qos.reliability = ReliabilityPolicy.RELIABLE
+        updates_qos.durability = DurabilityPolicy.VOLATILE
         self.create_subscription(
-            OccupancyGrid, self._p("costmap_topic"), self._on_costmap, costmap_qos
+            OccupancyGrid, self._p("costmap_topic"), self._on_costmap, full_costmap_qos
         )
         self.create_subscription(
             OccupancyGridUpdate,
             self._p("costmap_updates_topic"),
             self._on_costmap_update,
-            costmap_qos,
+            updates_qos,
         )
         self.create_subscription(
             Twist, self._p("cmd_vel_topic"), self._on_cmd, 10
