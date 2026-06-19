@@ -13,7 +13,9 @@ set -euo pipefail
 # apaga el display "ScanGround NoGround" en el panel de Displays y segui con el
 # 2D. Corre en la PC del operador, no en la Raspberry. El robot tiene que estar
 # corriendo real_global_v2_wifi.launch.py con enable_scan_ground_filter:=True.
-CYCLONEDDS_WIFI_URI="file:///ros2_ws/src/navegacion_gps/config/cyclonedds_wifi.xml"
+# DDS fijado a la LAN cableada (eno1 en el PC) para descubrir el robot por el
+# cable directo. Requiere la ruta de host: ver config/cyclonedds_lan.xml.
+CYCLONEDDS_LAN_URI="file:///ros2_ws/src/navegacion_gps/config/cyclonedds_lan.xml"
 RVIZ_WIFI_LAUNCH="/ros2_ws/src/navegacion_gps/launch/rviz_real_global_v2_wifi.launch.py"
 RVIZ_CONFIG="/ros2_ws/src/navegacion_gps/config/rviz_global_v2_wifi_scan_ground.rviz"
 DISPLAY_VALUE="${DISPLAY:-:0}"
@@ -29,4 +31,4 @@ prepare_x11_for_docker_rviz() {
 
 prepare_x11_for_docker_rviz
 
-./tools/exec.sh "export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch ${RVIZ_WIFI_LAUNCH} custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real_v2.urdf rviz_config:=${RVIZ_CONFIG}"
+./tools/exec.sh "export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_LAN_URI}; ros2 launch ${RVIZ_WIFI_LAUNCH} custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real_v2.urdf rviz_config:=${RVIZ_CONFIG}"
