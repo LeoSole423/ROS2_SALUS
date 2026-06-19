@@ -451,7 +451,7 @@ def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
         assert "nav2_is_path_clearance_valid_condition_bt_node" in params_contents
 
 
-def test_wifi_nav2_costmaps_use_real_safe_and_sim_long_lidar_marking_ranges() -> None:
+def test_wifi_nav2_costmaps_use_long_lidar_marking_ranges() -> None:
     real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
     sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
 
@@ -460,8 +460,7 @@ def test_wifi_nav2_costmaps_use_real_safe_and_sim_long_lidar_marking_ranges() ->
         assert "height: 30" in params_contents
         assert "raytrace_max_range: 20.0" in params_contents
 
-    assert real_wifi_params.count("obstacle_max_range: 10.0") >= 2
-    assert "obstacle_max_range: 8.0" in real_wifi_params
+    assert real_wifi_params.count("obstacle_max_range: 15.0") >= 3
     assert sim_wifi_params.count("obstacle_max_range: 15.0") >= 2
 
 

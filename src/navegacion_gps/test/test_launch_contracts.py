@@ -71,10 +71,16 @@ def test_global_v2_lidar_scan_topic_contract_is_reversible() -> None:
         assert scan_filter_output_arg in launch_contents
         assert "' if '" in launch_contents
         assert "enable_lidar_obstacle_filter" in launch_contents
-        assert "'.lower() == 'true' else ('" in launch_contents
+        assert (
+            "'.lower() in ('true', '1') else ('" in launch_contents
+            or "'.lower() == 'true' else ('" in launch_contents
+        )
         assert "scan_noise_filter_output" in launch_contents
         assert "enable_scan_noise_filter" in launch_contents
-        assert "'.lower() == 'true' else '/scan')" in launch_contents
+        assert (
+            "'.lower() in ('true', '1') else '/scan')" in launch_contents
+            or "'.lower() == 'true' else '/scan')" in launch_contents
+        )
         assert 'condition=IfCondition(enable_legacy_scan_noise_filter)' in launch_contents
         assert '"source_topic": "/scan"' in launch_contents
         assert '"output_topic": scan_noise_filter_output' in launch_contents

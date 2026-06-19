@@ -153,7 +153,7 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert 'executable="lidar_obstacle_filter"' in launch_contents
     assert 'condition=IfCondition(enable_lidar_obstacle_filter)' in launch_contents
     assert "enable_legacy_scan_noise_filter = PythonExpression(" in launch_contents
-    assert "'.lower() == 'true' else ('" in launch_contents
+    assert "'.lower() in ('true', '1') else ('" in launch_contents
     assert '"source_topic": effective_lidar_scan_topic' in launch_contents
     assert '"lidar_scan_topic": effective_lidar_scan_topic' in launch_contents
     assert '"output_topic": scan_wifi_debug_topic' in launch_contents
