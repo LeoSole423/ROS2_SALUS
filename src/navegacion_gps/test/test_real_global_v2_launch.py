@@ -138,6 +138,11 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert 'executable="scan_wifi_debug"' in launch_contents
     assert 'condition=IfCondition(enable_scan_wifi_debug)' in launch_contents
     assert LIDAR_FILTER_DEFAULT_ARG in launch_contents
+    assert (
+        'DeclareLaunchArgument(\n'
+        '                "enable_scan_ground_filter",\n'
+        '                default_value="True",'
+    ) in launch_contents
     assert 'DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered")' in launch_contents
     assert SCAN_FILTER_DEFAULT_ARG in launch_contents
     assert SCAN_FILTER_OUTPUT_ARG in launch_contents
@@ -269,6 +274,8 @@ def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
     assert '"use_rviz": "false"' in launch_contents
     assert '"enable_scan_wifi_debug": enable_scan_wifi_debug' in launch_contents
     assert '"enable_lidar_obstacle_filter": enable_lidar_obstacle_filter' in launch_contents
+    assert 'DeclareLaunchArgument("enable_scan_ground_filter", default_value="True")' in launch_contents
+    assert '"enable_scan_ground_filter": enable_scan_ground_filter' in launch_contents
     assert '"lidar_scan_topic": lidar_scan_topic' in launch_contents
     assert '"enable_scan_noise_filter": enable_scan_noise_filter' in launch_contents
     assert '"scan_noise_filter_output": scan_noise_filter_output' in launch_contents

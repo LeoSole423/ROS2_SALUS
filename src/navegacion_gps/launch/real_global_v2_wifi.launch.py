@@ -203,7 +203,7 @@ def generate_launch_description():
                 "scan_wifi_debug_range_max_m", default_value="12.0"
             ),
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
-            DeclareLaunchArgument("enable_scan_ground_filter", default_value="False"),
+            DeclareLaunchArgument("enable_scan_ground_filter", default_value="True"),
             DeclareLaunchArgument("scan_ground_min_height", default_value="0.10"),
             DeclareLaunchArgument("scan_ground_max_height", default_value="2.50"),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan_filtered"),

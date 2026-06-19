@@ -417,7 +417,7 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_lidar_obstacle_filter", default_value="False"),
             DeclareLaunchArgument(
                 "enable_scan_ground_filter",
-                default_value="False",
+                default_value="True",
                 description="Intercala el scan_ground_filter (estilo Autoware) "
                 "entre /scan_3d y pointcloud_to_laserscan. Alternativa a "
                 "enable_lidar_obstacle_filter; no usar ambos a la vez.",

@@ -18,8 +18,8 @@ set -euo pipefail
 # sale de /scan_3d/no_ground), asi que igual ves el efecto del filtro en 2D.
 #
 # Corre en la PC del operador, no en la Raspberry. El robot tiene que estar
-# corriendo el stack real (ej. ./tools/launch_real_global_v2_scan_ground.sh),
-# idealmente con enable_scan_ground_filter:=True.
+# corriendo el stack real (ej. ./tools/launch_real_global_v2_scan_ground.sh);
+# en real_global_v2 el scan_ground_filter ya queda activo por default.
 #
 # DDS: usa el perfil LAN cableado (cyclonedds_lan.xml), el mismo que el stack
 # del robot (launch_real_global_v2_scan_ground.sh), para descubrirse por el

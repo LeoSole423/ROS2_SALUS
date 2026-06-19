@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Perfil real global con el scan_ground_filter (segmentacion de suelo estilo
-# Autoware) ACTIVO, para validar/operar el filtro en el robot real.
+# Perfil real global por LAN cableada con el scan_ground_filter (segmentacion de
+# suelo estilo Autoware) ACTIVO, para validar/operar el filtro en el robot real.
 #
 # Toma de referencia ./tools/launch_real_global_v2.sh y NO modifica
 # real_global_v2.launch.py: solo pasa launch args. El URDF default ya es
 # cuatri_real_v2.urdf (RS16 pitcheado 10°), necesario para que el filtro nivele
 # bien la nube (target_frame base_footprint).
+#
+# real_global_v2 ya lo trae activo por default; este wrapper sigue siendo util
+# para fijar CycloneDDS a LAN cableada y dejar explicitos los parametros A/B.
 #
 # Override de cualquier arg pasandolo al final (gana el ultimo), p.ej.:
 #   ./tools/launch_real_global_v2_scan_ground.sh use_rviz:=True

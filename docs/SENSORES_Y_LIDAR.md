@@ -137,7 +137,7 @@ pierde obstáculos bajos. El `scan_ground_filter` elimina el suelo en **3D** ant
 aplanar a 2D, permitiendo bajar `min_height` (recuperar obstáculos bajos) y subir
 `max_height` (recuperar obstáculos sobre terreno inclinado) sin reintroducir piso.
 
-### 4.2 Estado: cableado detrás de flag, default OFF
+### 4.2 Estado: default ON en real global, opt-in en sim/validación
 
 | Aspecto | Detalle |
 |---|---|
@@ -145,7 +145,7 @@ aplanar a 2D, permitiendo bajar `min_height` (recuperar obstáculos bajos) y sub
 | Origen | Port del algoritmo *non-grid* de Autoware `scan_ground_filter` (v0.51.0), **sin** compilar Autoware. Verificado vs `node.cpp` (fidelidad). |
 | Interfaz | `/scan_3d` → `/scan_3d/no_ground` (transforma a `base_footprint` antes de clasificar) |
 | Config | `config/scan_ground_filter.param.yaml` (defaults RS16: global 10°, local 13°, radial 1°) |
-| Flag | `enable_scan_ground_filter` (**default False**) en `sim_v2_base.launch.py` (vía `OpaqueFunction _build_lidar_pipeline`), forwardeado por `sim_local_v2` y `validate_scan_ground.launch.py` |
+| Flag | `enable_scan_ground_filter` (**default True**) en `real_global_v2.launch.py` y `real_global_v2_wifi.launch.py`; sigue **default False** en sim/validación para A/B |
 | Ventana 2D | con el flag on: `scan_ground_min_height` (default 0.10) y `scan_ground_max_height` (default 2.50) sobreescriben el `pointcloud_to_laserscan` |
 | Tests | `test/test_scan_ground_filter.py` (núcleo) + `test/test_scan_ground_validation.py` |
 | Rendimiento | ~25 ms / 28.8k pts (lazo en floats Python + `lexsort`) |

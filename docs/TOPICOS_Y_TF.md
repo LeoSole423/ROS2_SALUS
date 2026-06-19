@@ -45,7 +45,7 @@ Fuente: `controller_server_node.py:169-173`.
 | `/scan_clean` | `sensor_msgs/LaserScan` | `scan_noise_filter` | scan efectivo en real (default) |
 | `/scan_filtered` | `sensor_msgs/LaserScan` | `lidar_obstacle_filter` (RANSAC, off) | scan efectivo si rama 3D activa |
 | `/obstacles_cloud` | `sensor_msgs/PointCloud2` | `lidar_obstacle_filter` | debug |
-| `/scan_3d/no_ground` | `sensor_msgs/PointCloud2` | `scan_ground_filter` (off) | entrada alternativa a `pointcloud_to_laserscan` |
+| `/scan_3d/no_ground` | `sensor_msgs/PointCloud2` | `scan_ground_filter` (on en real global, off en sim/validación) | entrada alternativa a `pointcloud_to_laserscan` |
 | `/scan_wifi_debug` | `sensor_msgs/LaserScan` | `scan_wifi_debug` | scan diezmado para visualización por WiFi |
 
 El **scan efectivo** que consumen Nav2 y collision_monitor se resuelve por launch

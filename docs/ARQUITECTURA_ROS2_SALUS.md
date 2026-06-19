@@ -85,7 +85,7 @@ Clasificación según `AGENTS.md` y `README.md`.
 |---|---|
 | **Activo (mainline)** | `navegacion_gps/sim_global_v2.launch.py`, `real_global_v2.launch.py`, `real_global_v2_wifi.launch.py` (+ sus `rviz_*`). Sensores vía **MAVROS** (`sensores/mavros.launch.py`). LiDAR `sensores/rs16.launch.py`. Web `map_tools/no_go_editor.launch.py`. |
 | **Legado / referencia** | `simulacion.launch.py`, `real.launch.py`, `sim_local_v2.launch.py`, `real_local_v2.launch.py`, `nav2_only.launch.py`, `rviz_real.launch.py`. Driver propio `sensores/pixhawk_driver` + `sensores/pixhawk.launch.py` (reemplazado por MAVROS). |
-| **POC / experimental** | `validate_scan_ground.launch.py` (validación del filtro de suelo), `lidar_obstacle_filter` (rama RANSAC 3D, default off), `scan_ground_filter` (default off). |
+| **POC / experimental** | `validate_scan_ground.launch.py` (validación del filtro de suelo), `lidar_obstacle_filter` (rama RANSAC 3D, default off). `scan_ground_filter` ya es default on en `real_global_v2`; sigue siendo opt-in en sim/validación. |
 
 > Regla operativa de `AGENTS.md`: tratar **toda** navegación distinta de
 > `real_global_v2` y `sim_global_v2` como legado salvo indicación explícita.
@@ -127,8 +127,10 @@ pointcloud_to_laserscan (target_frame base_footprint)
    -> Nav2 costmaps + collision_monitor
 ```
 
-Ramas opcionales (default off): `lidar_obstacle_filter` (RANSAC 3D → `/scan_filtered`)
-y `scan_ground_filter` (segmentación de suelo estilo Autoware → `/scan_3d/no_ground`).
+Ramas: `scan_ground_filter` es default on en `real_global_v2`
+(segmentación de suelo estilo Autoware → `/scan_3d/no_ground`);
+`lidar_obstacle_filter` queda como alternativa default off (RANSAC 3D →
+`/scan_filtered`).
 Detalle completo: [SENSORES_Y_LIDAR](SENSORES_Y_LIDAR.md).
 
 ### 4.3 Localización (perfil real MAVROS)
