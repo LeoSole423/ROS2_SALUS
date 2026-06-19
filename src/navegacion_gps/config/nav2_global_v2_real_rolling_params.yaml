@@ -213,10 +213,12 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          # Marcamos obstaculos solo hasta 10 m para no convertir retornos
-          # bajos/rasantes del suelo lejano en obstaculos locales. Mantenemos
-          # raytrace_max_range en 20 m para seguir limpiando espacio libre.
-          obstacle_max_range: 10.0
+          # Marcamos obstaculos hasta 15 m. Antes 10 m para no convertir
+          # retornos bajos/rasantes del suelo lejano en obstaculos, pero con el
+          # scan_ground_filter activo (/scan sale de /scan_3d/no_ground) el piso
+          # se quita en 3D, asi que se puede extender el marcado sin reintroducir
+          # fantasmas. raytrace_max_range queda en 20 m para limpiar espacio.
+          obstacle_max_range: 15.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
@@ -230,7 +232,7 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 1.60
           min_obstacle_height: 0.0
-          obstacle_max_range: 10.0
+          obstacle_max_range: 15.0
           obstacle_min_range: 0.0
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
@@ -288,10 +290,11 @@ global_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
-          # En el costmap global marcamos un poco menos lejos que el LiDAR:
-          # el bag real mostro retornos bajos de suelo principalmente a
-          # 15-20 m. Raytrace queda en 20 m para limpiar fantasmas.
-          obstacle_max_range: 8.0
+          # Marcamos hasta 15 m. Antes 8 m porque el bag real mostraba retornos
+          # bajos de suelo a 15-20 m; con el scan_ground_filter activo el piso se
+          # quita en 3D y se puede extender el marcado. Raytrace queda en 20 m
+          # para limpiar fantasmas.
+          obstacle_max_range: 15.0
           obstacle_min_range: 0.0
           inf_is_valid: True
           observation_persistence: 1.0
