@@ -10,6 +10,7 @@ from geometry_msgs.msg import Point, PoseStamped
 from nav2_msgs.msg import Costmap
 from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import Path
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import (
@@ -41,6 +42,15 @@ class ClearanceCheckResult:
     max_cost: int
     checked_samples: int
     reason: str
+
+
+@dataclass(frozen=True)
+class CachedValidationResult:
+    path_signature: Tuple[object, ...]
+    costmap_stamp_sec: float
+    checked_at_monotonic_s: float
+    is_valid: bool
+    invalid_indices: Tuple[int, ...]
 
 
 def yaw_from_quaternion_z_w(z: float, w: float) -> float:
@@ -102,6 +112,41 @@ def _path_xy(path: Path) -> List[Tuple[float, float]]:
         if np.isfinite(float(pose.pose.position.x))
         and np.isfinite(float(pose.pose.position.y))
     ]
+
+
+def _path_signature(path: Path) -> Tuple[object, ...]:
+    frame_id = str(path.header.frame_id or "")
+    stamp = path.header.stamp
+    pose_count = len(path.poses)
+    if pose_count == 0:
+        return (frame_id, int(stamp.sec), int(stamp.nanosec), 0)
+
+    sample_indices = sorted(
+        {
+            0,
+            pose_count // 4,
+            pose_count // 2,
+            (pose_count * 3) // 4,
+            pose_count - 1,
+        }
+    )
+    samples = []
+    for index in sample_indices:
+        pose = path.poses[index].pose.position
+        samples.append(
+            (
+                index,
+                int(round(float(pose.x) * 100.0)),
+                int(round(float(pose.y) * 100.0)),
+            )
+        )
+    return (
+        frame_id,
+        int(stamp.sec),
+        int(stamp.nanosec),
+        pose_count,
+        tuple(samples),
+    )
 
 
 def _iter_path_samples(
@@ -229,6 +274,7 @@ class PathClearanceValidatorNode(Node):
         self.declare_parameter("lateral_offsets_m", [0.0, 0.45, -0.45])
         self.declare_parameter("costmap_timeout_s", 1.5)
         self.declare_parameter("tf_timeout_s", 0.1)
+        self.declare_parameter("min_validation_period_s", 0.75)
 
         self.enabled = bool(self.get_parameter("enabled").value)
         self.service_name = str(self.get_parameter("service_name").value)
@@ -268,9 +314,14 @@ class PathClearanceValidatorNode(Node):
             0.01,
             float(self.get_parameter("tf_timeout_s").value),
         )
+        self.min_validation_period_s = max(
+            0.0,
+            float(self.get_parameter("min_validation_period_s").value),
+        )
 
         self._lock = threading.Lock()
         self._costmap: Optional[CostmapView] = None
+        self._last_cache: Optional[CachedValidationResult] = None
         self._last_open_warning_s = 0.0
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -293,12 +344,14 @@ class PathClearanceValidatorNode(Node):
             self.service_name,
             self._on_validate,
         )
+        self.add_on_set_parameters_callback(self._on_set_parameters)
         self.get_logger().info(
             "path_clearance_validator ready "
             f"(service={self.service_name}, "
             f"costmap={self.global_costmap_topic}, "
             f"threshold={self.high_cost_threshold}, "
-            f"distance={self.max_check_distance_m:.1f}m)"
+            f"distance={self.max_check_distance_m:.1f}m, "
+            f"cache={self.min_validation_period_s:.2f}s)"
         )
 
     def _on_costmap(self, msg: Costmap) -> None:
@@ -308,6 +361,55 @@ class PathClearanceValidatorNode(Node):
         )
         with self._lock:
             self._costmap = view
+            self._last_cache = None
+
+    def _on_set_parameters(self, parameters) -> SetParametersResult:
+        updates = {}
+        try:
+            for parameter in parameters:
+                name = parameter.name
+                value = parameter.value
+                if name in {"service_name", "global_costmap_topic"}:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f"{name} requires node restart",
+                    )
+                if name == "enabled":
+                    updates[name] = bool(value)
+                elif name == "max_check_distance_m":
+                    updates[name] = max(0.1, float(value))
+                elif name == "sample_step_m":
+                    updates[name] = max(0.05, float(value))
+                elif name == "high_cost_threshold":
+                    updates[name] = int(value)
+                elif name == "lethal_cost_threshold":
+                    updates[name] = int(value)
+                elif name == "min_consecutive_high_cost_samples":
+                    updates[name] = max(1, int(value))
+                elif name == "lateral_offsets_m":
+                    offsets = [float(offset) for offset in value]
+                    updates[name] = offsets or [0.0]
+                elif name == "costmap_timeout_s":
+                    updates[name] = max(0.1, float(value))
+                elif name == "tf_timeout_s":
+                    updates[name] = max(0.01, float(value))
+                elif name == "min_validation_period_s":
+                    updates[name] = max(0.0, float(value))
+        except (TypeError, ValueError) as exc:
+            return SetParametersResult(successful=False, reason=str(exc))
+
+        if not updates:
+            return SetParametersResult(successful=True)
+
+        with self._lock:
+            for name, value in updates.items():
+                setattr(self, name, value)
+            self._last_cache = None
+        self.get_logger().info(
+            "path_clearance_validator params updated: "
+            + ", ".join(sorted(updates.keys()))
+        )
+        return SetParametersResult(successful=True)
 
     def _warn_open(self, reason: str) -> None:
         now = time.monotonic()
@@ -373,17 +475,40 @@ class PathClearanceValidatorNode(Node):
     ) -> IsPathValid.Response:
         response.is_valid = True
         response.invalid_pose_indices = []
-        if not self.enabled:
+
+        enabled = bool(getattr(self, "enabled", True))
+        if not enabled:
             return response
 
+        now_monotonic = time.monotonic()
+        path_signature = _path_signature(request.path)
         with self._lock:
             costmap = self._costmap
+            cache = getattr(self, "_last_cache", None)
+            min_validation_period_s = float(
+                getattr(self, "min_validation_period_s", 0.0)
+            )
+            costmap_timeout_s = getattr(self, "costmap_timeout_s", 1.5)
+
         if costmap is None:
             self._warn_open("costmap unavailable")
             return response
 
+        if (
+            cache is not None
+            and min_validation_period_s > 0.0
+            and cache.path_signature == path_signature
+            and cache.costmap_stamp_sec == costmap.stamp_sec
+            and (
+                now_monotonic - cache.checked_at_monotonic_s
+            ) <= min_validation_period_s
+        ):
+            response.is_valid = bool(cache.is_valid)
+            response.invalid_pose_indices = list(cache.invalid_indices)
+            return response
+
         now_sec = self.get_clock().now().nanoseconds * 1.0e-9
-        if (now_sec - costmap.stamp_sec) > self.costmap_timeout_s:
+        if (now_sec - costmap.stamp_sec) > costmap_timeout_s:
             self._warn_open(
                 f"costmap stale age={now_sec - costmap.stamp_sec:.2f}s"
             )
@@ -396,20 +521,39 @@ class PathClearanceValidatorNode(Node):
         if path is None:
             return response
 
+        with self._lock:
+            max_check_distance_m = self.max_check_distance_m
+            sample_step_m = self.sample_step_m
+            high_cost_threshold = self.high_cost_threshold
+            lethal_cost_threshold = self.lethal_cost_threshold
+            min_consecutive_high_cost_samples = (
+                self.min_consecutive_high_cost_samples
+            )
+            lateral_offsets_m = list(self.lateral_offsets_m)
+
         result = check_path_clearance(
             path,
             costmap,
-            max_check_distance_m=self.max_check_distance_m,
-            sample_step_m=self.sample_step_m,
-            high_cost_threshold=self.high_cost_threshold,
-            lethal_cost_threshold=self.lethal_cost_threshold,
+            max_check_distance_m=max_check_distance_m,
+            sample_step_m=sample_step_m,
+            high_cost_threshold=high_cost_threshold,
+            lethal_cost_threshold=lethal_cost_threshold,
             min_consecutive_high_cost_samples=(
-                self.min_consecutive_high_cost_samples
+                min_consecutive_high_cost_samples
             ),
-            lateral_offsets_m=self.lateral_offsets_m,
+            lateral_offsets_m=lateral_offsets_m,
         )
         response.is_valid = bool(result.is_valid)
         response.invalid_pose_indices = list(result.invalid_indices)
+        if min_validation_period_s > 0.0:
+            with self._lock:
+                self._last_cache = CachedValidationResult(
+                    path_signature=path_signature,
+                    costmap_stamp_sec=costmap.stamp_sec,
+                    checked_at_monotonic_s=now_monotonic,
+                    is_valid=bool(result.is_valid),
+                    invalid_indices=tuple(result.invalid_indices),
+                )
         if not result.is_valid:
             self.get_logger().warning(
                 "Path clearance invalid "

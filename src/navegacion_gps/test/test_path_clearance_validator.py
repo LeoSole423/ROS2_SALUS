@@ -1,4 +1,6 @@
 import threading
+import time
+from types import SimpleNamespace
 
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.msg import Costmap, CostmapMetaData
@@ -6,9 +8,11 @@ from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import Path
 
 from navegacion_gps.path_clearance_validator import (
+    CachedValidationResult,
     PathClearanceValidatorNode,
     check_path_clearance,
     costmap_view_from_msg,
+    _path_signature,
 )
 
 
@@ -159,3 +163,57 @@ def test_validator_fails_open_with_stale_costmap():
 
     assert response.is_valid is True
     assert list(response.invalid_pose_indices) == []
+
+
+def test_validator_uses_recent_cache_for_same_path_and_costmap():
+    path = _path([(1, 1), (10, 1)])
+    costmap = _costmap(costs={(4, 1): 254})
+    node = object.__new__(PathClearanceValidatorNode)
+    node.enabled = True
+    node._lock = threading.Lock()
+    node._costmap = costmap
+    node.min_validation_period_s = 1.0
+    node._last_cache = CachedValidationResult(
+        path_signature=_path_signature(path),
+        costmap_stamp_sec=costmap.stamp_sec,
+        checked_at_monotonic_s=time.monotonic(),
+        is_valid=True,
+        invalid_indices=(),
+    )
+
+    response = PathClearanceValidatorNode._on_validate(
+        node,
+        IsPathValid.Request(path=path),
+        IsPathValid.Response(),
+    )
+
+    assert response.is_valid is True
+    assert list(response.invalid_pose_indices) == []
+
+
+def test_validator_dynamic_parameters_update_runtime_values():
+    class _Logger:
+        def info(self, _message):
+            pass
+
+    node = object.__new__(PathClearanceValidatorNode)
+    node._lock = threading.Lock()
+    node._last_cache = object()
+    node.get_logger = lambda: _Logger()
+
+    result = PathClearanceValidatorNode._on_set_parameters(
+        node,
+        [
+            SimpleNamespace(name="enabled", value=False),
+            SimpleNamespace(name="costmap_timeout_s", value=4.0),
+            SimpleNamespace(name="min_validation_period_s", value=0.75),
+            SimpleNamespace(name="lateral_offsets_m", value=[0.0, 0.5]),
+        ],
+    )
+
+    assert result.successful is True
+    assert node.enabled is False
+    assert node.costmap_timeout_s == 4.0
+    assert node.min_validation_period_s == 0.75
+    assert node.lateral_offsets_m == [0.0, 0.5]
+    assert node._last_cache is None

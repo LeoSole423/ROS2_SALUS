@@ -75,8 +75,11 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
   desde una pose lateralmente corrida genere un giro Dubins en O.
 - `path_clearance_validator` revisa `/global_costmap/costmap_raw` sobre los
   proximos `12m` del path con umbral de costo `100`, offsets laterales
-  `0.0, +/-0.45m` y falla abierto si no tiene costmap fresco. Esto fuerza replan
-  cuando el path pasa por la zona gris/inflada alrededor de autos u obstaculos.
+  `0.0, +/-0.45m` y falla abierto si no tiene costmap fresco. El timeout de
+  frescura es `4.0s` para ser compatible con costmaps WiFi a `0.5 Hz`, y el nodo
+  cachea validaciones repetidas durante `0.75s` para no bloquear el tick del BT.
+  Esto fuerza replan cuando el path pasa por la zona gris/inflada alrededor de
+  autos u obstaculos.
 - En `NavigateThroughPoses`, `RemovePassedGoals` usa `radius=1.2`, alineado con
   `xy_goal_tolerance=1.2`, para no conservar waypoints ya aceptables cuando un
   obstaculo invalida el path y fuerza un replan.
@@ -90,7 +93,7 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
 - Params: `nav2_global_v2_real_rolling_params.yaml` (real),
   `nav2_global_v2_sim_rolling_params.yaml` (sim), variantes `_wifi`.
 - En perfiles `_wifi` se mantiene `desired_linear_vel=1.6`, pero el lookahead
-  escalado queda acotado a `1.4..3.0 m` con `lookahead_time=1.5`. La intención es
+  escalado queda acotado a `1.8..3.6 m` con `lookahead_time=1.8`. La intención es
   reducir la corrección tardía sin cambiar la velocidad nominal de patrulla.
 - Overrides keepout: `nav2_local_v2_keepout_overrides.yaml` vs
   `nav2_local_v2_no_keepout_overrides.yaml` según `use_keepout`.

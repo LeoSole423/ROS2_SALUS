@@ -446,6 +446,8 @@ def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
         assert "lethal_cost_threshold: 253" in params_contents
         assert "min_consecutive_high_cost_samples: 3" in params_contents
         assert "lateral_offsets_m: [0.0, 0.45, -0.45]" in params_contents
+        assert "costmap_timeout_s: 4.0" in params_contents
+        assert "min_validation_period_s: 0.75" in params_contents
         assert "nav2_is_path_clearance_valid_condition_bt_node" in params_contents
 
 
@@ -461,6 +463,18 @@ def test_wifi_nav2_costmaps_use_real_safe_and_sim_long_lidar_marking_ranges() ->
     assert real_wifi_params.count("obstacle_max_range: 10.0") >= 2
     assert "obstacle_max_range: 8.0" in real_wifi_params
     assert sim_wifi_params.count("obstacle_max_range: 15.0") >= 2
+
+
+def test_wifi_rpp_lookahead_is_smoother_and_sim_real_parity() -> None:
+    real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
+    sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
+
+    for params_contents in (real_wifi_params, sim_wifi_params):
+        assert "desired_linear_vel: 1.6" in params_contents
+        assert "lookahead_dist: 2.6" in params_contents
+        assert "min_lookahead_dist: 1.8" in params_contents
+        assert "max_lookahead_dist: 3.6" in params_contents
+        assert "lookahead_time: 1.8" in params_contents
 
 
 def test_global_v2_local_costmaps_split_lidar_marking_from_clearing() -> None:

@@ -21,7 +21,9 @@ La simulacion global V2 y la navegacion real global V2 deben mantenerse sincroni
   path vigente sigue siendo transitable y mantiene margen lateral.
 - `path_clearance_validator` y sus thresholds deben mantenerse espejados entre
   los cuatro perfiles globales V2; el gris inflado del costmap es una zona de
-  margen, no solo visualizacion.
+  margen, no solo visualizacion. Tambien deben mantenerse espejados su
+  `costmap_timeout_s` y `min_validation_period_s`, porque forman parte de la
+  estabilidad del Behavior Tree.
 
 ## Diferencias permitidas
 - `use_sim_time`: sim usa tiempo simulado; real usa tiempo del sistema/ROS real.
@@ -36,7 +38,7 @@ La simulacion global V2 y la navegacion real global V2 deben mantenerse sincroni
   - No deben cambiar la logica principal de navegacion.
   - Diferencias aceptadas: `publish_frequency`, `publish_voxel_map`, `always_send_full_costmap` cuando sea para costmaps remotos.
   - Diferencias aceptadas de seguimiento: `desired_linear_vel=1.6` y lookahead
-    RPP `1.4..3.0 m` en WiFi, siempre espejadas entre `sim_global_v2_wifi` y
+    RPP `1.8..3.6 m` en WiFi, siempre espejadas entre `sim_global_v2_wifi` y
     `real_global_v2_wifi`. El radio de giro global sigue siendo `4.0 m`.
 
 ## Keepout
