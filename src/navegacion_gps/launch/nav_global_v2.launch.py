@@ -51,6 +51,7 @@ def generate_launch_description():
     collision_monitor_params_file = LaunchConfiguration("collision_monitor_params_file")
     keepout_mask_yaml = LaunchConfiguration("keepout_mask_yaml")
     lidar_scan_topic = LaunchConfiguration("lidar_scan_topic")
+    nav_through_poses_bt_xml = LaunchConfiguration("nav_through_poses_bt_xml")
     selected_nav2_overrides_file = PythonExpression(
         [
             "'",
@@ -68,7 +69,7 @@ def generate_launch_description():
             root_key="",
             param_rewrites={
                 "default_nav_to_pose_bt_xml": bt_xml,
-                "default_nav_through_poses_bt_xml": bt_through_poses_xml,
+                "default_nav_through_poses_bt_xml": nav_through_poses_bt_xml,
                 "local_costmap.local_costmap.ros__parameters.voxel_layer.scan_marking.topic": (
                     lidar_scan_topic
                 ),
@@ -123,6 +124,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("keepout_mask_yaml", default_value=default_keepout_mask),
             DeclareLaunchArgument("lidar_scan_topic", default_value="/scan"),
+            DeclareLaunchArgument(
+                "nav_through_poses_bt_xml",
+                default_value=bt_through_poses_xml,
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(keepout_launch),
                 launch_arguments={

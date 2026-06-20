@@ -19,6 +19,7 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
   - [REAL_GLOBAL_V2_CHECKLIST.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/REAL_GLOBAL_V2_CHECKLIST.md)
 - Benchmarks y observabilidad:
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
+  - [docs/navigation-traces.md](/home/leo/codigo/ROS2_SALUS/docs/navigation-traces.md)
 - Heading auxiliar:
   - [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md)
 - Diseño y transición:
@@ -56,6 +57,7 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 - `nav_command_server`
 - `nav_snapshot_server`
 - `nav_observability`
+- `nav_trace_recorder` (solo simulacion por default)
 - `ackermann_odometry`
 - `gazebo_utils`
 - `sim_sensor_normalizer_v2`
@@ -100,6 +102,8 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 - `./tools/record_nav_debug_bag.sh`
 - `./tools/run_nav_benchmark.sh`
 - `./tools/compare_nav_benchmarks.sh`
+- `./tools/show_latest_nav_trace.sh`
+- `./tools/regenerate_nav_trace_report.sh`
 
 ## Nota de uso
 - Si buscás una guía operativa corta, usá este README y la matriz de launches.

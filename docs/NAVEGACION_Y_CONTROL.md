@@ -81,12 +81,16 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
   proximos `12m` del path con umbral de costo `100`, offsets laterales
   `0.0, +/-0.45m` y falla abierto si no tiene costmap fresco. El timeout de
   frescura es `4.0s` para ser compatible con costmaps WiFi a `0.5 Hz`, y el nodo
-  cachea validaciones repetidas durante `0.75s` para no bloquear el tick del BT.
+  cachea validaciones repetidas durante `0.75s`; el BT le da `server_timeout=1000`
+  para evitar falsos timeouts de clearance bajo carga.
   Esto fuerza replan cuando el path pasa por la zona gris/inflada alrededor de
   autos u obstaculos.
-- En `NavigateThroughPoses`, `RemovePassedGoals` usa `radius=1.2`, alineado con
-  `xy_goal_tolerance=1.2`, para no conservar waypoints ya aceptables cuando un
-  obstaculo invalida el path y fuerza un replan.
+- En `NavigateThroughPoses`, primero se conserva el path vigente si sigue valido
+  y con clearance. `RemovePassedGoals` corre recien dentro de la rama que necesita
+  recalcular y usa `radius=2.5`, para dar margen a waypoints ya superados por el
+  robot. Pasar un punto intermedio no modifica por si solo la lista de metas ni
+  dispara Smac; si un obstaculo invalida el path, los puntos ya superados se
+  podan antes del replan.
 - En reintentos por bloqueo (`blocked_retry_*`), el re-anclaje usa el tramo activo
   de la ruta como barrera de progreso. En rutas `loop=True`, no puede volver a un
   indice anterior ya consumido antes de cruzar el cierre del loop; solo puede
@@ -97,6 +101,20 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
 - Waypoints con acción (`brake_hold`) cortan el chunk activo, ejecutan freno por
   `duration_s` y luego continúan. En loop, esos índices no se auto-saltean aunque
   el robot ya esté dentro de tolerancia, para repetir la acción en cada pasada.
+- Para tramos largos, `route_executor` sigue generando puntos intermedios por
+  `leg_spacing_m`, pero los marca internamente como sintéticos. Esos puntos ayudan
+  a formar la geometría del path, pero no cierran chunks: cada chunk se extiende
+  hasta el siguiente waypoint principal aunque supere `chunk_span_m` o
+  `chunk_max_waypoints`. Por eso el éxito y despacho de un nuevo goal ocurre en
+  los puntos manuales, no al pasar por un punto sintético. Si hay un reintento y
+  el robot ya progresó sobre el segmento siguiente, el próximo chunk también
+  puede saltar un punto sintético atrasado. Los puntos manuales y los que tienen
+  acciones siguen siendo puntos clave y no se saltean por esta regla.
+- En `sim_global_v2`, `nav_trace_recorder` abre una sola sesión por misión de
+  `route_executor`. El BT instrumentado emite la causa exacta de cada ejecución
+  de Smac (`goal_updated`, `path_invalid` o `clearance_invalid`) y guarda paths,
+  progreso y anomalías en `artifacts/nav_traces/`. Los perfiles reales conservan
+  el BT productivo y no levantan este recorder.
 - El **scan efectivo** se inyecta vía `RewrittenYaml` en
   `local_costmap.voxel_layer.scan_*.topic`, `global_costmap.obstacle_layer.scan.topic`
   y `collision_monitor.scan.topic` (`nav_global_v2.launch.py:65-96`).

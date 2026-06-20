@@ -395,8 +395,8 @@ radio por direccion a 18° (~2.89m) ni con el radio físico a 30° (~1.63m).
 Los perfiles globales V2 sin spin evaluan replanning a `0.666 Hz`, pero solo
 llaman a Smac si cambia la meta, si `IsPathValid` invalida el path por costmap o
 si `IsPathClearanceValid` detecta inflacion alta en los proximos `12m` del path.
-`RemovePassedGoals` usa `radius=1.2`, igual que `xy_goal_tolerance`, para evitar
-que queden waypoints ya alcanzados dentro de la lista al replanificar.
+`RemovePassedGoals` usa `radius=2.5` para dar margen a la plataforma Ackermann
+grande y evitar que queden waypoints ya superados dentro de la lista al replanificar.
 En los perfiles `_wifi`, el RPP conserva `desired_linear_vel=1.6`, pero limita
 la mirada a `1.4..3.0 m` con `lookahead_time=1.5` para que el robot corrija antes
 sin pedir curvas por debajo del radio de planificacion.

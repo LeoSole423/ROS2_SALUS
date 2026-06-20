@@ -2,6 +2,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.msg import Costmap, CostmapMetaData
 from nav2_msgs.srv import IsPathValid
@@ -20,8 +21,29 @@ class _FakeClock:
     class _Now:
         nanoseconds = int(10.0e9)
 
+        def to_msg(self):
+            msg = Time()
+            msg.sec = 10
+            return msg
+
     def now(self):
         return self._Now()
+
+
+class _FakePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, msg):
+        self.messages.append(msg)
+
+
+class _Logger:
+    def info(self, _message):
+        pass
+
+    def warning(self, _message):
+        pass
 
 
 def _costmap(*, width=20, height=20, resolution=1.0, costs=None):
@@ -191,11 +213,46 @@ def test_validator_uses_recent_cache_for_same_path_and_costmap():
     assert list(response.invalid_pose_indices) == []
 
 
-def test_validator_dynamic_parameters_update_runtime_values():
-    class _Logger:
-        def info(self, _message):
-            pass
+def test_validator_publishes_clearance_invalid_trace_event():
+    publisher = _FakePublisher()
+    node = object.__new__(PathClearanceValidatorNode)
+    node.enabled = True
+    node._lock = threading.Lock()
+    node._costmap = _costmap(costs={(4, 1): 254})
+    node._last_cache = None
+    node._event_id = 0
+    node._trace_pub = publisher
+    node.costmap_timeout_s = 4.0
+    node.min_validation_period_s = 0.0
+    node.max_check_distance_m = 12.0
+    node.sample_step_m = 1.0
+    node.high_cost_threshold = 100
+    node.lethal_cost_threshold = 253
+    node.min_consecutive_high_cost_samples = 3
+    node.lateral_offsets_m = [0.0]
+    node.slow_check_warning_s = 999.0
+    node.get_clock = lambda: _FakeClock()
+    node.get_logger = lambda: _Logger()
 
+    response = PathClearanceValidatorNode._on_validate(
+        node,
+        IsPathValid.Request(path=_path([(1, 1), (10, 1)])),
+        IsPathValid.Response(),
+    )
+
+    assert response.is_valid is False
+    assert len(publisher.messages) == 1
+    event = publisher.messages[0]
+    assert event.code == "CLEARANCE_INVALID"
+    assert event.component == "path_clearance_validator"
+    details = {item.key: item.value for item in event.details}
+    assert details["reason"] == "lethal_cost"
+    assert details["max_cost"] == "254"
+    assert details["checked_samples"] == "4"
+    assert details["path_pose_count"] == "2"
+
+
+def test_validator_dynamic_parameters_update_runtime_values():
     node = object.__new__(PathClearanceValidatorNode)
     node._lock = threading.Lock()
     node._last_cache = object()
@@ -207,6 +264,7 @@ def test_validator_dynamic_parameters_update_runtime_values():
             SimpleNamespace(name="enabled", value=False),
             SimpleNamespace(name="costmap_timeout_s", value=4.0),
             SimpleNamespace(name="min_validation_period_s", value=0.75),
+            SimpleNamespace(name="slow_check_warning_s", value=0.2),
             SimpleNamespace(name="lateral_offsets_m", value=[0.0, 0.5]),
         ],
     )
@@ -215,5 +273,6 @@ def test_validator_dynamic_parameters_update_runtime_values():
     assert node.enabled is False
     assert node.costmap_timeout_s == 4.0
     assert node.min_validation_period_s == 0.75
+    assert node.slow_check_warning_s == 0.2
     assert node.lateral_offsets_m == [0.0, 0.5]
     assert node._last_cache is None

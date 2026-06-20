@@ -75,6 +75,9 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert 'default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf")' in launch_contents
     assert "localization_global_v2.launch.py" in launch_contents
     assert "nav_global_v2.launch.py" in launch_contents
+    assert 'DeclareLaunchArgument("enable_nav_trace", default_value="True")' in launch_contents
+    assert 'executable="nav_trace_recorder"' in launch_contents
+    assert '"nav_through_poses_bt_xml": selected_through_poses_bt' in launch_contents
     assert "no_go_editor.launch.py" in launch_contents
     assert '"fromll_frame": "map"' in launch_contents
     assert '"map_frame": "map"' in launch_contents
@@ -408,20 +411,27 @@ def test_recovery_behavior_uses_clearance_guard_without_backup() -> None:
     assert "BackUp" not in to_pose_bt
     assert '<Sequence name="WaitAndReplan">' in through_poses_bt
     assert '<Sequence name="WaitAndReplan">' in to_pose_bt
-    assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>' in through_poses_bt
+    assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>' in through_poses_bt
+    assert '<Sequence name="PruneAndComputeClearPathThroughPoses">' in through_poses_bt
     assert '<RateController hz="0.333" name="RateControllerComputePathToPose">' in to_pose_bt
     assert '<RateController hz="0.333" name="RateController">' in through_poses_bt
     assert '<Fallback name="FallbackComputePathToPose">' in to_pose_bt
     assert '<GlobalUpdatedGoal />' in to_pose_bt
     assert '<IsPathValid path="{path}" />' in to_pose_bt
-    assert '<IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" />' in to_pose_bt
+    assert '<IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000" />' in to_pose_bt
     assert '<Sequence name="ComputeClearPathToPose">' in to_pose_bt
     assert '<Sequence name="ComputeClearRecoveryPathToPose">' in to_pose_bt
     assert '<Fallback name="FallbackComputePathThroughPoses">' in through_poses_bt
     assert '<GlobalUpdatedGoal/>' in through_poses_bt
     assert '<IsPathValid path="{path}"/>' in through_poses_bt
-    assert '<IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid"/>' in through_poses_bt
-    assert '<Sequence name="ComputeClearPathThroughPoses">' in through_poses_bt
+    assert '<IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>' in through_poses_bt
+    assert '<Sequence name="PruneAndComputeClearPathThroughPoses">' in through_poses_bt
+    assert through_poses_bt.index('<Fallback name="FallbackComputePathThroughPoses">') < (
+        through_poses_bt.index('<RemovePassedGoals')
+    )
+    assert through_poses_bt.index('<RemovePassedGoals') < through_poses_bt.index(
+        '<ComputePathThroughPoses'
+    )
     assert "<ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\" />" in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath" />' in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in through_poses_bt
@@ -434,6 +444,20 @@ def test_recovery_behavior_uses_clearance_guard_without_backup() -> None:
     assert "spin" not in to_pose_bt.lower()
     assert "simulate_ahead_time: 2.0" in real_wifi_params
     assert "simulate_ahead_time: 2.0" in sim_wifi_params
+
+
+def test_sim_trace_bt_reports_explicit_replan_causes_without_changing_real_bt() -> None:
+    trace_bt = _read("config/navigate_through_poses_trace.xml")
+    production_bt = _read("config/navigate_through_poses_w_replanning_and_recovery_no_spin.xml")
+    sim_params = _read("config/nav2_global_v2_sim_rolling_params.yaml")
+    real_params = _read("config/nav2_global_v2_real_rolling_params.yaml")
+
+    assert '<TraceReplan reason="goal_updated"' in trace_bt
+    assert '<TraceReplan reason="path_invalid"' in trace_bt
+    assert '<TraceReplan reason="clearance_invalid"' in trace_bt
+    assert "TraceReplan" not in production_bt
+    assert "nav2_trace_replan_decorator_bt_node" in sim_params
+    assert "nav2_trace_replan_decorator_bt_node" not in real_params
 
 
 def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
@@ -463,6 +487,7 @@ def test_global_v2_profiles_bias_paths_away_from_obstacles() -> None:
         assert "lateral_offsets_m: [0.0, 0.45, -0.45]" in params_contents
         assert "costmap_timeout_s: 4.0" in params_contents
         assert "min_validation_period_s: 0.75" in params_contents
+        assert "slow_check_warning_s: 0.1" in params_contents
         assert "nav2_is_path_clearance_valid_condition_bt_node" in params_contents
 
 

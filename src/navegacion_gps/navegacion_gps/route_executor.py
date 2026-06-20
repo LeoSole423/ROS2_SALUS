@@ -2,6 +2,7 @@ import json
 import math
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -82,6 +83,7 @@ class PreparedRouteMission:
     skipped_waypoints: int
     rotated: bool
     note: str
+    input_indices: Optional[List[int]] = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,14 @@ class RouteSegmentMatch:
     next_index: int
     distance_m: float
     ratio: float
+
+
+@dataclass(frozen=True)
+class RouteProgress:
+    expanded_index: int
+    ratio: float
+    cross_track_error_m: float
+    distance_to_target_m: float
 
 
 @dataclass(frozen=True)
@@ -343,6 +353,115 @@ def _is_usable_segment_match(
     )
 
 
+def expanded_input_indices(
+    key_flags: Sequence[bool], key_input_indices: Optional[Sequence[int]] = None
+) -> List[int]:
+    input_index = -1
+    source_indices = list(key_input_indices or [])
+    result: List[int] = []
+    for is_key in key_flags:
+        if bool(is_key):
+            input_index += 1
+            result.append(
+                int(source_indices[input_index])
+                if input_index < len(source_indices)
+                else input_index
+            )
+        else:
+            result.append(-1)
+    return result
+
+
+def route_progress(
+    route: Sequence[RouteWaypoint],
+    *,
+    start_index: int,
+    target_index: int,
+    loop: bool,
+    robot_lat: Optional[float],
+    robot_lon: Optional[float],
+) -> Optional[RouteProgress]:
+    route_list = list(route)
+    if not route_list or robot_lat is None or robot_lon is None:
+        return None
+    if not np.isfinite(float(robot_lat)) or not np.isfinite(float(robot_lon)):
+        return None
+
+    total = len(route_list)
+    start = max(0, int(start_index))
+    target = max(0, int(target_index))
+    if loop:
+        start %= total
+        target %= total
+    elif start >= total or target >= total:
+        return None
+
+    distance_to_target_m = _distance_m(
+        float(robot_lat),
+        float(robot_lon),
+        route_list[target].lat,
+        route_list[target].lon,
+    )
+    if start == target:
+        return RouteProgress(target, 1.0, distance_to_target_m, distance_to_target_m)
+
+    indices = [start]
+    while indices[-1] != target and len(indices) <= total:
+        next_index = indices[-1] + 1
+        if loop:
+            next_index %= total
+        elif next_index >= total:
+            break
+        if next_index in indices and next_index != target:
+            break
+        indices.append(next_index)
+    if len(indices) <= 1 or indices[-1] != target:
+        return None
+
+    robot_x, robot_y = 0.0, 0.0
+    best: Optional[Tuple[float, int, float]] = None
+    for order, segment_index in enumerate(indices[:-1]):
+        next_index = indices[order + 1]
+        start_wp = route_list[segment_index]
+        end_wp = route_list[next_index]
+        start_x, start_y = _local_xy_m(
+            start_wp.lat,
+            start_wp.lon,
+            origin_lat=float(robot_lat),
+            origin_lon=float(robot_lon),
+        )
+        end_x, end_y = _local_xy_m(
+            end_wp.lat,
+            end_wp.lon,
+            origin_lat=float(robot_lat),
+            origin_lon=float(robot_lon),
+        )
+        seg_x = end_x - start_x
+        seg_y = end_y - start_y
+        seg_len_sq = (seg_x * seg_x) + (seg_y * seg_y)
+        if seg_len_sq <= 1.0e-6:
+            continue
+        raw_ratio = (((robot_x - start_x) * seg_x) + ((robot_y - start_y) * seg_y)) / seg_len_sq
+        ratio = min(1.0, max(0.0, float(raw_ratio)))
+        proj_x = start_x + (seg_x * ratio)
+        proj_y = start_y + (seg_y * ratio)
+        cross_track_m = math.hypot(robot_x - proj_x, robot_y - proj_y)
+        candidate = (cross_track_m, -order, ratio)
+        if best is None or candidate < best:
+            best = candidate
+
+    if best is None:
+        return None
+    cross_track_m, negative_order, ratio = best
+    order = -negative_order
+    return RouteProgress(
+        expanded_index=int(indices[order]),
+        ratio=float(ratio),
+        cross_track_error_m=float(cross_track_m),
+        distance_to_target_m=float(distance_to_target_m),
+    )
+
+
 def _resolve_input_waypoints(
     lats: Sequence[float],
     lons: Sequence[float],
@@ -399,17 +518,18 @@ def expand_route_waypoints_with_actions(
     *,
     leg_spacing_m: float,
     loop: bool,
-) -> Tuple[List[RouteWaypoint], List[str]]:
+) -> Tuple[List[RouteWaypoint], List[str], List[bool]]:
     base = list(base_waypoints)
     base_actions = list(action_jsons)
     if len(base_actions) != len(base):
         base_actions = ["" for _ in base]
     if len(base) <= 1:
-        return base, base_actions
+        return base, base_actions, [True for _ in base]
 
     spacing = max(1.0, float(leg_spacing_m))
     expanded: List[RouteWaypoint] = [base[0]]
     expanded_actions: List[str] = [str(base_actions[0] or "")]
+    expanded_key_flags: List[bool] = [True]
     segment_count = len(base) if loop else len(base) - 1
 
     for idx in range(segment_count):
@@ -421,11 +541,13 @@ def expand_route_waypoints_with_actions(
         for split_idx in range(1, split_count):
             expanded.append(_interpolate_waypoint(start, end, float(split_idx) / float(split_count)))
             expanded_actions.append("")
+            expanded_key_flags.append(False)
         if idx + 1 < len(base):
             expanded.append(base[idx + 1])
             expanded_actions.append(str(base_actions[idx + 1] or ""))
+            expanded_key_flags.append(True)
 
-    return expanded, expanded_actions
+    return expanded, expanded_actions, expanded_key_flags
 
 
 def drop_duplicate_loop_closure(
@@ -474,6 +596,7 @@ def prepare_route_waypoints(
     action_jsons: Optional[Sequence[str]] = None,
 ) -> Tuple[Optional[PreparedRouteMission], str]:
     route = list(base_waypoints)
+    source_indices = list(range(len(route)))
     actions = list(action_jsons or ["" for _ in route])
     if len(actions) != len(route):
         actions = ["" for _ in route]
@@ -543,6 +666,7 @@ def prepare_route_waypoints(
                         "loop joined nearest segment "
                         f"{match.segment_index + 1}->{match.next_index + 1}"
                     ),
+                    source_indices[start_index:] + source_indices[:start_index],
                 ),
                 "",
             )
@@ -565,6 +689,7 @@ def prepare_route_waypoints(
                 0,
                 True,
                 f"loop rotated to waypoint {start_index + 1}",
+                source_indices[start_index:] + source_indices[:start_index],
             ),
             "",
         )
@@ -615,6 +740,7 @@ def prepare_route_waypoints(
             int(start_index),
             False,
             note,
+            source_indices[start_index:],
         ),
         "",
     )
@@ -669,6 +795,93 @@ def skip_reached_chunk_start(
             next_index %= total
         elif next_index >= total:
             break
+        current = next_index
+        skipped += 1
+
+    return current, skipped
+
+
+def skip_passed_synthetic_chunk_start(
+    route: Sequence[RouteWaypoint],
+    *,
+    start_index: int,
+    loop: bool,
+    robot_lat: Optional[float],
+    robot_lon: Optional[float],
+    segment_tolerance_m: float,
+    skippable_indices: Optional[Set[int]] = None,
+    protected_indices: Optional[Set[int]] = None,
+) -> Tuple[Optional[int], int]:
+    route_list = list(route)
+    if not route_list:
+        return None, 0
+
+    total = len(route_list)
+    requested_start = max(0, int(start_index))
+    if (not loop) and requested_start >= total:
+        return None, 0
+    current = requested_start % total if loop else requested_start
+    if total <= 1:
+        return current, 0
+    if (
+        robot_lat is None
+        or robot_lon is None
+        or (not np.isfinite(float(robot_lat)))
+        or (not np.isfinite(float(robot_lon)))
+    ):
+        return current, 0
+
+    skippable = {int(index) for index in (skippable_indices or set())}
+    protected = {int(index) for index in (protected_indices or set())}
+    tolerance_m = max(0.05, float(segment_tolerance_m))
+    skipped = 0
+    max_skips = max(0, total - 1)
+
+    while skipped < max_skips and current in skippable and current not in protected:
+        next_index = current + 1
+        if loop:
+            next_index %= total
+        elif next_index >= total:
+            break
+        if next_index == current:
+            break
+
+        start = route_list[current]
+        end = route_list[next_index]
+        robot_x, robot_y = _local_xy_m(
+            float(robot_lat),
+            float(robot_lon),
+            origin_lat=float(robot_lat),
+            origin_lon=float(robot_lon),
+        )
+        start_x, start_y = _local_xy_m(
+            start.lat,
+            start.lon,
+            origin_lat=float(robot_lat),
+            origin_lon=float(robot_lon),
+        )
+        end_x, end_y = _local_xy_m(
+            end.lat,
+            end.lon,
+            origin_lat=float(robot_lat),
+            origin_lon=float(robot_lon),
+        )
+        seg_x = end_x - start_x
+        seg_y = end_y - start_y
+        seg_len_sq = (seg_x * seg_x) + (seg_y * seg_y)
+        if seg_len_sq <= 1.0e-6:
+            break
+
+        raw_ratio = (((robot_x - start_x) * seg_x) + ((robot_y - start_y) * seg_y)) / seg_len_sq
+        if raw_ratio <= 0.0:
+            break
+        ratio = min(1.0, float(raw_ratio))
+        proj_x = start_x + (seg_x * ratio)
+        proj_y = start_y + (seg_y * ratio)
+        distance_m = math.hypot(robot_x - proj_x, robot_y - proj_y)
+        if distance_m > tolerance_m:
+            break
+
         current = next_index
         skipped += 1
 
@@ -789,6 +1002,7 @@ def build_chunk_waypoints(
     chunk_span_m: float,
     chunk_max_waypoints: int,
     action_stop_indices: Optional[Set[int]] = None,
+    key_stop_indices: Optional[Set[int]] = None,
 ) -> Tuple[List[RouteWaypoint], int]:
     route_list = list(route)
     if not route_list:
@@ -801,7 +1015,9 @@ def build_chunk_waypoints(
     start = requested_start % total if loop else requested_start
     max_points = max(1, int(chunk_max_waypoints))
     stop_indices = {int(index) for index in (action_stop_indices or set())}
-    if loop and total > 1:
+    key_indices = {int(index) for index in (key_stop_indices or set())}
+    use_key_boundaries = bool(key_indices)
+    if loop and total > 1 and not use_key_boundaries:
         # Do not send a full loop in one NavigateThroughPoses chunk. If the robot is
         # already at the closure waypoint, Nav2 can report success immediately because
         # the final pose is within goal tolerance.
@@ -813,7 +1029,9 @@ def build_chunk_waypoints(
     visited_steps = 0
     cumulative_distance_m = 0.0
 
-    while len(chunk) < max_points:
+    while True:
+        if not use_key_boundaries and len(chunk) >= max_points:
+            break
         next_index = end_index + 1
         if loop:
             next_index %= total
@@ -828,14 +1046,20 @@ def build_chunk_waypoints(
             route_list[next_index].lat,
             route_list[next_index].lon,
         )
-        should_stop = len(chunk) > 1 and (cumulative_distance_m + step_distance_m) > max_span_m
+        should_stop = (
+            not use_key_boundaries
+            and len(chunk) > 1
+            and (cumulative_distance_m + step_distance_m) > max_span_m
+        )
         if should_stop:
             break
 
         chunk.append(route_list[next_index])
         cumulative_distance_m += step_distance_m
         end_index = next_index
-        if next_index in stop_indices:
+        if next_index in stop_indices or (
+            use_key_boundaries and next_index in key_indices
+        ):
             break
         visited_steps += 1
         if visited_steps >= max(0, total - 1):
@@ -996,7 +1220,13 @@ class RouteExecutorNode(Node):
         self._route_input: List[RouteWaypoint] = []
         self._route_expanded: List[RouteWaypoint] = []
         self._route_action_jsons: List[str] = []
+        self._route_key_waypoint_flags: List[bool] = []
+        self._route_input_indices: List[int] = []
         self._active_chunk: List[RouteWaypoint] = []
+        self._mission_id = ""
+        self._chunk_id = 0
+        self._loop_iteration = 0
+        self._reached_checkpoint_count = 0
         self._mission_active = False
         self._mission_paused = False
         self._mission_loop = False
@@ -1196,6 +1426,15 @@ class RouteExecutorNode(Node):
         with self._lock:
             self._event_seq += 1
             event_id = int(self._event_seq)
+            context = {
+                "mission_id": str(self._mission_id),
+                "chunk_id": int(self._chunk_id),
+                "loop_iteration": int(self._loop_iteration),
+                "current_start_index": int(self._current_start_index),
+                "current_target_index": int(self._current_target_index),
+            }
+        event_details = dict(context)
+        event_details.update(dict(details or {}))
         event = NavEvent()
         event.stamp = self.get_clock().now().to_msg()
         event.severity = self._diag_level_value(severity)
@@ -1203,15 +1442,15 @@ class RouteExecutorNode(Node):
         event.code = str(code)
         event.message = str(message)
         event.event_id = event_id
-        event.details = self._details_to_key_values(details)
+        event.details = self._details_to_key_values(event_details)
         self._nav_event_pub.publish(event)
 
         if event.severity >= self._diag_level_value(DiagnosticStatus.ERROR):
-            self.get_logger().error(f"{message} code={code} details={details or {}}")
+            self.get_logger().error(f"{message} code={code} details={event_details}")
         elif event.severity >= self._diag_level_value(DiagnosticStatus.WARN):
-            self.get_logger().warning(f"{message} code={code} details={details or {}}")
+            self.get_logger().warning(f"{message} code={code} details={event_details}")
         else:
-            self.get_logger().info(f"{message} code={code} details={details or {}}")
+            self.get_logger().info(f"{message} code={code} details={event_details}")
         return event_id
 
     def _clear_blocked_state_locked(self) -> bool:
@@ -1652,7 +1891,13 @@ class RouteExecutorNode(Node):
         self._route_input = []
         self._route_expanded = []
         self._route_action_jsons = []
+        self._route_key_waypoint_flags = []
+        self._route_input_indices = []
         self._active_chunk = []
+        self._mission_id = ""
+        self._chunk_id = 0
+        self._loop_iteration = 0
+        self._reached_checkpoint_count = 0
         self._mission_active = False
         self._mission_paused = False
         self._mission_loop = False
@@ -1743,6 +1988,8 @@ class RouteExecutorNode(Node):
         with self._lock:
             route = list(self._route_expanded)
             action_jsons = list(self._route_action_jsons)
+            key_flags = list(self._route_key_waypoint_flags)
+            input_indices = list(self._route_input_indices)
             loop_enabled = bool(self._mission_loop)
             chunk_span_m = float(self._chunk_span_m)
             chunk_max_waypoints = int(self._chunk_max_waypoints)
@@ -1750,6 +1997,12 @@ class RouteExecutorNode(Node):
 
         action_indices = {
             idx for idx, action_json in enumerate(action_jsons) if str(action_json or "")
+        }
+        key_indices = {
+            idx for idx, is_key in enumerate(key_flags) if idx < len(route) and bool(is_key)
+        }
+        synthetic_indices = {
+            idx for idx, is_key in enumerate(key_flags) if idx < len(route) and not bool(is_key)
         }
         resolved_start_index, skipped_start_waypoints = skip_reached_chunk_start(
             route,
@@ -1762,6 +2015,21 @@ class RouteExecutorNode(Node):
         )
         if resolved_start_index is None:
             return False, "empty route chunk"
+        synthetic_resolved_start_index, skipped_synthetic_waypoints = (
+            skip_passed_synthetic_chunk_start(
+                route,
+                start_index=resolved_start_index,
+                loop=loop_enabled,
+                robot_lat=None if robot_pose is None else float(robot_pose[0]),
+                robot_lon=None if robot_pose is None else float(robot_pose[1]),
+                segment_tolerance_m=self.route_segment_start_tolerance_m,
+                skippable_indices=synthetic_indices,
+                protected_indices=action_indices,
+            )
+        )
+        if synthetic_resolved_start_index is None:
+            return False, "empty route chunk"
+        resolved_start_index = int(synthetic_resolved_start_index)
         if skipped_start_waypoints > 0:
             self.get_logger().info(
                 "Skipped reached chunk waypoint"
@@ -1769,6 +2037,24 @@ class RouteExecutorNode(Node):
                 f"(requested_start={start_index}, "
                 f"resolved_start={resolved_start_index}, "
                 f"skipped={skipped_start_waypoints})"
+            )
+        if skipped_synthetic_waypoints > 0:
+            self.get_logger().info(
+                "Skipped passed synthetic chunk waypoint"
+                f"{'s' if skipped_synthetic_waypoints != 1 else ''} "
+                f"(requested_start={start_index}, "
+                f"resolved_start={resolved_start_index}, "
+                f"skipped={skipped_synthetic_waypoints})"
+            )
+            self._publish_route_event(
+                DiagnosticStatus.WARN,
+                "ROUTE_SYNTHETIC_SKIPPED",
+                "Skipped stale synthetic route point",
+                details={
+                    "requested_start_index": int(start_index),
+                    "resolved_start_index": int(resolved_start_index),
+                    "skipped_count": int(skipped_synthetic_waypoints),
+                },
             )
 
         chunk, end_index = build_chunk_waypoints(
@@ -1778,9 +2064,38 @@ class RouteExecutorNode(Node):
             chunk_span_m=chunk_span_m,
             chunk_max_waypoints=chunk_max_waypoints,
             action_stop_indices=action_indices,
+            key_stop_indices=key_indices,
         )
         if not chunk:
             return False, "empty route chunk"
+
+        with self._lock:
+            self._chunk_id += 1
+            chunk_id = int(self._chunk_id)
+            self._current_start_index = int(resolved_start_index)
+            self._current_target_index = int(end_index)
+        target_input_index = -1
+        if len(input_indices) != len(key_flags):
+            input_indices = expanded_input_indices(key_flags)
+        if 0 <= end_index < len(input_indices):
+            target_input_index = int(input_indices[end_index])
+        self._publish_route_event(
+            DiagnosticStatus.OK,
+            "ROUTE_CHUNK_REQUESTED",
+            "Route chunk requested",
+            details={
+                "chunk_id": chunk_id,
+                "start_index": int(resolved_start_index),
+                "target_index": int(end_index),
+                "target_input_index": target_input_index,
+                "waypoint_count": len(chunk),
+                "synthetic_count": sum(
+                    1
+                    for index in range(resolved_start_index, min(len(key_flags), end_index + 1))
+                    if not bool(key_flags[index])
+                ) if resolved_start_index <= end_index else sum(not bool(flag) for flag in key_flags),
+            },
+        )
 
         request = SetNavGoalLL.Request()
         request.lats = [float(entry.lat) for entry in chunk]
@@ -1797,14 +2112,24 @@ class RouteExecutorNode(Node):
         request.yaw_deg = float(request.yaws_deg[0])
         response = self._call_service(self._nav_set_goal_client, request, self.request_timeout_s)
         if response is None:
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "ROUTE_CHUNK_DISPATCH_FAILED",
+                "Route chunk dispatch timed out",
+                details={"chunk_id": chunk_id, "error": "set_goal_ll timeout"},
+            )
             return False, "set_goal_ll timeout"
         if not response.ok:
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "ROUTE_CHUNK_DISPATCH_FAILED",
+                "Route chunk dispatch failed",
+                details={"chunk_id": chunk_id, "error": str(response.error)},
+            )
             return False, str(response.error)
 
         with self._lock:
             self._active_chunk = chunk
-            self._current_start_index = int(resolved_start_index)
-            self._current_target_index = int(end_index)
             self._awaiting_chunk_result = True
             self._mission_status = self._status_with_note_locked(
                 f"route active ({self._current_start_index + 1}->{self._current_target_index + 1})"
@@ -1812,6 +2137,18 @@ class RouteExecutorNode(Node):
         self.get_logger().info(
             "Route chunk dispatched "
             f"(start={resolved_start_index}, end={end_index}, size={len(chunk)})"
+        )
+        self._publish_route_event(
+            DiagnosticStatus.OK,
+            "ROUTE_CHUNK_DISPATCHED",
+            "Route chunk accepted by navigation",
+            details={
+                "chunk_id": chunk_id,
+                "start_index": int(resolved_start_index),
+                "target_index": int(end_index),
+                "target_input_index": target_input_index,
+                "waypoint_count": len(chunk),
+            },
         )
         self._publish_route_debug_path(
             self._active_chunk_path_pub,
@@ -1900,12 +2237,24 @@ class RouteExecutorNode(Node):
                 should_send_next = True
 
         if should_clear_paths:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "ROUTE_MISSION_COMPLETED",
+                "Route mission completed after waypoint action",
+                details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
+            )
             self._publish_empty_route_paths()
             return
         if should_send_next:
             ok, err = self._send_chunk(start_index=next_start_index)
             if ok:
                 return
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "ROUTE_MISSION_FAILED",
+                "Route mission failed after waypoint action",
+                details={"error": str(err)},
+            )
             with self._lock:
                 self._mission_active = False
                 self._mission_paused = False
@@ -1921,6 +2270,8 @@ class RouteExecutorNode(Node):
         action_waypoint_index = 0
         reached_end = False
         next_start_index = 0
+        checkpoint_details: Optional[Dict[str, Any]] = None
+        mission_completed = False
         with self._lock:
             if not self._mission_active or self._mission_paused:
                 return
@@ -1931,6 +2282,26 @@ class RouteExecutorNode(Node):
                 should_clear_paths = True
             else:
                 action_waypoint_index = int(self._current_target_index)
+                start_index = int(self._current_start_index)
+                input_indices = list(self._route_input_indices)
+                if len(input_indices) != len(self._route_key_waypoint_flags):
+                    input_indices = expanded_input_indices(self._route_key_waypoint_flags)
+                input_index = (
+                    int(input_indices[action_waypoint_index])
+                    if 0 <= action_waypoint_index < len(input_indices)
+                    else -1
+                )
+                if loop_enabled and action_waypoint_index < start_index:
+                    self._loop_iteration += 1
+                if input_index >= 0:
+                    self._reached_checkpoint_count += 1
+                    checkpoint_details = {
+                        "expanded_index": action_waypoint_index,
+                        "input_index": input_index,
+                        "loop_iteration": int(self._loop_iteration),
+                        "reached_checkpoint_count": int(self._reached_checkpoint_count),
+                        "has_action": int(bool(self._route_action_jsons[action_waypoint_index])),
+                    }
                 if 0 <= action_waypoint_index < len(self._route_action_jsons):
                     action_json = str(self._route_action_jsons[action_waypoint_index] or "")
                 next_start_index = next_chunk_start_index(
@@ -1945,8 +2316,24 @@ class RouteExecutorNode(Node):
                 elif reached_end and (not loop_enabled):
                     self._complete_route_locked()
                     should_clear_paths = True
+                    mission_completed = True
+
+        if checkpoint_details is not None:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "ROUTE_CHECKPOINT_REACHED",
+                "Route checkpoint reached",
+                details=checkpoint_details,
+            )
 
         if should_clear_paths:
+            if mission_completed:
+                self._publish_route_event(
+                    DiagnosticStatus.OK,
+                    "ROUTE_MISSION_COMPLETED",
+                    "Route mission completed",
+                    details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
+                )
             self._publish_empty_route_paths()
             return
         if should_run_action:
@@ -1967,6 +2354,12 @@ class RouteExecutorNode(Node):
         ok, err = self._send_chunk(start_index=next_start_index)
         if ok:
             return
+        self._publish_route_event(
+            DiagnosticStatus.ERROR,
+            "ROUTE_MISSION_FAILED",
+            "Route mission failed while dispatching next chunk",
+            details={"error": str(err)},
+        )
         with self._lock:
             self._mission_active = False
             self._mission_paused = False
@@ -2096,6 +2489,17 @@ class RouteExecutorNode(Node):
             self._start_next_chunk_after_success()
             return
         if should_stop:
+            event_code = (
+                "ROUTE_MISSION_CANCELLED"
+                if str(stop_reason).lower() == "cancelled"
+                else "ROUTE_MISSION_FAILED"
+            )
+            self._publish_route_event(
+                DiagnosticStatus.WARN if event_code.endswith("CANCELLED") else DiagnosticStatus.ERROR,
+                event_code,
+                "Route mission stopped by navigation result",
+                details={"reason": str(stop_reason)},
+            )
             self.get_logger().warning(f"Route mission stopped ({stop_reason})")
             self._publish_empty_route_paths()
 
@@ -2195,7 +2599,7 @@ class RouteExecutorNode(Node):
                 else "dropped duplicate loop closure"
             )
 
-        expanded, expanded_action_jsons = expand_route_waypoints_with_actions(
+        expanded, expanded_action_jsons, expanded_key_flags = expand_route_waypoints_with_actions(
             prepared.waypoints,
             prepared.action_jsons,
             leg_spacing_m=leg_spacing_m,
@@ -2205,13 +2609,29 @@ class RouteExecutorNode(Node):
         with self._lock:
             had_mission = self._mission_active or self._mission_paused
         if had_mission:
+            self._publish_route_event(
+                DiagnosticStatus.WARN,
+                "ROUTE_MISSION_CANCELLED",
+                "Route mission replaced by a new mission",
+                details={"reason": "superseded"},
+            )
             self._cancel_nav_goal()
 
+        mission_id = uuid.uuid4().hex[:12]
         with self._lock:
             self._route_input = list(prepared.waypoints)
             self._route_expanded = list(expanded)
             self._route_action_jsons = list(expanded_action_jsons)
+            self._route_key_waypoint_flags = list(expanded_key_flags)
+            self._route_input_indices = expanded_input_indices(
+                expanded_key_flags,
+                prepared.input_indices,
+            )
             self._active_chunk = []
+            self._mission_id = mission_id
+            self._chunk_id = 0
+            self._loop_iteration = 0
+            self._reached_checkpoint_count = 0
             self._mission_active = True
             self._mission_paused = False
             self._mission_loop = bool(loop_enabled)
@@ -2230,6 +2650,19 @@ class RouteExecutorNode(Node):
             self._last_handled_nav_result_event_id = self._last_nav_result_event_id
             self._clear_blocked_state_locked()
 
+        self._publish_route_event(
+            DiagnosticStatus.OK,
+            "ROUTE_MISSION_STARTED",
+            "Route mission started",
+            details={
+                "mission_id": mission_id,
+                "input_waypoint_count": len(prepared.waypoints),
+                "expanded_waypoint_count": len(expanded),
+                "synthetic_waypoint_count": sum(not bool(flag) for flag in expanded_key_flags),
+                "loop": int(loop_enabled),
+                "leg_spacing_m": float(leg_spacing_m),
+            },
+        )
         ok, err = self._send_chunk(start_index=0)
         response.input_waypoint_count = int(len(prepared.waypoints))
         response.expanded_waypoint_count = int(len(expanded))
@@ -2242,11 +2675,19 @@ class RouteExecutorNode(Node):
                 label="mission",
             )
         else:
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "ROUTE_MISSION_FAILED",
+                "Route mission failed to dispatch",
+                details={"error": str(err)},
+            )
             with self._lock:
                 self._mission_active = False
                 self._mission_paused = False
                 self._active_chunk = []
                 self._route_action_jsons = []
+                self._route_key_waypoint_flags = []
+                self._route_input_indices = []
                 self._mission_status = self._status_with_note_locked(f"route failed: {err}")
             self._publish_empty_route_paths()
         return response
@@ -2255,6 +2696,12 @@ class RouteExecutorNode(Node):
         self, _request: CancelRouteMission.Request, response: CancelRouteMission.Response
     ) -> CancelRouteMission.Response:
         cancel_ok, cancel_err = self._cancel_nav_goal()
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "ROUTE_MISSION_CANCELLED",
+            "Route mission cancelled",
+            details={"reason": "operator", "cancel_error": str(cancel_err)},
+        )
         with self._lock:
             self._reset_mission_locked("route cancelled")
         self._publish_empty_route_paths()
@@ -2266,11 +2713,26 @@ class RouteExecutorNode(Node):
         self, response: GetRouteMissionState.Response
     ) -> GetRouteMissionState.Response:
         with self._lock:
+            input_indices = list(self._route_input_indices)
+            if len(input_indices) != len(self._route_key_waypoint_flags):
+                input_indices = expanded_input_indices(self._route_key_waypoint_flags)
+            progress = route_progress(
+                self._route_expanded,
+                start_index=self._current_start_index,
+                target_index=self._current_target_index,
+                loop=self._mission_loop,
+                robot_lat=None if self._last_robot_pose is None else self._last_robot_pose[0],
+                robot_lon=None if self._last_robot_pose is None else self._last_robot_pose[1],
+            )
             response.ok = True
             response.error = ""
             response.active = bool(self._mission_active)
             response.paused = bool(self._mission_paused)
             response.loop = bool(self._mission_loop)
+            response.mission_id = str(self._mission_id)
+            response.chunk_id = int(self._chunk_id)
+            response.loop_iteration = int(self._loop_iteration)
+            response.reached_checkpoint_count = int(self._reached_checkpoint_count)
             response.input_waypoint_count = int(len(self._route_input))
             response.expanded_waypoint_count = int(len(self._route_expanded))
             response.current_start_index = int(self._current_start_index)
@@ -2290,10 +2752,27 @@ class RouteExecutorNode(Node):
             response.action_waypoint_index = int(self._action_waypoint_index)
             response.action_type = str(self._action_type)
             response.action_remaining_s = float(self._action_remaining_s_locked())
+            response.current_checkpoint_index = (
+                int(input_indices[self._current_target_index])
+                if 0 <= self._current_target_index < len(input_indices)
+                else -1
+            )
+            response.current_progress_expanded_index = (
+                int(progress.expanded_index) if progress is not None else -1
+            )
+            response.current_progress_ratio = float(progress.ratio) if progress is not None else 0.0
+            response.cross_track_error_m = (
+                float(progress.cross_track_error_m) if progress is not None else float("nan")
+            )
+            response.distance_to_target_m = (
+                float(progress.distance_to_target_m) if progress is not None else float("nan")
+            )
             response.mission_lats = [float(entry.lat) for entry in self._route_expanded]
             response.mission_lons = [float(entry.lon) for entry in self._route_expanded]
             response.mission_yaws_deg = [float(entry.yaw_deg) for entry in self._route_expanded]
             response.mission_action_jsons = [str(entry or "") for entry in self._route_action_jsons]
+            response.mission_key_flags = [bool(entry) for entry in self._route_key_waypoint_flags]
+            response.mission_input_indices = [int(entry) for entry in input_indices]
             response.active_lats = [float(entry.lat) for entry in self._active_chunk]
             response.active_lons = [float(entry.lon) for entry in self._active_chunk]
             response.active_yaws_deg = [float(entry.yaw_deg) for entry in self._active_chunk]

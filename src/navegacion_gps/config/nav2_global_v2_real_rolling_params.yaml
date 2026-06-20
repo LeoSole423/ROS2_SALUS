@@ -49,6 +49,7 @@ path_clearance_validator:
     lateral_offsets_m: [0.0, 0.45, -0.45]
     costmap_timeout_s: 4.0
     min_validation_period_s: 0.75
+    slow_check_warning_s: 0.1
 
 behavior_server:
   ros__parameters:

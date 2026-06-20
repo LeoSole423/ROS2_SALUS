@@ -6,7 +6,9 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import rclpy
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, PoseStamped
+from interfaces.msg import NavEvent
 from nav2_msgs.msg import Costmap
 from nav2_msgs.srv import IsPathValid
 from nav_msgs.msg import Path
@@ -275,6 +277,7 @@ class PathClearanceValidatorNode(Node):
         self.declare_parameter("costmap_timeout_s", 1.5)
         self.declare_parameter("tf_timeout_s", 0.1)
         self.declare_parameter("min_validation_period_s", 0.75)
+        self.declare_parameter("slow_check_warning_s", 0.1)
 
         self.enabled = bool(self.get_parameter("enabled").value)
         self.service_name = str(self.get_parameter("service_name").value)
@@ -318,11 +321,16 @@ class PathClearanceValidatorNode(Node):
             0.0,
             float(self.get_parameter("min_validation_period_s").value),
         )
+        self.slow_check_warning_s = max(
+            0.0,
+            float(self.get_parameter("slow_check_warning_s").value),
+        )
 
         self._lock = threading.Lock()
         self._costmap: Optional[CostmapView] = None
         self._last_cache: Optional[CachedValidationResult] = None
         self._last_open_warning_s = 0.0
+        self._event_id = 0
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -338,6 +346,11 @@ class PathClearanceValidatorNode(Node):
             self.global_costmap_topic,
             self._on_costmap,
             costmap_qos,
+        )
+        self._trace_pub = self.create_publisher(
+            NavEvent,
+            "/navigation_trace/events",
+            50,
         )
         self._service = self.create_service(
             IsPathValid,
@@ -395,6 +408,8 @@ class PathClearanceValidatorNode(Node):
                     updates[name] = max(0.01, float(value))
                 elif name == "min_validation_period_s":
                     updates[name] = max(0.0, float(value))
+                elif name == "slow_check_warning_s":
+                    updates[name] = max(0.0, float(value))
         except (TypeError, ValueError) as exc:
             return SetParametersResult(successful=False, reason=str(exc))
 
@@ -419,6 +434,37 @@ class PathClearanceValidatorNode(Node):
         self.get_logger().warning(
             f"Path clearance check failing open: {reason}"
         )
+
+    @staticmethod
+    def _detail(key: str, value: object) -> KeyValue:
+        detail = KeyValue()
+        detail.key = str(key)
+        detail.value = str(value)
+        return detail
+
+    def _publish_clearance_event(
+        self,
+        code: str,
+        *,
+        message: str,
+        severity: int,
+        details: dict[str, object],
+    ) -> None:
+        publisher = getattr(self, "_trace_pub", None)
+        if publisher is None:
+            return
+        event = NavEvent()
+        event.stamp = self.get_clock().now().to_msg()
+        event.severity = int(severity[0] if isinstance(severity, (bytes, bytearray)) else severity)
+        event.component = "path_clearance_validator"
+        event.code = str(code)
+        event.message = str(message)
+        self._event_id = int(getattr(self, "_event_id", 0)) + 1
+        event.event_id = self._event_id
+        event.details = [
+            self._detail(key, value) for key, value in sorted(details.items())
+        ]
+        publisher.publish(event)
 
     def _transform_path_to_costmap_frame(
         self,
@@ -473,6 +519,7 @@ class PathClearanceValidatorNode(Node):
         request: IsPathValid.Request,
         response: IsPathValid.Response,
     ) -> IsPathValid.Response:
+        start_monotonic = time.monotonic()
         response.is_valid = True
         response.invalid_pose_indices = []
 
@@ -543,6 +590,8 @@ class PathClearanceValidatorNode(Node):
             ),
             lateral_offsets_m=lateral_offsets_m,
         )
+        duration_ms = (time.monotonic() - start_monotonic) * 1000.0
+        costmap_age_s = max(0.0, now_sec - float(costmap.stamp_sec))
         response.is_valid = bool(result.is_valid)
         response.invalid_pose_indices = list(result.invalid_indices)
         if min_validation_period_s > 0.0:
@@ -555,10 +604,40 @@ class PathClearanceValidatorNode(Node):
                     invalid_indices=tuple(result.invalid_indices),
                 )
         if not result.is_valid:
+            self._publish_clearance_event(
+                "CLEARANCE_INVALID",
+                message="Path clearance invalid",
+                severity=DiagnosticStatus.WARN,
+                details={
+                    "reason": result.reason,
+                    "max_cost": result.max_cost,
+                    "checked_samples": result.checked_samples,
+                    "invalid_indices": ",".join(
+                        str(index) for index in result.invalid_indices
+                    ),
+                    "duration_ms": f"{duration_ms:.3f}",
+                    "path_pose_count": len(request.path.poses),
+                    "costmap_age_s": f"{costmap_age_s:.3f}",
+                },
+            )
             self.get_logger().warning(
                 "Path clearance invalid "
                 f"(reason={result.reason}, max_cost={result.max_cost}, "
                 f"samples={result.checked_samples})"
+            )
+        elif duration_ms >= float(getattr(self, "slow_check_warning_s", 0.0)) * 1000.0:
+            self._publish_clearance_event(
+                "CLEARANCE_SLOW",
+                message="Path clearance check was slow",
+                severity=DiagnosticStatus.WARN,
+                details={
+                    "reason": result.reason,
+                    "max_cost": result.max_cost,
+                    "checked_samples": result.checked_samples,
+                    "duration_ms": f"{duration_ms:.3f}",
+                    "path_pose_count": len(request.path.poses),
+                    "costmap_age_s": f"{costmap_age_s:.3f}",
+                },
             )
         return response
 

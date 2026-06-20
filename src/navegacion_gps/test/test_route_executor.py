@@ -21,9 +21,12 @@ from navegacion_gps.route_executor import (
     drop_duplicate_loop_closure,
     expand_route_waypoints,
     expand_route_waypoints_with_actions,
+    expanded_input_indices,
     next_chunk_start_index,
     prepare_route_waypoints,
     resolve_blocked_retry_start,
+    route_progress,
+    skip_passed_synthetic_chunk_start,
     skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
 )
@@ -61,6 +64,8 @@ def _fake_blocking_node() -> RouteExecutorNode:
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
         RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
     ]
+    node._route_key_waypoint_flags = [True, True]
+    node._route_input_indices = [0, 1]
     node._active_chunk = list(node._route_expanded)
     node._mission_active = True
     node._mission_paused = False
@@ -230,7 +235,7 @@ def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():
     ]
     action_json = '[{"brake_pct":100,"duration_s":5.0,"type":"brake_hold"}]'
 
-    expanded, actions = expand_route_waypoints_with_actions(
+    expanded, actions, key_flags = expand_route_waypoints_with_actions(
         base,
         ["", action_json],
         leg_spacing_m=30.0,
@@ -238,8 +243,69 @@ def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():
     )
 
     assert len(expanded) == len(actions)
+    assert len(expanded) == len(key_flags)
     assert actions[-1] == action_json
     assert all(action == "" for action in actions[:-1])
+    assert key_flags[0] is True
+    assert key_flags[-1] is True
+    assert any(flag is False for flag in key_flags[1:-1])
+
+
+def test_expanded_input_indices_maps_only_manual_checkpoints():
+    assert expanded_input_indices([True, False, False, True, False, True]) == [
+        0,
+        -1,
+        -1,
+        1,
+        -1,
+        2,
+    ]
+
+
+def test_route_progress_projects_robot_on_active_chunk_only():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+    ]
+
+    progress = route_progress(
+        route,
+        start_index=1,
+        target_index=3,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0003,
+    )
+
+    assert progress is not None
+    assert progress.expanded_index == 1
+    assert progress.ratio == pytest.approx(0.5, abs=0.02)
+    assert progress.cross_track_error_m == pytest.approx(0.0, abs=0.05)
+    assert progress.distance_to_target_m > 30.0
+
+
+def test_route_progress_supports_loop_closure_chunk():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+    ]
+
+    progress = route_progress(
+        route,
+        start_index=3,
+        target_index=0,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.0003,
+    )
+
+    assert progress is not None
+    assert progress.expanded_index == 3
+    assert progress.ratio == pytest.approx(0.5, abs=0.02)
 
 
 def test_drop_duplicate_loop_closure_removes_repeated_first_waypoint():
@@ -310,6 +376,49 @@ def test_build_chunk_waypoints_stops_at_programmed_action_index():
 
     assert chunk == route[:3]
     assert end_index == 2
+
+
+def test_build_chunk_waypoints_uses_synthetic_points_but_stops_at_next_key_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0008, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=0,
+        loop=False,
+        chunk_span_m=20.0,
+        chunk_max_waypoints=2,
+        key_stop_indices={0, 4},
+    )
+
+    assert chunk == route
+    assert end_index == 4
+
+
+def test_build_chunk_waypoints_loop_closes_at_key_instead_of_synthetic_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=3,
+        loop=True,
+        chunk_span_m=20.0,
+        chunk_max_waypoints=2,
+        key_stop_indices={0, 2},
+    )
+
+    assert chunk == [route[3], route[0]]
+    assert end_index == 0
 
 
 def test_build_chunk_waypoints_wraps_for_loop_routes():
@@ -459,6 +568,7 @@ def test_prepare_route_waypoints_joins_nearest_segment_for_non_loop_routes():
     assert prepared.skipped_waypoints == 1
     assert prepared.note == "joined nearest segment 1->2"
     assert prepared.waypoints == [route[1], route[2]]
+    assert prepared.input_indices == [1, 2]
 
 
 def test_prepare_route_waypoints_does_not_join_far_segment_for_non_loop_routes():
@@ -523,6 +633,7 @@ def test_prepare_route_waypoints_rotates_loop_to_next_useful_waypoint():
     assert prepared.start_index == 1
     assert prepared.note == "loop rotated to waypoint 2"
     assert prepared.waypoints == [route[1], route[2], route[0]]
+    assert prepared.input_indices == [1, 2, 0]
 
 
 def test_prepare_route_waypoints_joins_nearest_segment_for_loop_routes():
@@ -547,6 +658,7 @@ def test_prepare_route_waypoints_joins_nearest_segment_for_loop_routes():
     assert prepared.start_index == 1
     assert prepared.note == "loop joined nearest segment 1->2"
     assert prepared.waypoints == [route[1], route[2], route[0]]
+    assert prepared.input_indices == [1, 2, 0]
 
 
 def test_skip_reached_chunk_start_advances_loop_chunk_from_current_pose():
@@ -623,6 +735,70 @@ def test_skip_reached_chunk_start_does_not_skip_only_remaining_non_loop_waypoint
         robot_lat=0.0,
         robot_lon=0.001,
         waypoint_reached_tolerance_m=1.2,
+    )
+
+    assert start == 1
+    assert skipped == 0
+
+
+def test_skip_passed_synthetic_chunk_start_advances_on_route_progress():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+
+    start, skipped = skip_passed_synthetic_chunk_start(
+        route,
+        start_index=1,
+        loop=False,
+        robot_lat=0.00002,
+        robot_lon=0.00015,
+        segment_tolerance_m=5.0,
+        skippable_indices={1},
+    )
+
+    assert start == 2
+    assert skipped == 1
+
+
+def test_skip_passed_synthetic_chunk_start_keeps_key_waypoint():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+
+    start, skipped = skip_passed_synthetic_chunk_start(
+        route,
+        start_index=1,
+        loop=False,
+        robot_lat=0.00002,
+        robot_lon=0.00015,
+        segment_tolerance_m=5.0,
+        skippable_indices=set(),
+    )
+
+    assert start == 1
+    assert skipped == 0
+
+
+def test_skip_passed_synthetic_chunk_start_keeps_action_waypoint_protected():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+    ]
+
+    start, skipped = skip_passed_synthetic_chunk_start(
+        route,
+        start_index=1,
+        loop=False,
+        robot_lat=0.00002,
+        robot_lon=0.00015,
+        segment_tolerance_m=5.0,
+        skippable_indices={1},
+        protected_indices={1},
     )
 
     assert start == 1

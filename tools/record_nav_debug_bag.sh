@@ -32,6 +32,9 @@ CORE_TOPICS=(
   /collision_monitor_state
   /nav_command_server/telemetry
   /nav_command_server/events
+  /navigation_trace/events
+  /route_executor/mission_path
+  /route_executor/active_chunk_path
   /controller/drive_telemetry
   /controller/status
   /controller/telemetry

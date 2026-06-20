@@ -1,0 +1,73 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="0.333" name="RateController">
+          <RecoveryNode number_of_retries="2" name="ComputePath">
+            <Fallback name="SelectReplanCauseOrKeepPath">
+              <Sequence name="ReplanForUpdatedGoal">
+                <GlobalUpdatedGoal/>
+                <TraceReplan reason="goal_updated" goals="{goals}" path="{path}">
+                  <Sequence name="ComputeUpdatedGoalPath">
+                    <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>
+                    <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                    <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
+                  </Sequence>
+                </TraceReplan>
+              </Sequence>
+              <Sequence name="KeepValidPathOrReplanClearance">
+                <IsPathValid path="{path}"/>
+                <Fallback name="KeepClearPathOrReplanClearance">
+                  <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
+                  <TraceReplan reason="clearance_invalid" goals="{goals}" path="{path}">
+                    <Sequence name="ComputeClearancePath">
+                      <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>
+                      <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                      <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
+                    </Sequence>
+                  </TraceReplan>
+                </Fallback>
+              </Sequence>
+              <TraceReplan reason="path_invalid" goals="{goals}" path="{path}">
+                <Sequence name="ComputeValidPath">
+                  <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>
+                  <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                  <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
+                </Sequence>
+              </TraceReplan>
+            </Fallback>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmap-Context"
+              service_name="global_costmap/clear_entirely_global_costmap"
+              server_timeout="5000"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="2" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap
+            name="ClearLocalCostmap-Context"
+            service_name="local_costmap/clear_entirely_local_costmap"
+            server_timeout="5000"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap
+              name="ClearLocalCostmap-Subtree"
+              service_name="local_costmap/clear_entirely_local_costmap"
+              server_timeout="5000"/>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmap-Subtree"
+              service_name="global_costmap/clear_entirely_global_costmap"
+              server_timeout="5000"/>
+          </Sequence>
+          <Sequence name="WaitAndReplan">
+            <Wait wait_duration="2"/>
+          </Sequence>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

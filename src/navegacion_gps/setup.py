@@ -53,6 +53,8 @@ setup(
             'nav_benchmark_report = navegacion_gps.nav_benchmark_report:main',
             'nav_benchmark_runner = navegacion_gps.nav_benchmark_runner:main',
             'nav_snapshot_server = navegacion_gps.nav_snapshot_server:main',
+            'nav_trace_recorder = navegacion_gps.nav_trace_recorder:main',
+            'nav_trace_report = navegacion_gps.nav_trace_report:main',
             'nav_observability = navegacion_gps.nav_observability:main',
             'path_clearance_validator = navegacion_gps.path_clearance_validator:main',
             'polygon_stamped_republisher = navegacion_gps.polygon_stamped_republisher:main',

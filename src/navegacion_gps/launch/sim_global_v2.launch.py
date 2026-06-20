@@ -36,6 +36,12 @@ def generate_launch_description():
     default_collision_monitor_params_file = _resolve_config_file_path(
         gps_wpf_dir, "collision_monitor_v2.yaml"
     )
+    production_through_poses_bt = _resolve_config_file_path(
+        gps_wpf_dir, "navigate_through_poses_w_replanning_and_recovery_no_spin.xml"
+    )
+    trace_through_poses_bt = _resolve_config_file_path(
+        gps_wpf_dir, "navigate_through_poses_trace.xml"
+    )
     default_global_localization_params_file = _resolve_config_file_path(
         gps_wpf_dir, "localization_global_v2.yaml"
     )
@@ -47,6 +53,8 @@ def generate_launch_description():
     wheelbase_m = LaunchConfiguration("wheelbase_m")
     invert_measured_steer_sign = LaunchConfiguration("invert_measured_steer_sign")
     nav_start_delay_s = LaunchConfiguration("nav_start_delay_s")
+    enable_nav_trace = LaunchConfiguration("enable_nav_trace")
+    nav_trace_output_root = LaunchConfiguration("nav_trace_output_root")
     use_keepout = LaunchConfiguration("use_keepout")
     vx_deadband_mps = LaunchConfiguration("vx_deadband_mps")
     vx_min_effective_mps = LaunchConfiguration("vx_min_effective_mps")
@@ -216,6 +224,17 @@ def generate_launch_description():
             "') * 180.0 / 3.141592653589793",
         ]
     )
+    selected_through_poses_bt = PythonExpression(
+        [
+            "'",
+            trace_through_poses_bt,
+            "' if '",
+            enable_nav_trace,
+            "'.lower() == 'true' else '",
+            production_through_poses_bt,
+            "'",
+        ]
+    )
 
     return LaunchDescription(
         [
@@ -223,6 +242,11 @@ def generate_launch_description():
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
             DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
+            DeclareLaunchArgument("enable_nav_trace", default_value="True"),
+            DeclareLaunchArgument(
+                "nav_trace_output_root",
+                default_value="/ros2_ws/artifacts/nav_traces",
+            ),
             DeclareLaunchArgument("use_keepout", default_value="True"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
@@ -685,6 +709,21 @@ def generate_launch_description():
             ),
             Node(
                 package="navegacion_gps",
+                executable="nav_trace_recorder",
+                name="nav_trace_recorder",
+                output="screen",
+                condition=IfCondition(enable_nav_trace),
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
+                        "output_root": nav_trace_output_root,
+                        "nav2_params_file": nav2_params_file,
+                        "bt_xml_file": ParameterValue(selected_through_poses_bt, value_type=str),
+                    }
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
                 executable="gps_course_heading",
                 name="gps_course_heading",
                 output="screen",
@@ -790,6 +829,7 @@ def generate_launch_description():
                             "collision_monitor_params_file": collision_monitor_params_file,
                             "keepout_mask_yaml": keepout_mask_yaml_arg,
                             "lidar_scan_topic": effective_lidar_scan_topic,
+                            "nav_through_poses_bt_xml": selected_through_poses_bt,
                         }.items(),
                     )
                 ],
