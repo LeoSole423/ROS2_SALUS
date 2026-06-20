@@ -271,6 +271,7 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     assert 'DeclareLaunchArgument("enable_compass_heading", default_value="false")' in launch_contents
     assert 'DeclareLaunchArgument("enable_compass_heading_fusion", default_value="false")' in launch_contents
     assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
+    assert 'DeclareLaunchArgument("enable_scan_ground_filter", default_value="True")' in launch_contents
     assert "spawn_yaw" in launch_contents
     assert '"enable_sim_compass": enable_sim_compass' in launch_contents
     assert '"sim_compass_hdg_topic": sim_compass_hdg_topic' in launch_contents
@@ -509,6 +510,8 @@ def test_wifi_rpp_lookahead_is_smoother_and_sim_real_parity() -> None:
     sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
 
     for params_contents in (real_wifi_params, sim_wifi_params):
+        assert "use_final_approach_orientation: false" in params_contents
+        assert "keep_goal_orientation: true" in params_contents
         assert "desired_linear_vel: 1.6" in params_contents
         assert "lookahead_dist: 2.6" in params_contents
         assert "min_lookahead_dist: 1.8" in params_contents

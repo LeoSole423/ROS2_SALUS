@@ -129,10 +129,9 @@ planner_server:
       # margen lateral en vez de pasar pegado a obstaculos detectados.
       cost_penalty: 3.5
       cost_travel_multiplier: 0.8
-      # En waypoints de patrulla, especialmente con loop y acciones, la pose
-      # final debe conservar intencion de rumbo sin obligar a Smac a dibujar
-      # una maniobra cerrada solo para clavar el yaw.
-      use_final_approach_orientation: true
+      # Mantener paridad con sim_global_v2_wifi: esta fue la combinacion probada
+      # para evitar oscilaciones/reintentos al cerrar tramos de patrulla.
+      use_final_approach_orientation: false
       smooth_path: false
       debug_visualizations: false
 
@@ -153,10 +152,9 @@ smoother_server:
       path_downsampling_factor: 2
       path_upsampling_factor: 1
       keep_start_orientation: true
-      # Dejamos libertad al tramo final: PositionGoalChecker ya acepta el goal
-      # por posicion, y forzar yaw exacto en Ackermann grande puede disparar
-      # bucles en "O" o retries del waypoint.
-      keep_goal_orientation: false
+      # Mantener paridad con sim_global_v2_wifi: el planner no fuerza la
+      # orientacion final, pero el smoother conserva la orientacion calculada.
+      keep_goal_orientation: true
       minimum_turning_radius: 4.0
       optimizer:
         max_iterations: 80

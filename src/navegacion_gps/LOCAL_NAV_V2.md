@@ -397,9 +397,9 @@ llaman a Smac si cambia la meta, si `IsPathValid` invalida el path por costmap o
 si `IsPathClearanceValid` detecta inflacion alta en los proximos `12m` del path.
 `RemovePassedGoals` usa `radius=2.5` para dar margen a la plataforma Ackermann
 grande y evitar que queden waypoints ya superados dentro de la lista al replanificar.
-En los perfiles `_wifi`, el RPP conserva `desired_linear_vel=1.6`, pero limita
-la mirada a `1.4..3.0 m` con `lookahead_time=1.5` para que el robot corrija antes
-sin pedir curvas por debajo del radio de planificacion.
+En los perfiles `_wifi`, el RPP conserva `desired_linear_vel=1.6`, pero usa
+mirada larga `1.8..3.6 m` (`lookahead_dist=2.6`, `lookahead_time=1.8`) para
+suavizar el seguimiento sin pedir curvas por debajo del radio de planificacion.
 
 ### Defaults de sim
 - `use_sim_time = True`
