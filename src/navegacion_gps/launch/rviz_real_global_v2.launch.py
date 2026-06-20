@@ -40,7 +40,7 @@ def _build_robot_state_publisher(context):
 def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     default_rviz = os.path.join(gps_wpf_dir, "config", "rviz_global_v2.rviz")
-    default_urdf = os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf")
+    default_urdf = os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf")
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     rviz_config = LaunchConfiguration("rviz_config")

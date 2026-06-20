@@ -226,7 +226,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "custom_urdf",
-                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf"),
+                default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf"),
             ),
             DeclareLaunchArgument(
                 "world",

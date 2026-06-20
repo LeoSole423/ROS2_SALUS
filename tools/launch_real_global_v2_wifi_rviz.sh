@@ -25,4 +25,4 @@ prepare_x11_for_docker_rviz() {
 
 prepare_x11_for_docker_rviz
 
-./tools/exec.sh "export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch ${RVIZ_WIFI_LAUNCH} custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real.urdf rviz_config:=/ros2_ws/src/navegacion_gps/config/rviz_global_v2_wifi.rviz"
+./tools/exec.sh "export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; ros2 launch ${RVIZ_WIFI_LAUNCH} custom_urdf:=/ros2_ws/src/navegacion_gps/models/cuatri_real_v2.urdf rviz_config:=/ros2_ws/src/navegacion_gps/config/rviz_global_v2_wifi.rviz"

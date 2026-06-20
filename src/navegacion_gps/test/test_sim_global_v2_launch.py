@@ -72,6 +72,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     approx_lon_arg = '"approx_fromll_datum_lon": ParameterValue(datum_lon, value_type=float)'
 
     assert "sim_v2_base.launch.py" in launch_contents
+    assert 'default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf")' in launch_contents
     assert "localization_global_v2.launch.py" in launch_contents
     assert "nav_global_v2.launch.py" in launch_contents
     assert "no_go_editor.launch.py" in launch_contents
@@ -254,6 +255,7 @@ def test_sim_global_v2_wifi_launch_wraps_base_and_enables_scan_reduction() -> No
     launch_contents = _read("launch/sim_global_v2_wifi.launch.py")
 
     assert "sim_global_v2.launch.py" in launch_contents
+    assert 'default_value=os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf")' in launch_contents
     assert 'nav2_global_v2_sim_rolling_wifi_params.yaml' in launch_contents
     assert 'DeclareLaunchArgument("enable_scan_wifi_debug", default_value="True")' in launch_contents
     assert 'DeclareLaunchArgument("gps_course_heading_min_distance_m", default_value="2.0")' in launch_contents
@@ -313,6 +315,18 @@ def test_cuatri_real_v2_wrapper_keeps_current_urdf_entrypoint() -> None:
     assert 'custom_urdf:="${URDF_PATH}"' in script_contents
     assert "enable_sim_compass:=true" in script_contents
     assert "enable_compass_initial_guess:=true" in script_contents
+
+
+def test_global_v2_rviz_defaults_use_realistic_cuatri_model() -> None:
+    launch_paths = [
+        "launch/rviz_sim_global_v2.launch.py",
+        "launch/rviz_sim_global_v2_wifi.launch.py",
+    ]
+
+    for launch_path in launch_paths:
+        launch_contents = _read(launch_path)
+        assert 'models", "cuatri_real_v2.urdf"' in launch_contents
+        assert 'models", "cuatri_real.urdf"' not in launch_contents
 
 
 def test_sim_v2_base_spawn_pose_is_launch_configurable() -> None:

@@ -40,7 +40,7 @@ Levanta / incluye:
 
 | Componente | Cómo | Notas |
 |---|---|---|
-| `robot_state_publisher` | OpaqueFunction | URDF `models/cuatri_real.urdf` |
+| `robot_state_publisher` | OpaqueFunction | URDF `models/cuatri_real_v2.urdf` |
 | Sensores Pixhawk/GNSS | include `sensores/mavros.launch.py` | `launch_legacy_compat=false`, `enable_rtk` efectivo, `fcu_url=/dev/ttyACM0:921600` |
 | LiDAR | include `sensores/rs16.launch.py` | `config_path=sensores/config/rs16.yaml` |
 | `pointcloud_to_laserscan` | Node | params `pointcloud_to_laserscan_real.yaml`, remap `cloud_in:=/scan_3d`, `scan:=/scan` |
@@ -153,7 +153,7 @@ el orquestador). Defaults de tópicos GPS aquí: `/gps/fix`, `/gps/rtk_status`
 |---|---|
 | Docker up/down/compile/exec | `up-salus.sh`, `down-salus.sh`, `compile-ros.sh`, `exec.sh`, `root-exec.sh`, `docker_ros_env.sh` |
 | Launch real | `launch_real_global_v2.sh`, `launch_real_global_v2_rviz.sh`, `launch_real_global_v2_wifi*.sh` |
-| Launch sim | `launch_sim_global_v2.sh`, `launch_sim_global_v2_wifi*.sh` (incl. `_slope`, `_sonoma`, `_cuatri_real_v2`) |
+| Launch sim | `launch_sim_global_v2.sh`, `launch_sim_global_v2_wifi*.sh` (incl. `_slope`, `_sonoma`) |
 | Launch infra | `launch_controller.sh`, `launch_no_go_editor.sh` |
 | Stop sim | `stop_sim_global_v2.sh`, `stop_sim_local_v2.sh` |
 | Healthcheck | `healthcheck-lidar.sh` (hz de `/scan_3d`, `/scan`, `/scan_clean`, `/scan_filtered`, TF) |

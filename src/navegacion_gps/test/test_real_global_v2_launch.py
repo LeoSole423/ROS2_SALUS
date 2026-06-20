@@ -303,10 +303,13 @@ def test_real_cuatri_real_v2_wrapper_enables_compass_initial_guess() -> None:
 
 def test_real_global_v2_wifi_rviz_and_params_match_remote_profile() -> None:
     launch_contents = _read("launch/rviz_real_global_v2_wifi.launch.py")
+    rviz_launch_contents = _read("launch/rviz_real_global_v2.launch.py")
     rviz_contents = _read("config/rviz_global_v2_wifi.rviz")
     nav2_params_contents = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
 
     assert "rviz_real_global_v2.launch.py" in launch_contents
+    assert 'models", "cuatri_real_v2.urdf"' in launch_contents
+    assert 'models", "cuatri_real_v2.urdf"' in rviz_launch_contents
     assert "rviz_global_v2_wifi.rviz" in launch_contents
     assert "Value: /scan_wifi_debug" in rviz_contents
     assert "Value: /odometry/global" in rviz_contents

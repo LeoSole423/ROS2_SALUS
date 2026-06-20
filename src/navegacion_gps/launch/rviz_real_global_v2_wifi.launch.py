@@ -24,7 +24,7 @@ def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
 def generate_launch_description():
     gps_wpf_dir = get_package_share_directory("navegacion_gps")
     default_rviz = _resolve_config_file_path(gps_wpf_dir, "rviz_global_v2_wifi.rviz")
-    default_urdf = os.path.join(gps_wpf_dir, "models", "cuatri_real.urdf")
+    default_urdf = os.path.join(gps_wpf_dir, "models", "cuatri_real_v2.urdf")
 
     return LaunchDescription(
         [

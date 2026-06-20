@@ -68,9 +68,10 @@ Driver propio que lee MAVLink directo y publica `/imu/data`, `/gps/fix`,
   (PointCloud2). `/rslidar_packets` está configurado pero **no se publica por
   default** (`send_packet_ros: false`). `/rslidar_imu_data` está configurado con
   **`imu_port: 0`**, por lo que no es un topic activo garantizado (no lo usa el EKF).
-- Montaje físico: ~0.65 m sobre `base_link`, x≈+0.92 m. URDF plano
-  `cuatri_real.urdf`; variante con pitch +10° `cuatri_real_v2.urdf`
-  (peor caso “robot cabeceado”). Ver `docs/lidar_puntos_fantasma_datos_proyecto.md`.
+- Montaje físico: ~0.65 m sobre `base_link`, x≈+0.92 m. Los perfiles global V2
+  activos usan `cuatri_real_v2.urdf`, con pitch +10° del RS16, para que sim y
+  real compartan la misma extrínseca de LiDAR. Ver
+  `docs/lidar_puntos_fantasma_datos_proyecto.md`.
 
 ---
 

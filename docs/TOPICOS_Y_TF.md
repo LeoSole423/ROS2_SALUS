@@ -120,7 +120,8 @@ map
 - `odom -> base_footprint`: EKF local (`robot_localization`) alimentado por
   `ackermann_odometry` (desde `/controller/drive_telemetry`).
 - `base_footprint -> {lidar_link, imu_link, gps_link, ...}`: estáticos del URDF
-  (`models/cuatri_real.urdf`; variante `cuatri_real_v2.urdf` con LiDAR pitcheado 10°).
+  (`models/cuatri_real_v2.urdf` en perfiles global V2 activos, con LiDAR
+  pitcheado 10°).
 - `pointcloud_to_laserscan` proyecta a **`base_footprint`** (`target_frame`).
 
 Frames declarados: `pixhawk.launch.py:40-59` (`odom`, `base_footprint`, `imu_link`,
