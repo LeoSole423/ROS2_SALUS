@@ -8,12 +8,19 @@ Fuente de verdad: `src/**/launch/*.launch.py` y `tools/*.sh`
 | Perfil | Launch | Helper | Destino | Estado |
 | --- | --- | --- | --- | --- |
 | Sim global Ackermann | `ros2 launch navegacion_gps sim_global_v2.launch.py` | `./tools/launch_sim_global_v2.sh` | contenedor | vigente |
+| Sim global Ackermann WiFi | `ros2 launch navegacion_gps sim_global_v2_wifi.launch.py` | `./tools/launch_sim_global_v2_wifi.sh` | contenedor | espejo de real WiFi |
 | Real global Ackermann | `ros2 launch navegacion_gps real_global_v2.launch.py` | `./tools/launch_real_global_v2.sh` | robot/contenedor | vigente, perfil base no-WiFi |
 | Real global Ackermann WiFi | `ros2 launch navegacion_gps real_global_v2_wifi.launch.py` | `./tools/launch_real_global_v2_wifi.sh` | robot/contenedor | recomendado para operacion remota WiFi |
 | RViz real global V2 | `ros2 launch navegacion_gps rviz_real_global_v2.launch.py` | `./tools/launch_real_global_v2_rviz.sh` | PC local | vigente, con perfil CycloneDDS Wi-Fi seguro |
 | Replay offline localizacion global | `ros2 launch navegacion_gps replay_localization_global_v2.launch.py` | `./tools/run_localization_replay_compare.sh <bag_dir>` | contenedor | soporte |
 
-`real_global_v2` y `sim_global_v2` son las unicas navegaciones operativas vigentes. La arquitectura local V2 sigue siendo base tecnica vigente dentro de esos perfiles globales, pero sus launches standalone no se usan para operacion normal.
+Las familias `real_global_v2*` y `sim_global_v2*` son las unicas navegaciones
+operativas vigentes. La arquitectura local V2 sigue siendo base tecnica vigente
+dentro de esos perfiles globales, pero sus launches standalone no se usan para
+operacion normal.
+Los cuatro perfiles globales V2 (`sim`, `sim_wifi`, `real`, `real_wifi`) usan
+`models/cuatri_real_v2.urdf` por default; los wrappers históricos con sufijo
+`_cuatri_real_v2` ya no son el estándar operativo.
 
 ## Infraestructura vigente
 | Perfil | Launch | Helper | Destino | Estado |
@@ -47,9 +54,8 @@ En Global V2 la ruta LiDAR conservadora por default es `/scan -> /scan_clean`;
 | Recompilar cambios de navegación/control | `./tools/compile-ros.sh controller_server navegacion_gps` | recompila dentro del contenedor |
 | Abrir shell del contenedor | `./tools/exec.sh` | usar si hace falta correr `colcon` o `ros2` a mano |
 | Lanzar `real_global_v2` base | `./tools/launch_real_global_v2.sh` | wrapper corto no-WiFi sobre `ros2 launch navegacion_gps real_global_v2.launch.py`; mantiene compatibilidad con pruebas locales |
-| Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado para robot remoto por WiFi; usa `real_global_v2_wifi.launch.py` y params Nav2 con menor trafico |
-| Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado; usa `cuatri_real_v2.urdf` por default |
-| Lanzar sim WiFi global V2 | `./tools/launch_sim_global_v2_wifi.sh` | espejo de real global V2; usa `cuatri_real_v2.urdf` por default |
+| Lanzar `real_global_v2` WiFi | `./tools/launch_real_global_v2_wifi.sh` | perfil operativo recomendado para robot remoto por WiFi; usa `real_global_v2_wifi.launch.py`, params Nav2 de menor trafico y `cuatri_real_v2.urdf` por default |
+| Lanzar sim WiFi global V2 | `./tools/launch_sim_global_v2_wifi.sh` | espejo de real global V2 WiFi; usa `cuatri_real_v2.urdf` por default |
 | Probar brujula gateada en sim V2 | `./tools/launch_sim_global_v2_wifi.sh enable_sim_compass:=true enable_compass_heading:=true enable_compass_initial_guess:=true` | publica `/sim/compass_hdg`, `/imu/compass_heading` y `/imu/compass_heading/debug`; no fusiona al EKF salvo `enable_compass_heading_fusion:=true` |
 | Probar brujula gateada en robot real | `./tools/launch_real_global_v2_wifi.sh enable_compass_initial_guess:=true` | usa `/mavros_node/compass_hdg` solo como guess inicial; no vuelve a publicar tras `startup_window_s` |
 | Medir bias brujula vs GPS RTK | `./tools/record_compass_calibration.sh east_run_01 60` | herramienta pasiva; no mueve el robot, guarda JSON en `/ros2_ws/artifacts/compass_calibration/` |
@@ -90,7 +96,7 @@ los helpers que abren RViz/Gazebo deben pasar por `tools/exec.sh` o `tools/docke
 ## Criterio de uso
 - Para navegacion real remota por WiFi, usar `real_global_v2_wifi`.
 - Para navegacion real base/local, usar `real_global_v2`.
-- Para simulacion de la navegacion vigente, usar `sim_global_v2`.
+- Para simulacion de la navegacion vigente, usar `sim_global_v2` o `sim_global_v2_wifi` si se quiere probar el perfil WiFi equivalente al robot.
 - Usar `real.launch.py` o `simulacion.launch.py` solo como material legacy.
 - Usar `real_local_v2` o `sim_local_v2` solo para validar/consultar la base local V2, no como perfil operativo final.
 - Si un script helper y un launch discrepan, el launch es la fuente de verdad y el script debe considerarse conveniencia operativa.

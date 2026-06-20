@@ -16,8 +16,8 @@ que ya existe en este repo, para seguir investigando con datos concretos.
 - Launch: `src/sensores/launch/rs16.launch.py` (envuelve `rslidar_sdk` vendorizado).
 - Ojo: `src/rslidar_sdk/config/config.yaml` dice `RSM1`, pero es el default del SDK;
   el launch real usa `rs16.yaml`.
-- En simulación: sensor `gpu_lidar` Gazebo, 360 muestras, FOV ±90°, ruido σ=0.003
-  (`models/cuatri_real.urdf`).
+- En simulación global V2: sensor `gpu_lidar` Gazebo, 360 muestras, FOV ±90°,
+  ruido σ=0.003, usando `models/cuatri_real_v2.urdf` por default.
 
 Conclusión del PDF aplicable: al ser 3D, la ruta correcta es
 **gravity alignment + ground removal + persistencia**, no gating de scans 2D.
@@ -59,13 +59,11 @@ Con pitch de 10°, el haz central toca el suelo a ~3.7 m — **dentro de la
 provocar slowdown directo además de marcar el costmap. Cabeceos del chasis o
 rampas acercan aún más ese punto de contacto.
 
-**Sospecha principal de la causa raíz**: `real_global_v2.launch.py:238` usa por
-default `cuatri_real.urdf` (TF **plano**). Si el montaje físico es el inclinado
-(`cuatri_real_v2.urdf`, pitch 10°), el TF publicado no refleja la inclinación:
-un retorno de suelo a 3.7 m medido por el haz central aparece, con TF plano, a
-z ≈ 0.65 m — justo dentro de la banda 0.50–1.50 del pointcloud_to_laserscan →
-obstáculo fantasma sistemático. Eso explicaría por qué subir `min_height` a 0.50
-no alcanzó.
+**Estado actualizado**: esa sospecha ya quedó resuelta en los perfiles globales
+V2 activos. `sim_global_v2*`, `real_global_v2*` y sus RViz usan por default
+`cuatri_real_v2.urdf`, por lo que el TF publicado refleja el LiDAR inclinado.
+Este documento se conserva como trazabilidad del diagnóstico original; ante duda,
+la fuente operativa es `docs/launch-matrix.md`.
 
 ## 2. Pipeline actual del proyecto (lo que el PDF llama "pipeline sugerido")
 

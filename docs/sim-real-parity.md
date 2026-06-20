@@ -8,6 +8,9 @@ La simulacion global V2 y la navegacion real global V2 deben mantenerse sincroni
 
 ## Regla principal
 - `sim_global_v2`, `sim_global_v2_wifi`, `real_global_v2` y `real_global_v2_wifi` deben compartir la misma logica de Nav2, localizacion global, heading GPS, keepout, route execution y arbitraje de comandos.
+- Los cuatro perfiles globales V2 deben usar el mismo modelo base del cuatriciclo:
+  `models/cuatri_real_v2.urdf` con el RS16 inclinado. Si se prueba otro URDF,
+  debe ser un override explicito y temporal.
 - Cualquier cambio en planner, controller, smoother, behavior server, waypoint follower, costmaps, filters, collision monitor, `nav_command_server`, `route_executor`, localizacion global, heading GPS o parametros Ackermann debe revisarse contra sim y real.
 - No crear defaults divergentes entre sim y real salvo que la diferencia sea necesaria por hardware, sensores, `use_sim_time`, topicos fisicos, disponibilidad RTK o reduccion de trafico WiFi.
 - Las diferencias intencionales deben quedar documentadas cerca del cambio: comentario en launch/YAML, test de contrato o este documento.

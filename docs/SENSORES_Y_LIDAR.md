@@ -151,7 +151,7 @@ aplanar a 2D, permitiendo bajar `min_height` (recuperar obstáculos bajos) y sub
 | Tests | `test/test_scan_ground_filter.py` (núcleo) + `test/test_scan_ground_validation.py` |
 | Rendimiento | ~25 ms / 28.8k pts (lazo en floats Python + `lexsort`) |
 
-### 4.3 Validación (rampa) y qué falta antes de producción
+### 4.3 Validación (rampa) y estado de producción
 
 Escenario A/B: `launch/validate_scan_ground.launch.py` sobre `worlds/slope_lidar.world`
 + nodo medidor `scan_ground_validation` (FP en `/local_costmap/costmap` y eventos de
@@ -160,14 +160,20 @@ freno `/cmd_vel` vs `/cmd_vel_safe`). Runner `scripts/run_scan_ground_validation
 Resultado A/B (Codex, sim headless): **FP −95.3 %** (16 654 → 791),
 FN 0/2 a nivel `/scan_3d/no_ground`.
 
-**Falta antes de producción:**
+**Estado actual:**
+1. El wiring real ya está integrado en `real_global_v2.launch.py` y
+   `real_global_v2_wifi.launch.py`; queda **default True** para los perfiles reales.
+2. Sim y validación lo mantienen opt-in/default False para poder hacer A/B.
+3. Sigue siendo recomendable re-correr A/B confirmando **FN 0/2 en el `/scan` 2D final** con
+   `scan_ground_max_height` (el `slope_obstacle_right` quedaba sobre `max_height`).
+4. El vendor `src/autoware_deps/` (~624 MB) y la imagen Docker `:aw` **fueron
+   eliminados** (solo eran referencia; el algoritmo ya vive portado en Python).
+
+**Chequeo recomendado antes de subir velocidad operativa:**
 1. Re-correr A/B confirmando **FN 0/2 en el `/scan` 2D final** con
    `scan_ground_max_height` (el `slope_obstacle_right` quedaba sobre `max_height`).
-2. **No** está cableado en `real_global_v2.launch.py` (solo en la cadena sim).
-   Si valida, replicar el wiring ahí + sumar al `Dockerfile`, tuneando min/max a
-   la geometría real.
-3. El vendor `src/autoware_deps/` (~624 MB) y la imagen Docker `:aw` **fueron
-   eliminados** (solo eran referencia; el algoritmo ya vive portado en Python).
+2. Revisar en robot que `/scan_3d/no_ground`, `/scan` y `/scan_clean` mantengan
+   obstáculos bajos reales sin reintroducir piso en rampas o cabeceo.
 
 Doc completo: `docs/autoware_ground_segmentation_integracion.md`
 (§8 wiring, §9 validación).

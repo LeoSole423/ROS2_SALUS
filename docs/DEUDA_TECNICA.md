@@ -19,7 +19,7 @@ Severidad: 🔴 alta · 🟠 media · 🟡 baja.
 | 1.1 | 🔴 | **Pérdida de comando = coast, no freno (confirmado en repo).** Al expirar el watchdog `auto_timeout_s=0.7`, `safe_command()` ordena velocidad 0 con `drive_enabled=False`, `estop=False`, `brake_pct=0` (detención por inercia). El freno fuerte solo ocurre en e-stop (`brake_pct>0`). | `control_logic.py:38-44,155`, `controller_server_node.py:227,232-247`, protocolo `rpy_esp32_comms/protocol.py:38`, firmware `controller/COMUNICACIONES_UART_V2.md:75` | Confirmar con el vehículo si “speed 0 sin freno” es seguro ante caída de Nav2; evaluar freno activo en timeout. (Comportamiento físico = firmware.) |
 | 1.2 | 🟠 | **Keepout deshabilitado por default en real** (`use_keepout=False`). El robot real no aplica la máscara no-go salvo override explícito. | `real_global_v2.launch.py:254` | Documentar/operar con `use_keepout:=True` cuando la máscara esté validada. |
 | 1.3 | 🟠 | **collision_monitor con fuente única `scan` y `source_timeout=1.0`.** Si el LiDAR/scan se cae, el monitor queda sin observación; combinado con 1.1 el fallo no frena activamente. | `collision_monitor_v2.yaml:12,57-61` | Definir comportamiento fail-safe ante pérdida de scan. |
-| 1.4 | 🟡 | `min_height=0.50` en `pointcloud_to_laserscan_real.yaml` tapa el piso pero **pierde obstáculos bajos** (falsos negativos conocidos). | `pointcloud_to_laserscan_real.yaml:11` | El `scan_ground_filter` (POC) lo resuelve; falta validarlo y cablearlo en real. |
+| 1.4 | 🟡 | El pipeline histórico con `min_height=0.50` en `pointcloud_to_laserscan_real.yaml` tapaba el piso pero **perdía obstáculos bajos**. | `pointcloud_to_laserscan_real.yaml`, `scan_ground_filter.param.yaml` | El `scan_ground_filter` ya está cableado y default ON en `real_global_v2*`; queda validar FN 0/2 en el `/scan` 2D final y ajustar min/max reales si hiciera falta. |
 
 ---
 
@@ -72,8 +72,8 @@ Severidad: 🔴 alta · 🟠 media · 🟡 baja.
 
 ## 6. Cosas que parecen incompletas / a confirmar
 
-- `scan_ground_filter`: validado en sim pero **no cableado en real**; falta FN 0/2
-  en el `/scan` 2D final. (Ver [SENSORES_Y_LIDAR](SENSORES_Y_LIDAR.md) §4.)
+- `scan_ground_filter`: cableado y default ON en real global V2; falta cerrar
+  validación FN 0/2 en el `/scan` 2D final. (Ver [SENSORES_Y_LIDAR](SENSORES_Y_LIDAR.md) §4.)
 - `sim_global_v2.launch.py` se leyó parcialmente; confirmar lista exacta de nodos.
 - Tipos de mensaje de varios tópicos de nav/heading marcados **(por confirmar)** en
   [TOPICOS_Y_TF](TOPICOS_Y_TF.md).
@@ -94,7 +94,8 @@ Severidad: 🔴 alta · 🟠 media · 🟡 baja.
   documentada.
 - Inyección del scan efectivo y de overrides keepout por `RewrittenYaml` (un solo
   punto de verdad para qué scan consume todo el stack).
-- `scan_ground_filter` portado, testeado y validado en sim (FP −95 %).
+- `scan_ground_filter` portado, testeado, validado en sim (FP −95 %) y cableado
+  por defecto en real global V2.
 
 ### ⚠️ Qué está frágil
 - Failsafe ante pérdida de comando/scan es **coast, no freno** (1.1, 1.3) — el
@@ -121,4 +122,5 @@ Severidad: 🔴 alta · 🟠 media · 🟡 baja.
 - `src/rslidar_*` (vendor).
 - Launches de producción (`real_global_v2*`, `sim_global_v2*`) sin un plan de
   validación: cambiar convenciones de tópicos o nombres ahí puede romper el stack.
-- El wiring del `scan_ground_filter` en real hasta cerrar la validación 2D.
+- La ventana 2D final del `scan_ground_filter` en real hasta cerrar la validación
+  de obstáculos bajos.

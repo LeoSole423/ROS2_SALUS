@@ -165,19 +165,21 @@ El modo recomendado para `cuatri_real_v2` es usar la brujula solo como guess
 inicial:
 
 ```bash
-./tools/launch_real_global_v2_wifi_cuatri_real_v2.sh
+./tools/launch_real_global_v2_wifi.sh enable_compass_initial_guess:=true
 ```
 
-Ese wrapper activa:
+Ese modo activa:
 
 ```text
 enable_compass_initial_guess:=true
 ```
 
-En simulacion, el wrapper equivalente activa ademas la brujula simulada:
+En simulacion, el comando equivalente activa ademas la brujula simulada:
 
 ```bash
-./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh
+./tools/launch_sim_global_v2_wifi.sh \
+  enable_sim_compass:=true \
+  enable_compass_initial_guess:=true
 ```
 
 ```text
@@ -216,9 +218,10 @@ operacion normal del `cuatri_real_v2`, preferir `enable_compass_initial_guess`.
 Para probar con el URDF realista V2:
 
 ```bash
-./tools/launch_sim_global_v2_wifi_cuatri_real_v2.sh \
+./tools/launch_sim_global_v2_wifi.sh \
   enable_sim_compass:=true \
-  enable_compass_heading:=true
+  enable_compass_heading:=true \
+  enable_compass_initial_guess:=true
 ```
 
 Verificar:
