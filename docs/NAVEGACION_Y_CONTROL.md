@@ -39,7 +39,8 @@ Servicios expuestos: `set_goal_ll`, `cancel_goal`, `brake`, `set_manual_mode`,
 `get_state`. Telemetría: `/nav_command_server/telemetry`, `/events`.
 
 `route_executor` (`route_executor.py`) ejecuta misiones multi-waypoint sobre
-`nav_command_server` (reintentos con re-anclaje al bloquearse, `blocked_retry_*`).
+`nav_command_server` (acciones programables por waypoint, reintentos con
+re-anclaje al bloquearse, `blocked_retry_*`).
 
 ### 1.2 Localización
 
@@ -67,12 +68,15 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
 
 - BTs sin spin: `navigate_to_pose_w_replanning_and_recovery_no_spin.xml` y
   `navigate_through_poses_..._no_spin.xml`.
-- Los BTs globales evaluan replanning a `0.666 Hz` (~1.5 s), pero solo llaman a
+- Los BTs globales evaluan replanning a `0.333 Hz` (~3.0 s), pero solo llaman a
   Smac cuando cambia la meta (`GlobalUpdatedGoal`), el path actual queda invalido
   por colision (`IsPathValid` falla) o pierde margen lateral en costo inflado
   (`IsPathClearanceValid` falla). Si el robot viene siguiendo bien la curva y el
   path mantiene margen, se conserva el path vigente para evitar que un replan
   desde una pose lateralmente corrida genere un giro Dubins en O.
+- En `NavigateThroughPoses`, las limpiezas de costmap del BT usan
+  `server_timeout=5000` para evitar aborts prematuros en Raspberry Pi 5 cuando el
+  clear de costmaps se demora bajo carga.
 - `path_clearance_validator` revisa `/global_costmap/costmap_raw` sobre los
   proximos `12m` del path con umbral de costo `100`, offsets laterales
   `0.0, +/-0.45m` y falla abierto si no tiene costmap fresco. El timeout de
@@ -87,6 +91,12 @@ behavior, waypoint_follower, `collision_monitor` y dos `lifecycle_manager`
   de la ruta como barrera de progreso. En rutas `loop=True`, no puede volver a un
   indice anterior ya consumido antes de cruzar el cierre del loop; solo puede
   envolver a 0 cuando el chunk activo ya atraviesa ese cierre.
+- Los aborts clasificados como `COSTMAP_CLEAR_TIMEOUT` se tratan como bloqueo
+  retryable: la misión espera `blocked_retry_wait_s` antes de reintentar y solo
+  queda para operador si agota `blocked_retry_max_attempts`.
+- Waypoints con acción (`brake_hold`) cortan el chunk activo, ejecutan freno por
+  `duration_s` y luego continúan. En loop, esos índices no se auto-saltean aunque
+  el robot ya esté dentro de tolerancia, para repetir la acción en cada pasada.
 - El **scan efectivo** se inyecta vía `RewrittenYaml` en
   `local_costmap.voxel_layer.scan_*.topic`, `global_costmap.obstacle_layer.scan.topic`
   y `collision_monitor.scan.topic` (`nav_global_v2.launch.py:65-96`).

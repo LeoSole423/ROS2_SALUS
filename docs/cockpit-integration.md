@@ -13,7 +13,9 @@ Fuente de verdad: `web_zone_server.py`, launches `real_global_v2` / `sim_global_
 ## Qué queda cubierto
 - Navegación:
   - `set_goal_ll`
+  - `set_route_ll`
   - `cancel_goal`
+  - `cancel_route`
   - `set_manual_mode`
   - `set_manual_cmd`
   - `get_nav_snapshot`
@@ -52,6 +54,35 @@ Fuente de verdad: `web_zone_server.py`, launches `real_global_v2` / `sim_global_
 - `sim_global_v2.launch.py`
   - expone datum fijo
   - no habilita bridge de sensores por default
+
+## Waypoints Programables
+- `cockpit` puede marcar waypoints de ruta con `actions`.
+- La primera acción soportada es:
+  - `type: "brake_hold"`
+  - `duration_s`: segundos de freno antes de continuar
+  - `brake_pct`: porcentaje de freno, hoy usado como intención de freno total
+- El payload WebSocket de `set_route_ll` conserva cada waypoint como:
+
+```json
+{
+  "lat": -31.0,
+  "lon": -64.0,
+  "yaw_deg": 0.0,
+  "actions": [
+    {"type": "brake_hold", "duration_s": 5.0, "brake_pct": 100}
+  ]
+}
+```
+
+- `web_zone_server` serializa esas acciones en
+  `SetRouteMissionLL.waypoint_action_jsons`.
+- `route_executor` valida acciones soportadas, expande la ruta manteniendo las
+  acciones solo en waypoints originales y corta el chunk Nav2 en el waypoint con
+  acción para ejecutarla al llegar.
+- En rutas `loop=True`, los waypoints con acción quedan protegidos contra el
+  auto-skip de puntos ya alcanzados, para que el `brake_hold` vuelva a ejecutarse
+  en cada vuelta.
+- Las rutas guardadas en YAML preservan `actions`.
 
 ## Uso recomendado
 1. Levantar SALUS con:

@@ -98,6 +98,27 @@ def test_save_and_load_waypoints_yaml_file_preserves_auto_yaw(tmp_path: Path):
     assert loaded == src
 
 
+def test_save_and_load_waypoints_yaml_file_preserves_actions(tmp_path: Path):
+    file_path = tmp_path / "saved_waypoints.yaml"
+    src = [
+        {
+            "lat": -31.4,
+            "lon": -64.4,
+            "actions": [{"type": "brake_hold", "duration_s": 5.0, "brake_pct": 100}],
+        },
+    ]
+
+    ok_save, err_save, count = save_waypoints_yaml_file(file_path, src)
+    assert ok_save
+    assert err_save == ""
+    assert count == 1
+
+    ok_load, err_load, loaded = load_waypoints_yaml_file(file_path)
+    assert ok_load
+    assert err_load == ""
+    assert loaded == src
+
+
 def test_load_waypoints_yaml_file_missing(tmp_path: Path):
     missing = tmp_path / "missing.yaml"
     ok, err, waypoints = load_waypoints_yaml_file(missing)

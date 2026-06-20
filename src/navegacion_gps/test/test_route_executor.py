@@ -14,11 +14,13 @@ from navegacion_gps.route_executor import (
     BLOCKED_STATE_WAITING,
     RouteExecutorNode,
     RouteWaypoint,
+    _parse_route_action_jsons,
     _poses_to_debug_path,
     _yaw_to_quaternion,
     build_chunk_waypoints,
     drop_duplicate_loop_closure,
     expand_route_waypoints,
+    expand_route_waypoints_with_actions,
     next_chunk_start_index,
     prepare_route_waypoints,
     resolve_blocked_retry_start,
@@ -209,6 +211,37 @@ def test_expand_route_waypoints_handles_loop_closure_without_duplicating_start()
     assert expanded.count(base[0]) == 1
 
 
+def test_route_action_jsons_accept_brake_hold_only():
+    actions, err = _parse_route_action_jsons(
+        ['[{"type":"brake_hold","duration_s":5,"brake_pct":100}]', ""],
+        2,
+    )
+
+    assert err == ""
+    assert actions is not None
+    assert actions[0] == '[{"brake_pct":100,"duration_s":5.0,"type":"brake_hold"}]'
+    assert actions[1] == ""
+
+
+def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():
+    base = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+    ]
+    action_json = '[{"brake_pct":100,"duration_s":5.0,"type":"brake_hold"}]'
+
+    expanded, actions = expand_route_waypoints_with_actions(
+        base,
+        ["", action_json],
+        leg_spacing_m=30.0,
+        loop=False,
+    )
+
+    assert len(expanded) == len(actions)
+    assert actions[-1] == action_json
+    assert all(action == "" for action in actions[:-1])
+
+
 def test_drop_duplicate_loop_closure_removes_repeated_first_waypoint():
     route = [
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
@@ -256,6 +289,27 @@ def test_build_chunk_waypoints_limits_chunk_by_span_and_advances_after_target():
 
     assert next_chunk[0] == route[end_index + 1]
     assert next_end_index >= end_index + 1
+
+
+def test_build_chunk_waypoints_stops_at_programmed_action_index():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0006, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=0,
+        loop=False,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=4,
+        action_stop_indices={2},
+    )
+
+    assert chunk == route[:3]
+    assert end_index == 2
 
 
 def test_build_chunk_waypoints_wraps_for_loop_routes():
@@ -515,6 +569,27 @@ def test_skip_reached_chunk_start_advances_loop_chunk_from_current_pose():
     assert skipped == 1
 
 
+def test_skip_reached_chunk_start_keeps_reached_action_waypoint_in_loop():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=90.0),
+    ]
+
+    start, skipped = skip_reached_chunk_start(
+        route,
+        start_index=0,
+        loop=True,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+        protected_indices={0},
+    )
+
+    assert start == 0
+    assert skipped == 0
+
+
 def test_skip_reached_chunk_start_wraps_past_reached_loop_closure():
     route = [
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
@@ -580,6 +655,33 @@ def test_nav_event_records_blocking_failure_reason_for_route_abort():
     assert node._blocked_reason_code == "NO_VALID_PATH"
     assert node._blocked_reason_text == "no valid path through blocked street"
     assert node.brake_calls == 1
+    assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
+
+
+def test_costmap_clear_timeout_abort_waits_for_controlled_retry():
+    node = _fake_blocking_node()
+    event = NavEvent()
+    event.component = "nav_command_server"
+    event.code = "GOAL_RESULT_ABORTED"
+    event.message = "costmap clear timed out"
+    event.details = [
+        KeyValue(key="failure_reason_code", value="COSTMAP_CLEAR_TIMEOUT"),
+        KeyValue(key="failure_reason", value="Nav2 no pudo limpiar el costmap a tiempo"),
+    ]
+
+    RouteExecutorNode._on_nav_event(node, event)
+    RouteExecutorNode._on_nav_telemetry(
+        node,
+        _telemetry_result(
+            GoalStatus.STATUS_ABORTED,
+            text="NavigateThroughPoses aborted",
+        ),
+    )
+
+    assert node._mission_active is True
+    assert node._blocked_state == BLOCKED_STATE_WAITING
+    assert node._blocked_reason_code == "COSTMAP_CLEAR_TIMEOUT"
+    assert node._blocked_reason_text == "Nav2 no pudo limpiar el costmap a tiempo"
     assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
 
 

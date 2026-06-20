@@ -1,8 +1,9 @@
+import json
 import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import rclpy
@@ -44,6 +45,7 @@ BLOCKING_FAILURE_CODES = {
     "SMOOTHED_PATH_COLLISION",
     "RECOVERY_FAILED",
     "RECOVERY_OFF_GRID",
+    "COSTMAP_CLEAR_TIMEOUT",
 }
 
 BLOCKING_REASON_TEXT = {
@@ -53,6 +55,7 @@ BLOCKING_REASON_TEXT = {
     "SMOOTHED_PATH_COLLISION": "smoothed path leads to collision",
     "RECOVERY_FAILED": "recovery behavior failed",
     "RECOVERY_OFF_GRID": "recovery would leave costmap",
+    "COSTMAP_CLEAR_TIMEOUT": "costmap clear timed out",
 }
 
 
@@ -64,8 +67,17 @@ class RouteWaypoint:
 
 
 @dataclass(frozen=True)
+class RouteAction:
+    action_type: str
+    duration_s: float = 0.0
+    brake_pct: int = 100
+    label: str = ""
+
+
+@dataclass(frozen=True)
 class PreparedRouteMission:
     waypoints: List[RouteWaypoint]
+    action_jsons: List[str]
     start_index: int
     skipped_waypoints: int
     rotated: bool
@@ -102,6 +114,96 @@ def _yaw_to_quaternion(yaw_deg: float) -> Quaternion:
     yaw_rad = math.radians(float(yaw_deg))
     half_yaw = yaw_rad / 2.0
     return Quaternion(x=0.0, y=0.0, z=math.sin(half_yaw), w=math.cos(half_yaw))
+
+
+def _serialize_route_actions(actions: Sequence[RouteAction]) -> str:
+    if not actions:
+        return ""
+    payload = []
+    for action in actions:
+        item: Dict[str, Any] = {"type": str(action.action_type)}
+        if action.action_type == "brake_hold":
+            item["duration_s"] = float(action.duration_s)
+            item["brake_pct"] = int(action.brake_pct)
+        if action.label:
+            item["label"] = str(action.label)
+        payload.append(item)
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _parse_route_action_json(action_json: str, index: int) -> Tuple[Optional[str], str]:
+    raw_text = str(action_json or "").strip()
+    if not raw_text:
+        return "", ""
+    try:
+        raw = json.loads(raw_text)
+    except Exception as exc:
+        return None, f"waypoint_action_jsons[{index}] invalid json: {exc}"
+    if raw in (None, "", []):
+        return "", ""
+    if not isinstance(raw, list):
+        return None, f"waypoint_action_jsons[{index}] must be a JSON array"
+
+    actions: List[RouteAction] = []
+    for action_idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return None, f"waypoint_action_jsons[{index}][{action_idx}] must be an object"
+        action_type = str(item.get("type", "")).strip()
+        if action_type != "brake_hold":
+            return None, f"unsupported waypoint action type: {action_type or '<empty>'}"
+        try:
+            duration_s = float(item.get("duration_s", 0.0))
+            brake_pct = int(float(item.get("brake_pct", 100)))
+        except (TypeError, ValueError):
+            return None, f"invalid brake_hold action at waypoint {index}"
+        if (not np.isfinite(duration_s)) or duration_s <= 0.0 or duration_s > 600.0:
+            return None, f"brake_hold duration_s at waypoint {index} must be > 0 and <= 600"
+        brake_pct = max(0, min(100, brake_pct))
+        label = str(item.get("label", "") or "").strip()
+        actions.append(
+            RouteAction(
+                action_type="brake_hold",
+                duration_s=float(duration_s),
+                brake_pct=int(brake_pct),
+                label=label[:80],
+            )
+        )
+    return _serialize_route_actions(actions), ""
+
+
+def _parse_route_action_jsons(
+    action_jsons: Sequence[str],
+    waypoint_count: int,
+) -> Tuple[Optional[List[str]], str]:
+    if not action_jsons:
+        return ["" for _ in range(int(waypoint_count))], ""
+    if len(action_jsons) != int(waypoint_count):
+        return None, "waypoint_action_jsons length must match lats/lons when provided"
+    normalized: List[str] = []
+    for idx, raw in enumerate(action_jsons):
+        parsed, err = _parse_route_action_json(str(raw), idx)
+        if parsed is None:
+            return None, err
+        normalized.append(parsed)
+    return normalized, ""
+
+
+def _actions_from_json(action_json: str) -> List[RouteAction]:
+    normalized, err = _parse_route_action_json(action_json, 0)
+    if err or normalized is None or not normalized:
+        return []
+    raw = json.loads(normalized)
+    actions: List[RouteAction] = []
+    for item in raw:
+        actions.append(
+            RouteAction(
+                action_type=str(item.get("type", "")),
+                duration_s=float(item.get("duration_s", 0.0)),
+                brake_pct=int(item.get("brake_pct", 100)),
+                label=str(item.get("label", "") or ""),
+            )
+        )
+    return actions
 
 
 def _poses_to_debug_path(
@@ -291,6 +393,41 @@ def expand_route_waypoints(
     return expanded
 
 
+def expand_route_waypoints_with_actions(
+    base_waypoints: Sequence[RouteWaypoint],
+    action_jsons: Sequence[str],
+    *,
+    leg_spacing_m: float,
+    loop: bool,
+) -> Tuple[List[RouteWaypoint], List[str]]:
+    base = list(base_waypoints)
+    base_actions = list(action_jsons)
+    if len(base_actions) != len(base):
+        base_actions = ["" for _ in base]
+    if len(base) <= 1:
+        return base, base_actions
+
+    spacing = max(1.0, float(leg_spacing_m))
+    expanded: List[RouteWaypoint] = [base[0]]
+    expanded_actions: List[str] = [str(base_actions[0] or "")]
+    segment_count = len(base) if loop else len(base) - 1
+
+    for idx in range(segment_count):
+        start = base[idx]
+        next_base_index = (idx + 1) % len(base)
+        end = base[next_base_index]
+        distance_m = _distance_m(start.lat, start.lon, end.lat, end.lon)
+        split_count = max(1, int(math.ceil(distance_m / spacing)))
+        for split_idx in range(1, split_count):
+            expanded.append(_interpolate_waypoint(start, end, float(split_idx) / float(split_count)))
+            expanded_actions.append("")
+        if idx + 1 < len(base):
+            expanded.append(base[idx + 1])
+            expanded_actions.append(str(base_actions[idx + 1] or ""))
+
+    return expanded, expanded_actions
+
+
 def drop_duplicate_loop_closure(
     base_waypoints: Sequence[RouteWaypoint],
     *,
@@ -308,6 +445,24 @@ def drop_duplicate_loop_closure(
     return route[:-1], True
 
 
+def drop_duplicate_loop_closure_with_actions(
+    base_waypoints: Sequence[RouteWaypoint],
+    action_jsons: Sequence[str],
+    *,
+    loop: bool,
+    closure_tolerance_m: float,
+) -> Tuple[List[RouteWaypoint], List[str], bool]:
+    route, dropped = drop_duplicate_loop_closure(
+        base_waypoints,
+        loop=loop,
+        closure_tolerance_m=closure_tolerance_m,
+    )
+    actions = list(action_jsons)
+    if dropped:
+        actions = actions[: len(route)]
+    return route, actions, dropped
+
+
 def prepare_route_waypoints(
     base_waypoints: Sequence[RouteWaypoint],
     *,
@@ -316,10 +471,14 @@ def prepare_route_waypoints(
     robot_lon: Optional[float],
     waypoint_reached_tolerance_m: float,
     segment_start_tolerance_m: float = 5.0,
+    action_jsons: Optional[Sequence[str]] = None,
 ) -> Tuple[Optional[PreparedRouteMission], str]:
     route = list(base_waypoints)
+    actions = list(action_jsons or ["" for _ in route])
+    if len(actions) != len(route):
+        actions = ["" for _ in route]
     if not route:
-        return PreparedRouteMission([], 0, 0, False, ""), ""
+        return PreparedRouteMission([], [], 0, 0, False, ""), ""
 
     if (
         robot_lat is None
@@ -327,7 +486,7 @@ def prepare_route_waypoints(
         or (not np.isfinite(float(robot_lat)))
         or (not np.isfinite(float(robot_lon)))
     ):
-        return PreparedRouteMission(route, 0, 0, False, ""), ""
+        return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
 
     tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
     segment_tolerance_raw = float(segment_start_tolerance_m)
@@ -349,7 +508,7 @@ def prepare_route_waypoints(
             )
 
         if len(route) <= 1:
-            return PreparedRouteMission(route, 0, 0, False, ""), ""
+            return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
 
         reached_indexes = [
             idx for idx, distance_m in enumerate(distances_m) if distance_m <= tolerance_m
@@ -365,17 +524,18 @@ def prepare_route_waypoints(
                 closest_segment,
                 segment_tolerance_m=segment_tolerance_m,
             ):
-                return PreparedRouteMission(route, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
 
             match = closest_segment
             if match is None:
-                return PreparedRouteMission(route, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
             start_index = int(match.next_index)
             if start_index == 0:
-                return PreparedRouteMission(route, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
             return (
                 PreparedRouteMission(
                     route[start_index:] + route[:start_index],
+                    actions[start_index:] + actions[:start_index],
                     int(start_index),
                     0,
                     True,
@@ -395,11 +555,12 @@ def prepare_route_waypoints(
             start_index = (start_index + 1) % len(route)
 
         if start_index == 0:
-            return PreparedRouteMission(route, 0, 0, False, ""), ""
+            return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
 
         return (
             PreparedRouteMission(
                 route[start_index:] + route[:start_index],
+                actions[start_index:] + actions[:start_index],
                 int(start_index),
                 0,
                 True,
@@ -432,7 +593,7 @@ def prepare_route_waypoints(
         ):
             match = closest_segment
             if match is None:
-                return PreparedRouteMission(route, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
             start_index = max(start_index, int(match.next_index))
             segment_note = (
                 "joined nearest segment "
@@ -449,6 +610,7 @@ def prepare_route_waypoints(
     return (
         PreparedRouteMission(
             route[start_index:],
+            actions[start_index:],
             int(start_index),
             int(start_index),
             False,
@@ -466,12 +628,14 @@ def skip_reached_chunk_start(
     robot_lat: Optional[float],
     robot_lon: Optional[float],
     waypoint_reached_tolerance_m: float,
+    protected_indices: Optional[Set[int]] = None,
 ) -> Tuple[Optional[int], int]:
     route_list = list(route)
     if not route_list:
         return None, 0
 
     total = len(route_list)
+    protected = {int(index) for index in (protected_indices or set())}
     requested_start = max(0, int(start_index))
     if (not loop) and requested_start >= total:
         return None, 0
@@ -490,6 +654,8 @@ def skip_reached_chunk_start(
     skipped = 0
     current = start
     while skipped < max_skips:
+        if current in protected:
+            break
         distance_m = _distance_m(
             float(robot_lat),
             float(robot_lon),
@@ -622,6 +788,7 @@ def build_chunk_waypoints(
     loop: bool,
     chunk_span_m: float,
     chunk_max_waypoints: int,
+    action_stop_indices: Optional[Set[int]] = None,
 ) -> Tuple[List[RouteWaypoint], int]:
     route_list = list(route)
     if not route_list:
@@ -633,6 +800,7 @@ def build_chunk_waypoints(
         return [], total
     start = requested_start % total if loop else requested_start
     max_points = max(1, int(chunk_max_waypoints))
+    stop_indices = {int(index) for index in (action_stop_indices or set())}
     if loop and total > 1:
         # Do not send a full loop in one NavigateThroughPoses chunk. If the robot is
         # already at the closure waypoint, Nav2 can report success immediately because
@@ -667,6 +835,8 @@ def build_chunk_waypoints(
         chunk.append(route_list[next_index])
         cumulative_distance_m += step_distance_m
         end_index = next_index
+        if next_index in stop_indices:
+            break
         visited_steps += 1
         if visited_steps >= max(0, total - 1):
             break
@@ -825,6 +995,7 @@ class RouteExecutorNode(Node):
         self._lock = threading.Lock()
         self._route_input: List[RouteWaypoint] = []
         self._route_expanded: List[RouteWaypoint] = []
+        self._route_action_jsons: List[str] = []
         self._active_chunk: List[RouteWaypoint] = []
         self._mission_active = False
         self._mission_paused = False
@@ -852,6 +1023,10 @@ class RouteExecutorNode(Node):
         self._last_blocking_nav_event_text = ""
         self._last_collision_stop_started: Optional[float] = None
         self._last_collision_stop_handled = False
+        self._action_active = False
+        self._action_waypoint_index = 0
+        self._action_type = ""
+        self._action_until: Optional[float] = None
         self._event_seq = 0
 
         self._service_group = MutuallyExclusiveCallbackGroup()
@@ -1476,6 +1651,7 @@ class RouteExecutorNode(Node):
     def _reset_mission_locked(self, status: str = "idle") -> None:
         self._route_input = []
         self._route_expanded = []
+        self._route_action_jsons = []
         self._active_chunk = []
         self._mission_active = False
         self._mission_paused = False
@@ -1485,8 +1661,17 @@ class RouteExecutorNode(Node):
         self._current_start_index = 0
         self._current_target_index = 0
         self._awaiting_chunk_result = False
+        self._action_active = False
+        self._action_waypoint_index = 0
+        self._action_type = ""
+        self._action_until = None
         self._last_handled_nav_result_event_id = self._last_nav_result_event_id
         self._clear_blocked_state_locked()
+
+    def _action_remaining_s_locked(self) -> float:
+        if not self._action_active or self._action_until is None:
+            return 0.0
+        return max(0.0, float(self._action_until) - time.monotonic())
 
     def _status_with_note_locked(self, status: str) -> str:
         note = str(self._mission_note).strip()
@@ -1557,11 +1742,15 @@ class RouteExecutorNode(Node):
     def _send_chunk(self, *, start_index: int) -> Tuple[bool, str]:
         with self._lock:
             route = list(self._route_expanded)
+            action_jsons = list(self._route_action_jsons)
             loop_enabled = bool(self._mission_loop)
             chunk_span_m = float(self._chunk_span_m)
             chunk_max_waypoints = int(self._chunk_max_waypoints)
             robot_pose = self._last_robot_pose
 
+        action_indices = {
+            idx for idx, action_json in enumerate(action_jsons) if str(action_json or "")
+        }
         resolved_start_index, skipped_start_waypoints = skip_reached_chunk_start(
             route,
             start_index=start_index,
@@ -1569,6 +1758,7 @@ class RouteExecutorNode(Node):
             robot_lat=None if robot_pose is None else float(robot_pose[0]),
             robot_lon=None if robot_pose is None else float(robot_pose[1]),
             waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+            protected_indices=action_indices,
         )
         if resolved_start_index is None:
             return False, "empty route chunk"
@@ -1587,6 +1777,7 @@ class RouteExecutorNode(Node):
             loop=loop_enabled,
             chunk_span_m=chunk_span_m,
             chunk_max_waypoints=chunk_max_waypoints,
+            action_stop_indices=action_indices,
         )
         if not chunk:
             return False, "empty route chunk"
@@ -1629,8 +1820,106 @@ class RouteExecutorNode(Node):
         )
         return True, ""
 
+    def _complete_route_locked(self) -> None:
+        self._mission_active = False
+        self._mission_paused = False
+        self._awaiting_chunk_result = False
+        self._active_chunk = []
+        self._mission_status = self._status_with_note_locked("route completed")
+
+    def _run_waypoint_actions_then_continue(
+        self,
+        *,
+        waypoint_index: int,
+        action_json: str,
+        next_start_index: int,
+        reached_end: bool,
+    ) -> None:
+        actions = _actions_from_json(action_json)
+        for action in actions:
+            if action.action_type != "brake_hold":
+                continue
+            duration_s = max(0.0, float(action.duration_s))
+            with self._lock:
+                if (
+                    not self._mission_active
+                    or self._mission_paused
+                    or int(self._current_target_index) != int(waypoint_index)
+                ):
+                    self._action_active = False
+                    self._action_until = None
+                    return
+                self._action_active = True
+                self._action_waypoint_index = int(waypoint_index)
+                self._action_type = str(action.action_type)
+                self._action_until = time.monotonic() + duration_s
+                self._mission_status = self._status_with_note_locked(
+                    f"route action brake_hold ({duration_s:.1f}s)"
+                )
+
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "ROUTE_WAYPOINT_ACTION_STARTED",
+                "Route waypoint action started",
+                details={
+                    "waypoint_index": int(waypoint_index),
+                    "action_type": action.action_type,
+                    "duration_s": f"{duration_s:.3f}",
+                    "brake_pct": int(action.brake_pct),
+                },
+            )
+
+            deadline = time.monotonic() + duration_s
+            while rclpy.ok() and time.monotonic() < deadline:
+                self._apply_brake()
+                time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
+
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "ROUTE_WAYPOINT_ACTION_FINISHED",
+                "Route waypoint action finished",
+                details={
+                    "waypoint_index": int(waypoint_index),
+                    "action_type": action.action_type,
+                },
+            )
+
+        should_clear_paths = False
+        should_send_next = False
+        with self._lock:
+            self._action_active = False
+            self._action_waypoint_index = 0
+            self._action_type = ""
+            self._action_until = None
+            if not self._mission_active or self._mission_paused:
+                return
+            if reached_end and (not self._mission_loop):
+                self._complete_route_locked()
+                should_clear_paths = True
+            else:
+                should_send_next = True
+
+        if should_clear_paths:
+            self._publish_empty_route_paths()
+            return
+        if should_send_next:
+            ok, err = self._send_chunk(start_index=next_start_index)
+            if ok:
+                return
+            with self._lock:
+                self._mission_active = False
+                self._mission_paused = False
+                self._awaiting_chunk_result = False
+                self._active_chunk = []
+                self._mission_status = self._status_with_note_locked(f"route failed: {err}")
+            self._publish_empty_route_paths()
+
     def _start_next_chunk_after_success(self) -> None:
         should_clear_paths = False
+        should_run_action = False
+        action_json = ""
+        action_waypoint_index = 0
+        reached_end = False
         next_start_index = 0
         with self._lock:
             if not self._mission_active or self._mission_paused:
@@ -1641,22 +1930,38 @@ class RouteExecutorNode(Node):
                 self._reset_mission_locked("route failed: empty expanded route")
                 should_clear_paths = True
             else:
+                action_waypoint_index = int(self._current_target_index)
+                if 0 <= action_waypoint_index < len(self._route_action_jsons):
+                    action_json = str(self._route_action_jsons[action_waypoint_index] or "")
                 next_start_index = next_chunk_start_index(
                     current_target_index=self._current_target_index,
                     route_size=expanded_count,
                     loop=loop_enabled,
                 )
                 reached_end = next_start_index >= expanded_count
-                if reached_end and (not loop_enabled):
-                    self._mission_active = False
-                    self._mission_paused = False
-                    self._awaiting_chunk_result = False
-                    self._active_chunk = []
-                    self._mission_status = self._status_with_note_locked("route completed")
+                should_run_action = bool(action_json) and not self._action_active
+                if should_run_action:
+                    self._mission_status = self._status_with_note_locked("route action pending")
+                elif reached_end and (not loop_enabled):
+                    self._complete_route_locked()
                     should_clear_paths = True
 
         if should_clear_paths:
             self._publish_empty_route_paths()
+            return
+        if should_run_action:
+            thread = threading.Thread(
+                target=self._run_waypoint_actions_then_continue,
+                kwargs={
+                    "waypoint_index": action_waypoint_index,
+                    "action_json": action_json,
+                    "next_start_index": next_start_index,
+                    "reached_end": reached_end,
+                },
+                daemon=True,
+                name="route_waypoint_action",
+            )
+            thread.start()
             return
 
         ok, err = self._send_chunk(start_index=next_start_index)
@@ -1714,6 +2019,8 @@ class RouteExecutorNode(Node):
                 self._mission_paused = True
                 self._awaiting_chunk_result = False
                 self._active_chunk = []
+                self._action_active = False
+                self._action_until = None
                 self._clear_blocked_state_locked()
                 self._mission_status = self._status_with_note_locked(
                     "route paused by manual takeover"
@@ -1749,6 +2056,8 @@ class RouteExecutorNode(Node):
                 elif status == int(GoalStatus.STATUS_CANCELED):
                     self._mission_active = False
                     self._active_chunk = []
+                    self._action_active = False
+                    self._action_until = None
                     self._clear_blocked_state_locked()
                     self._mission_status = self._status_with_note_locked("route cancelled")
                     should_stop = True
@@ -1762,6 +2071,8 @@ class RouteExecutorNode(Node):
                     else:
                         self._mission_active = False
                         self._active_chunk = []
+                        self._action_active = False
+                        self._action_until = None
                         self._clear_blocked_state_locked()
                         self._mission_status = self._status_with_note_locked(
                             f"route failed: {str(msg.nav_result_text)}"
@@ -1790,22 +2101,29 @@ class RouteExecutorNode(Node):
 
     def _validate_set_route_request(
         self, request: SetRouteMissionLL.Request
-    ) -> Tuple[Optional[List[RouteWaypoint]], bool, float, float, int, str]:
+    ) -> Tuple[Optional[List[RouteWaypoint]], Optional[List[str]], bool, float, float, int, str]:
         lats = [float(value) for value in request.lats]
         lons = [float(value) for value in request.lons]
         yaws = [float(value) for value in request.yaws_deg]
         if len(lats) == 0:
-            return None, False, 0.0, 0.0, 0, "at least one waypoint is required"
+            return None, None, False, 0.0, 0.0, 0, "at least one waypoint is required"
         if len(lats) != len(lons):
-            return None, False, 0.0, 0.0, 0, "lats and lons must have the same length"
+            return None, None, False, 0.0, 0.0, 0, "lats and lons must have the same length"
         if len(yaws) not in (0, len(lats)):
-            return None, False, 0.0, 0.0, 0, "yaws_deg must be empty or match lats length"
+            return None, None, False, 0.0, 0.0, 0, "yaws_deg must be empty or match lats length"
         for idx, (lat, lon) in enumerate(zip(lats, lons)):
             if (not np.isfinite(lat)) or (not np.isfinite(lon)):
-                return None, False, 0.0, 0.0, 0, f"invalid waypoint values at index {idx}"
+                return None, None, False, 0.0, 0.0, 0, f"invalid waypoint values at index {idx}"
         for idx, yaw_deg in enumerate(yaws):
             if not np.isfinite(yaw_deg):
-                return None, False, 0.0, 0.0, 0, f"invalid yaw_deg at index {idx}"
+                return None, None, False, 0.0, 0.0, 0, f"invalid yaw_deg at index {idx}"
+
+        action_jsons, actions_error = _parse_route_action_jsons(
+            list(getattr(request, "waypoint_action_jsons", [])),
+            len(lats),
+        )
+        if action_jsons is None:
+            return None, None, False, 0.0, 0.0, 0, actions_error
 
         leg_spacing_m = (
             float(request.leg_spacing_m)
@@ -1825,6 +2143,7 @@ class RouteExecutorNode(Node):
         resolved = _resolve_input_waypoints(lats, lons, yaws, bool(request.loop))
         return (
             resolved,
+            action_jsons,
             bool(request.loop),
             leg_spacing_m,
             chunk_span_m,
@@ -1835,16 +2154,17 @@ class RouteExecutorNode(Node):
     def _on_set_route(
         self, request: SetRouteMissionLL.Request, response: SetRouteMissionLL.Response
     ) -> SetRouteMissionLL.Response:
-        route_input, loop_enabled, leg_spacing_m, chunk_span_m, chunk_max_waypoints, error = (
+        route_input, action_jsons, loop_enabled, leg_spacing_m, chunk_span_m, chunk_max_waypoints, error = (
             self._validate_set_route_request(request)
         )
-        if route_input is None:
+        if route_input is None or action_jsons is None:
             response.ok = False
             response.error = error
             return response
 
-        route_input, dropped_loop_closure = drop_duplicate_loop_closure(
+        route_input, action_jsons, dropped_loop_closure = drop_duplicate_loop_closure_with_actions(
             route_input,
+            action_jsons,
             loop=loop_enabled,
             closure_tolerance_m=self.route_waypoint_reached_tolerance_m,
         )
@@ -1858,6 +2178,7 @@ class RouteExecutorNode(Node):
             robot_lon=None if robot_pose is None else float(robot_pose[1]),
             waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
             segment_start_tolerance_m=self.route_segment_start_tolerance_m,
+            action_jsons=action_jsons,
         )
         if prepared is None:
             response.ok = False
@@ -1874,8 +2195,9 @@ class RouteExecutorNode(Node):
                 else "dropped duplicate loop closure"
             )
 
-        expanded = expand_route_waypoints(
+        expanded, expanded_action_jsons = expand_route_waypoints_with_actions(
             prepared.waypoints,
+            prepared.action_jsons,
             leg_spacing_m=leg_spacing_m,
             loop=loop_enabled,
         )
@@ -1888,6 +2210,7 @@ class RouteExecutorNode(Node):
         with self._lock:
             self._route_input = list(prepared.waypoints)
             self._route_expanded = list(expanded)
+            self._route_action_jsons = list(expanded_action_jsons)
             self._active_chunk = []
             self._mission_active = True
             self._mission_paused = False
@@ -1900,6 +2223,10 @@ class RouteExecutorNode(Node):
             self._current_start_index = 0
             self._current_target_index = 0
             self._awaiting_chunk_result = False
+            self._action_active = False
+            self._action_waypoint_index = 0
+            self._action_type = ""
+            self._action_until = None
             self._last_handled_nav_result_event_id = self._last_nav_result_event_id
             self._clear_blocked_state_locked()
 
@@ -1919,6 +2246,7 @@ class RouteExecutorNode(Node):
                 self._mission_active = False
                 self._mission_paused = False
                 self._active_chunk = []
+                self._route_action_jsons = []
                 self._mission_status = self._status_with_note_locked(f"route failed: {err}")
             self._publish_empty_route_paths()
         return response
@@ -1958,9 +2286,14 @@ class RouteExecutorNode(Node):
             response.blocked_retry_attempt = int(self._blocked_retry_attempt)
             response.blocked_retry_max_attempts = int(self.blocked_retry_max_attempts)
             response.blocked_wait_remaining_s = float(self._blocked_wait_remaining_s_locked())
+            response.action_active = bool(self._action_active)
+            response.action_waypoint_index = int(self._action_waypoint_index)
+            response.action_type = str(self._action_type)
+            response.action_remaining_s = float(self._action_remaining_s_locked())
             response.mission_lats = [float(entry.lat) for entry in self._route_expanded]
             response.mission_lons = [float(entry.lon) for entry in self._route_expanded]
             response.mission_yaws_deg = [float(entry.yaw_deg) for entry in self._route_expanded]
+            response.mission_action_jsons = [str(entry or "") for entry in self._route_action_jsons]
             response.active_lats = [float(entry.lat) for entry in self._active_chunk]
             response.active_lons = [float(entry.lon) for entry in self._active_chunk]
             response.active_yaws_deg = [float(entry.yaw_deg) for entry in self._active_chunk]

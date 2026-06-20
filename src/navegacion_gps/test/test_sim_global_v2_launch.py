@@ -409,8 +409,8 @@ def test_recovery_behavior_uses_clearance_guard_without_backup() -> None:
     assert '<Sequence name="WaitAndReplan">' in through_poses_bt
     assert '<Sequence name="WaitAndReplan">' in to_pose_bt
     assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>' in through_poses_bt
-    assert '<RateController hz="0.666" name="RateControllerComputePathToPose">' in to_pose_bt
-    assert '<RateController hz="0.666" name="RateController">' in through_poses_bt
+    assert '<RateController hz="0.333" name="RateControllerComputePathToPose">' in to_pose_bt
+    assert '<RateController hz="0.333" name="RateController">' in through_poses_bt
     assert '<Fallback name="FallbackComputePathToPose">' in to_pose_bt
     assert '<GlobalUpdatedGoal />' in to_pose_bt
     assert '<IsPathValid path="{path}" />' in to_pose_bt
@@ -425,6 +425,7 @@ def test_recovery_behavior_uses_clearance_guard_without_backup() -> None:
     assert "<ComputePathToPose goal=\"{goal}\" path=\"{path}\" planner_id=\"GridBased\" />" in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath" />' in to_pose_bt
     assert '<FollowPath path="{path}" controller_id="FollowPath"/>' in through_poses_bt
+    assert 'server_timeout="5000"' in through_poses_bt
     assert "SmoothPath" not in to_pose_bt
     assert "SmoothPath" not in through_poses_bt
     assert "smoothed_path" not in to_pose_bt

@@ -19,9 +19,14 @@ string blocked_reason_text
 uint32 blocked_retry_attempt
 uint32 blocked_retry_max_attempts
 float64 blocked_wait_remaining_s
+bool action_active
+uint32 action_waypoint_index
+string action_type
+float64 action_remaining_s
 float64[] mission_lats
 float64[] mission_lons
 float64[] mission_yaws_deg
+string[] mission_action_jsons
 float64[] active_lats
 float64[] active_lons
 float64[] active_yaws_deg

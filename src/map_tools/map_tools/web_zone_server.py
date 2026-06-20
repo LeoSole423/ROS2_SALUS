@@ -763,18 +763,26 @@ class WebZoneServerNode(Node):
             "blocked_retry_attempt": 0,
             "blocked_retry_max_attempts": 0,
             "blocked_wait_remaining_s": 0.0,
+            "action_active": False,
+            "action_waypoint_index": 0,
+            "action_type": "",
+            "action_remaining_s": 0.0,
             "mission_waypoints": [],
             "active_chunk_waypoints": [],
         }
 
     @staticmethod
     def _route_waypoints_from_state(
-        lats: Sequence[float], lons: Sequence[float], yaws_deg: Sequence[float]
-    ) -> List[Dict[str, float]]:
+        lats: Sequence[float],
+        lons: Sequence[float],
+        yaws_deg: Sequence[float],
+        action_jsons: Optional[Sequence[str]] = None,
+    ) -> List[Dict[str, Any]]:
         if not (len(lats) == len(lons) == len(yaws_deg)):
             return []
-        waypoints: List[Dict[str, float]] = []
-        for lat, lon, yaw_deg in zip(lats, lons, yaws_deg):
+        actions = list(action_jsons or [])
+        waypoints: List[Dict[str, Any]] = []
+        for idx, (lat, lon, yaw_deg) in enumerate(zip(lats, lons, yaws_deg)):
             lat_value = float(lat)
             lon_value = float(lon)
             yaw_value = float(yaw_deg)
@@ -784,13 +792,20 @@ class WebZoneServerNode(Node):
                 and np.isfinite(yaw_value)
             ):
                 continue
-            waypoints.append(
-                {
-                    "lat": lat_value,
-                    "lon": lon_value,
-                    "yaw_deg": yaw_value,
-                }
-            )
+            waypoint: Dict[str, Any] = {
+                "lat": lat_value,
+                "lon": lon_value,
+                "yaw_deg": yaw_value,
+            }
+            action_json = str(actions[idx] if idx < len(actions) else "").strip()
+            if action_json:
+                try:
+                    parsed_actions = json.loads(action_json)
+                except Exception:
+                    parsed_actions = []
+                if isinstance(parsed_actions, list) and parsed_actions:
+                    waypoint["actions"] = parsed_actions
+            waypoints.append(waypoint)
         return waypoints
 
     def _update_route_state(self, response: GetRouteMissionState.Response) -> None:
@@ -817,8 +832,15 @@ class WebZoneServerNode(Node):
             "blocked_wait_remaining_s": float(
                 getattr(response, "blocked_wait_remaining_s", 0.0)
             ),
+            "action_active": bool(getattr(response, "action_active", False)),
+            "action_waypoint_index": int(getattr(response, "action_waypoint_index", 0)),
+            "action_type": str(getattr(response, "action_type", "")),
+            "action_remaining_s": float(getattr(response, "action_remaining_s", 0.0)),
             "mission_waypoints": self._route_waypoints_from_state(
-                response.mission_lats, response.mission_lons, response.mission_yaws_deg
+                response.mission_lats,
+                response.mission_lons,
+                response.mission_yaws_deg,
+                getattr(response, "mission_action_jsons", []),
             ),
             "active_chunk_waypoints": self._route_waypoints_from_state(
                 response.active_lats, response.active_lons, response.active_yaws_deg
@@ -2790,6 +2812,12 @@ class WebZoneServerNode(Node):
         req.lats = [float(wp["lat"]) for wp in waypoints]
         req.lons = [float(wp["lon"]) for wp in waypoints]
         req.yaws_deg = [float(yaw_deg) for yaw_deg in resolved_yaws_deg]
+        req.waypoint_action_jsons = [
+            json.dumps(wp.get("actions", []), separators=(",", ":"), sort_keys=True)
+            if wp.get("actions")
+            else ""
+            for wp in waypoints
+        ]
         req.loop = bool(loop)
         req.leg_spacing_m = (
             float(leg_spacing_m)
@@ -3340,7 +3368,7 @@ class WebSocketApi:
 
     def _parse_waypoints_from_message(
         self, msg: Dict[str, Any]
-    ) -> Tuple[Optional[List[Dict[str, float]]], bool, str]:
+    ) -> Tuple[Optional[List[Dict[str, Any]]], bool, str]:
         loop = bool(msg.get("loop", False))
         waypoints_raw = msg.get("waypoints")
 
@@ -3359,12 +3387,17 @@ class WebSocketApi:
                 if not np.isfinite(yaw_deg):
                     return None, False, "yaw_deg must be a finite number"
                 waypoint["yaw_deg"] = float(yaw_deg)
+            actions, actions_err = self._normalize_waypoint_actions(msg.get("actions", []), 0)
+            if actions_err:
+                return None, False, actions_err
+            if actions:
+                waypoint["actions"] = actions
             return [waypoint], loop, ""
 
         if not isinstance(waypoints_raw, list) or len(waypoints_raw) == 0:
             return None, False, "waypoints must be a non-empty list"
 
-        waypoints: List[Dict[str, float]] = []
+        waypoints: List[Dict[str, Any]] = []
         for idx, item in enumerate(waypoints_raw):
             if not isinstance(item, dict):
                 return None, False, f"waypoint[{idx}] must be an object"
@@ -3382,9 +3415,45 @@ class WebSocketApi:
                 if not np.isfinite(yaw_deg):
                     return None, False, f"waypoint[{idx}] yaw_deg must be finite"
                 waypoint["yaw_deg"] = float(yaw_deg)
+            actions, actions_err = self._normalize_waypoint_actions(
+                item.get("actions", []),
+                idx,
+            )
+            if actions_err:
+                return None, False, actions_err
+            if actions:
+                waypoint["actions"] = actions
             waypoints.append(waypoint)
 
         return waypoints, loop, ""
+
+    @staticmethod
+    def _normalize_waypoint_actions(raw_actions: Any, waypoint_index: int) -> Tuple[List[Dict[str, Any]], str]:
+        if raw_actions in (None, "", []):
+            return [], ""
+        if not isinstance(raw_actions, list):
+            return [], f"waypoint[{waypoint_index}] actions must be a list"
+        actions: List[Dict[str, Any]] = []
+        for action_index, raw_action in enumerate(raw_actions):
+            if not isinstance(raw_action, dict):
+                return [], f"waypoint[{waypoint_index}].actions[{action_index}] must be an object"
+            action_type = str(raw_action.get("type", "")).strip()
+            if action_type != "brake_hold":
+                return [], f"unsupported waypoint action type: {action_type or '<empty>'}"
+            duration_s = WebZoneServerNode._safe_float(raw_action.get("duration_s"), 0.0)
+            if duration_s <= 0.0 or duration_s > 600.0:
+                return [], f"waypoint[{waypoint_index}] brake_hold duration_s must be > 0 and <= 600"
+            brake_pct = max(0, min(100, WebZoneServerNode._safe_int(raw_action.get("brake_pct"), 100)))
+            label = str(raw_action.get("label", "") or "").strip()
+            action: Dict[str, Any] = {
+                "type": "brake_hold",
+                "duration_s": float(duration_s),
+                "brake_pct": int(brake_pct),
+            }
+            if label:
+                action["label"] = label[:80]
+            actions.append(action)
+        return actions, ""
 
     @staticmethod
     def _extract_client_req_id(msg: Dict[str, Any]) -> Optional[str]:
