@@ -9,6 +9,11 @@ set -euo pipefail
 CONTAINER="${ROS2_CONTAINER_NAME:-ros2_salus}"
 WS="/ros2_ws"
 RMW_IMPLEMENTATION_VALUE="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+DOCKER_TTY_ARGS=()
+
+if [[ -t 0 && -t 1 ]]; then
+  DOCKER_TTY_ARGS=(-it)
+fi
 
 if [[ $# -gt 0 ]]; then
   PKG_LIST=("$@")
@@ -21,7 +26,7 @@ fi
 
 echo "Compilando ${TARGET_MSG} dentro del contenedor '${CONTAINER}'..."
 
-docker exec -it "${CONTAINER}" bash -lc "\
+docker exec "${DOCKER_TTY_ARGS[@]}" "${CONTAINER}" bash -lc "\
   # Dentro del contenedor evitamos '-u' porque los setup.bash de ROS usan vars no definidas
   set -eo pipefail && \
   export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION_VALUE} && \
