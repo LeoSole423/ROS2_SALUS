@@ -837,6 +837,7 @@ def generate_launch_description():
                         "teleop_cmd_topic": "/cmd_vel_teleop",
                         "brake_publish_count": 5,
                         "brake_publish_interval_s": 0.1,
+                        "brake_hold_publish_hz": 10.0,
                         "manual_cmd_timeout_s": 0.4,
                         "manual_watchdog_hz": 10.0,
                         "nav_telemetry_hz": 5.0,

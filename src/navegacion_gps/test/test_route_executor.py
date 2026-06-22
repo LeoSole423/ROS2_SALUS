@@ -74,6 +74,7 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node._mission_note = ""
     node._current_start_index = 0
     node._current_target_index = 1
+    node._reached_checkpoint_count = 0
     node._awaiting_chunk_result = True
     node._last_robot_pose = None
     node._last_nav_goal_active = True
@@ -100,6 +101,7 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node.request_timeout_s = 0.01
     node.events = []
     node.brake_calls = 0
+    node.brake_requests = []
     node.cancel_calls = 0
     node.clear_costmap_calls = 0
     node.sent_chunk_starts = []
@@ -111,7 +113,11 @@ def _fake_blocking_node() -> RouteExecutorNode:
         )
         or len(node.events)
     )
-    node._apply_brake = lambda: setattr(node, "brake_calls", node.brake_calls + 1)
+    def _apply_brake(*, duration_s: float = 0.0, brake_pct: int = 100):
+        node.brake_calls += 1
+        node.brake_requests.append((float(duration_s), int(brake_pct)))
+
+    node._apply_brake = _apply_brake
     node._cancel_nav_goal = (
         lambda: setattr(node, "cancel_calls", node.cancel_calls + 1) or (True, "")
     )
@@ -249,6 +255,25 @@ def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():
     assert key_flags[0] is True
     assert key_flags[-1] is True
     assert any(flag is False for flag in key_flags[1:-1])
+
+
+def test_brake_hold_action_requests_single_sustained_brake():
+    node = _fake_blocking_node()
+    action_json = '[{"brake_pct":80,"duration_s":0.01,"type":"brake_hold"}]'
+
+    RouteExecutorNode._run_waypoint_actions_then_continue(
+        node,
+        waypoint_index=1,
+        action_json=action_json,
+        next_start_index=2,
+        reached_end=True,
+    )
+
+    assert node.brake_calls == 1
+    assert node.brake_requests == [(0.01, 80)]
+    assert node._action_active is False
+    assert node.events[0][1] == "ROUTE_WAYPOINT_ACTION_STARTED"
+    assert node.events[1][1] == "ROUTE_WAYPOINT_ACTION_FINISHED"
 
 
 def test_expanded_input_indices_maps_only_manual_checkpoints():

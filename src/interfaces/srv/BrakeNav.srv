@@ -1,3 +1,5 @@
+float32 duration_s
+uint8 brake_pct
 ---
 bool ok
 string error

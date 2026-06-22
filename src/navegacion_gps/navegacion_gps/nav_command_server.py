@@ -92,6 +92,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("teleop_cmd_topic", "/cmd_vel_teleop")
         self.declare_parameter("brake_publish_count", 5)
         self.declare_parameter("brake_publish_interval_s", 0.1)
+        self.declare_parameter("brake_hold_publish_hz", 10.0)
         self.declare_parameter("critical_slow_brake_enabled", True)
         self.declare_parameter("critical_slow_polygon_name", "critical_slow_zone")
         self.declare_parameter("critical_slow_brake_pct", 100)
@@ -175,6 +176,9 @@ class NavCommandServerNode(Node):
         self.brake_publish_count = max(1, int(self.get_parameter("brake_publish_count").value))
         self.brake_publish_interval_s = max(
             0.0, float(self.get_parameter("brake_publish_interval_s").value)
+        )
+        self.brake_hold_publish_hz = max(
+            1.0, float(self.get_parameter("brake_hold_publish_hz").value)
         )
         self.critical_slow_brake_enabled = bool(
             self.get_parameter("critical_slow_brake_enabled").value
@@ -278,6 +282,8 @@ class NavCommandServerNode(Node):
         self._event_seq = 0
         self._last_collision_stop_active = False
         self._last_critical_slow_brake_active = False
+        self._brake_hold_cancel: Optional[threading.Event] = None
+        self._brake_hold_thread: Optional[threading.Thread] = None
 
         # Service callbacks are mutually exclusive; clients/actions are reentrant to avoid
         # deadlocks when a service callback waits for a client future.
@@ -942,6 +948,49 @@ class NavCommandServerNode(Node):
             daemon=True,
             name="nav_cmd_brake_seq",
         )
+        thread.start()
+
+    def _cancel_brake_hold_locked(self) -> None:
+        cancel = self._brake_hold_cancel
+        if cancel is not None:
+            cancel.set()
+        self._brake_hold_cancel = None
+        self._brake_hold_thread = None
+
+    def _start_brake_hold(self, *, duration_s: float, brake_pct: int) -> None:
+        duration = max(0.0, float(duration_s))
+        pct = int(max(0, min(100, int(brake_pct))))
+        if duration <= 0.0:
+            self._publish_brake_sequence(brake_pct=pct)
+            return
+
+        period_s = 1.0 / max(1.0, float(self.brake_hold_publish_hz))
+        cancel = threading.Event()
+        with self._lock:
+            self._cancel_brake_hold_locked()
+            self._brake_hold_cancel = cancel
+
+        def _run() -> None:
+            deadline = time.monotonic() + duration
+            try:
+                while (not cancel.is_set()) and time.monotonic() < deadline:
+                    self._publish_stop(brake_pct=pct)
+                    remaining_s = max(0.0, deadline - time.monotonic())
+                    cancel.wait(min(period_s, remaining_s))
+            finally:
+                with self._lock:
+                    if self._brake_hold_cancel is cancel:
+                        self._brake_hold_cancel = None
+                        self._brake_hold_thread = None
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="nav_cmd_brake_hold",
+        )
+        with self._lock:
+            if self._brake_hold_cancel is cancel:
+                self._brake_hold_thread = thread
         thread.start()
 
     def _send_nav2_backup_goal(self, distance_m: float, speed_mps: float) -> Tuple[bool, str]:
@@ -2227,7 +2276,16 @@ class NavCommandServerNode(Node):
         self._publish_telemetry(force=True)
         return ok, msg
 
-    def apply_brake(self) -> Tuple[bool, str]:
+    def apply_brake(
+        self,
+        *,
+        duration_s: float = 0.0,
+        brake_pct: int = 100,
+    ) -> Tuple[bool, str]:
+        duration = max(0.0, float(duration_s))
+        pct = int(max(0, min(100, int(brake_pct))))
+        if pct <= 0:
+            pct = 100
         cancel_ok = True
         cancel_msg = "no active goal"
         with self._lock:
@@ -2237,13 +2295,27 @@ class NavCommandServerNode(Node):
         if has_goal:
             cancel_ok, cancel_msg = self.cancel_current_goal()
 
-        self._publish_brake_sequence(brake_pct=100)
+        if duration > 0.0:
+            self._start_brake_hold(duration_s=duration, brake_pct=pct)
+        else:
+            with self._lock:
+                self._cancel_brake_hold_locked()
+            self._publish_brake_sequence(brake_pct=pct)
         self._publish_event(
             DiagnosticStatus.WARN,
             "nav_command_server",
             "BRAKE_APPLIED",
-            "Brake service applied stop sequence",
-            details={"had_goal": has_goal},
+            (
+                "Brake service applied sustained hold"
+                if duration > 0.0
+                else "Brake service applied stop sequence"
+            ),
+            details={
+                "had_goal": has_goal,
+                "hold": duration > 0.0,
+                "duration_s": f"{duration:.3f}",
+                "brake_pct": pct,
+            },
         )
 
         self._publish_telemetry(force=True)
@@ -2258,6 +2330,7 @@ class NavCommandServerNode(Node):
                 self._manual_enabled = True
                 self._is_navigating = False
                 self._auto_mode = "idle"
+                self._cancel_brake_hold_locked()
                 self._last_manual_cmd = CmdVelFinal()
                 self._last_manual_cmd_time = None
                 self._manual_watchdog_stop_sent = False
@@ -2432,10 +2505,13 @@ class NavCommandServerNode(Node):
 
     def _on_brake(
         self,
-        _request: BrakeNav.Request,
+        request: BrakeNav.Request,
         response: BrakeNav.Response,
     ) -> BrakeNav.Response:
-        ok, err = self.apply_brake()
+        ok, err = self.apply_brake(
+            duration_s=float(getattr(request, "duration_s", 0.0)),
+            brake_pct=int(getattr(request, "brake_pct", 100)),
+        )
         response.ok = bool(ok)
         response.error = "" if ok else str(err)
         self.get_logger().info(

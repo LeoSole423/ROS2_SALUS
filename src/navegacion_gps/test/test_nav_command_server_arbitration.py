@@ -12,6 +12,8 @@ from navegacion_gps.nav_command_server import NavCommandServerNode
 class _FakeArbNode:
     _build_cmd_vel_final = staticmethod(NavCommandServerNode._build_cmd_vel_final)
     _diag_level_value = staticmethod(NavCommandServerNode._diag_level_value)
+    _cancel_brake_hold_locked = NavCommandServerNode._cancel_brake_hold_locked
+    _start_brake_hold = NavCommandServerNode._start_brake_hold
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -43,6 +45,7 @@ class _FakeArbNode:
         self.manual_cmd_timeout_s = 0.1
         self.brake_publish_count = 1
         self.brake_publish_interval_s = 0.0
+        self.brake_hold_publish_hz = 20.0
         self.critical_slow_brake_enabled = True
         self.critical_slow_polygon_name = "critical_slow_zone"
         self.critical_slow_brake_pct = 100
@@ -57,6 +60,8 @@ class _FakeArbNode:
         self.collision_backup_raw_timeout_s = 0.5
 
         self.published = []
+        self._brake_hold_cancel = None
+        self._brake_hold_thread = None
         self.telemetry_forced = []
         self.cancel_calls = 0
         self.events = []
@@ -378,6 +383,42 @@ def test_manual_watchdog_sends_single_stop() -> None:
     NavCommandServerNode._manual_watchdog_tick(node)
 
     assert node.published == [(0.0, 0.0, 0)]
+
+
+def test_apply_brake_hold_publishes_sustained_stop() -> None:
+    node = _FakeArbNode()
+
+    ok, err = NavCommandServerNode.apply_brake(
+        node,
+        duration_s=0.12,
+        brake_pct=80,
+    )
+    time.sleep(0.18)
+
+    assert ok is True
+    assert err == "brake applied"
+    assert len(node.published) >= 2
+    assert all(command == (0.0, 0.0, 80) for command in node.published)
+    assert node.events[-1]["code"] == "BRAKE_APPLIED"
+    assert node.events[-1]["details"]["hold"] is True
+    assert node.events[-1]["details"]["brake_pct"] == 80
+
+
+def test_manual_mode_cancels_active_brake_hold() -> None:
+    node = _FakeArbNode()
+
+    ok, _err = NavCommandServerNode.apply_brake(node, duration_s=1.0, brake_pct=100)
+    assert ok is True
+    time.sleep(0.06)
+    published_before_manual = len(node.published)
+
+    ok, _err, enabled_after = NavCommandServerNode.set_manual_mode(node, True)
+    time.sleep(0.12)
+
+    assert ok is True
+    assert enabled_after is True
+    assert node._manual_enabled is True
+    assert node.published[published_before_manual:] == [(0.0, 0.0, 0)]
 
 
 def test_set_manual_mode_enables_even_if_cancel_fails() -> None:

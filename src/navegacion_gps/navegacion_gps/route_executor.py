@@ -1501,10 +1501,15 @@ class RouteExecutorNode(Node):
             return f"route blocked: needs operator ({self._blocked_reason_code})"
         return self._mission_status
 
-    def _apply_brake(self) -> None:
+    def _apply_brake(self, *, duration_s: float = 0.0, brake_pct: int = 100) -> None:
+        request = BrakeNav.Request()
+        if hasattr(request, "duration_s"):
+            request.duration_s = float(duration_s)
+        if hasattr(request, "brake_pct"):
+            request.brake_pct = int(max(0, min(100, int(brake_pct))))
         res = self._call_service(
             self._nav_brake_client,
-            BrakeNav.Request(),
+            request,
             min(self.request_timeout_s, 3.0),
         )
         if res is None:
@@ -2214,10 +2219,10 @@ class RouteExecutorNode(Node):
                 },
             )
 
+            self._apply_brake(duration_s=duration_s, brake_pct=int(action.brake_pct))
             deadline = time.monotonic() + duration_s
             while rclpy.ok() and time.monotonic() < deadline:
-                self._apply_brake()
-                time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
+                time.sleep(min(0.2, max(0.05, deadline - time.monotonic())))
 
             self._publish_route_event(
                 DiagnosticStatus.OK,

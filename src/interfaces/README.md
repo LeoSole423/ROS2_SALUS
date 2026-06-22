@@ -25,6 +25,7 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
   - `SetNavGoalLL.srv`
   - `CancelNavGoal.srv`
   - `BrakeNav.srv`
+    - `duration_s > 0` solicita freno sostenido; `duration_s <= 0` conserva el freno inmediato por ráfaga.
   - `SetManualMode.srv`
   - `GetNavState.srv`
   - `GetNavSnapshot.srv`
