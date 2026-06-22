@@ -1026,6 +1026,9 @@ def build_chunk_waypoints(
 
     chunk = [route_list[start]]
     end_index = start
+    if start in stop_indices:
+        return chunk, end_index
+
     visited_steps = 0
     cumulative_distance_m = 0.0
 
@@ -1065,7 +1068,12 @@ def build_chunk_waypoints(
         if visited_steps >= max(0, total - 1):
             break
 
-    if len(chunk) == 1 and total > 1 and ((not loop) or max_points > 1):
+    if (
+        len(chunk) == 1
+        and start not in stop_indices
+        and total > 1
+        and ((not loop) or max_points > 1)
+    ):
         next_index = (start + 1) % total if loop else start + 1
         if next_index < total and next_index != start:
             chunk.append(route_list[next_index])

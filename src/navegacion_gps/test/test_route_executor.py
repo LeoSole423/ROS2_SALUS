@@ -378,6 +378,26 @@ def test_build_chunk_waypoints_stops_at_programmed_action_index():
     assert end_index == 2
 
 
+def test_build_chunk_waypoints_keeps_programmed_action_at_chunk_start():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0002, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0004, yaw_deg=0.0),
+    ]
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=0,
+        loop=False,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=3,
+        action_stop_indices={0},
+    )
+
+    assert chunk == [route[0]]
+    assert end_index == 0
+
+
 def test_build_chunk_waypoints_uses_synthetic_points_but_stops_at_next_key_waypoint():
     route = [
         RouteWaypoint(lat=0.0, lon=0.0000, yaw_deg=0.0),
