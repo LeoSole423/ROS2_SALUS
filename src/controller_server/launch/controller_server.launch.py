@@ -20,6 +20,7 @@ def generate_launch_description() -> LaunchDescription:
                         "wheelbase_m": 0.94,
                         "steering_limit_rad": 0.5235987756,
                         "operational_steering_limit_rad": 0.3141592654,
+                        "manual_operational_steering_limit_rad": 0.5235987756,
                         "vx_deadband_mps": 0.10,
                         "vx_min_effective_mps": 0.75,
                         "invert_steer_from_cmd_vel": True,

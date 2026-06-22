@@ -8,6 +8,10 @@ from nav2_msgs.msg import CollisionMonitorState
 from interfaces.msg import CmdVelFinal
 from navegacion_gps.nav_command_server import NavCommandServerNode
 
+AUTO = int(CmdVelFinal.SOURCE_AUTO)
+MANUAL = int(CmdVelFinal.SOURCE_MANUAL)
+SAFETY = int(CmdVelFinal.SOURCE_SAFETY)
+
 
 class _FakeArbNode:
     _build_cmd_vel_final = staticmethod(NavCommandServerNode._build_cmd_vel_final)
@@ -73,12 +77,18 @@ class _FakeArbNode:
                 float(msg.twist.linear.x),
                 float(msg.twist.angular.z),
                 int(msg.brake_pct),
+                int(getattr(msg, "source", 0)),
             )
         )
 
     def _publish_stop(self, brake_pct: int) -> None:
         self._publish_cmd_vel_final(
-            NavCommandServerNode._build_cmd_vel_final(0.0, 0.0, int(brake_pct))
+            NavCommandServerNode._build_cmd_vel_final(
+                0.0,
+                0.0,
+                int(brake_pct),
+                source=SAFETY,
+            )
         )
 
     def _publish_brake_sequence(self, brake_pct: int) -> None:
@@ -91,7 +101,12 @@ class _FakeArbNode:
 
     def _publish_manual_cmd(self, linear_x: float, angular_z: float, brake_pct: int) -> None:
         self._publish_cmd_vel_final(
-            NavCommandServerNode._build_cmd_vel_final(linear_x, angular_z, brake_pct)
+            NavCommandServerNode._build_cmd_vel_final(
+                linear_x,
+                angular_z,
+                brake_pct,
+                source=MANUAL,
+            )
         )
 
     def _publish_manual_stop(self) -> None:
@@ -200,7 +215,7 @@ def test_on_cmd_vel_safe_publishes_auto_when_navigating() -> None:
     msg.angular.z = -0.2
     NavCommandServerNode._on_cmd_vel_safe(node, msg)
 
-    assert node.published == [(0.8, -0.2, 0)]
+    assert node.published == [(0.8, -0.2, 0, AUTO)]
 
 
 def test_on_cmd_vel_safe_publishes_auto_when_passthrough_enabled_without_goal() -> None:
@@ -215,7 +230,7 @@ def test_on_cmd_vel_safe_publishes_auto_when_passthrough_enabled_without_goal() 
     msg.angular.z = 0.15
     NavCommandServerNode._on_cmd_vel_safe(node, msg)
 
-    assert node.published == [(0.6, 0.15, 0)]
+    assert node.published == [(0.6, 0.15, 0, AUTO)]
 
 
 def test_on_cmd_vel_safe_brakes_forward_in_critical_slow_zone() -> None:
@@ -229,7 +244,7 @@ def test_on_cmd_vel_safe_brakes_forward_in_critical_slow_zone() -> None:
     msg.angular.z = 0.1
     NavCommandServerNode._on_cmd_vel_safe(node, msg)
 
-    assert node.published == [(0.0, 0.0, 100)]
+    assert node.published == [(0.0, 0.0, 100, SAFETY)]
 
 
 def test_on_cmd_vel_safe_allows_reverse_in_critical_slow_zone_for_backup() -> None:
@@ -243,7 +258,7 @@ def test_on_cmd_vel_safe_allows_reverse_in_critical_slow_zone_for_backup() -> No
     msg.angular.z = 0.0
     NavCommandServerNode._on_cmd_vel_safe(node, msg)
 
-    assert node.published == [(-1.2, 0.0, 0)]
+    assert node.published == [(-1.2, 0.0, 0, AUTO)]
 
 
 def test_on_cmd_vel_safe_ignores_auto_during_collision_backup() -> None:
@@ -300,7 +315,7 @@ def test_on_cmd_vel_safe_does_not_start_backup_without_tracked_goal() -> None:
     NavCommandServerNode._on_cmd_vel_safe(node, safe)
 
     assert node.backup_started == 0
-    assert node.published == [(0.0, 0.0, 0)]
+    assert node.published == [(0.0, 0.0, 0, AUTO)]
 
 
 def test_on_collision_monitor_state_stop_ignored_in_manual() -> None:
@@ -369,7 +384,7 @@ def test_on_collision_monitor_state_critical_slow_brakes_once_and_emits_event() 
     NavCommandServerNode._on_collision_monitor_state(node, msg)
 
     assert node._critical_slow_brake_active is True
-    assert node.published == [(0.0, 0.0, 100)]
+    assert node.published == [(0.0, 0.0, 100, SAFETY)]
     assert [event["code"] for event in node.events] == ["CRITICAL_SLOW_BRAKE_ACTIVE"]
 
 
@@ -382,7 +397,7 @@ def test_manual_watchdog_sends_single_stop() -> None:
     NavCommandServerNode._manual_watchdog_tick(node)
     NavCommandServerNode._manual_watchdog_tick(node)
 
-    assert node.published == [(0.0, 0.0, 0)]
+    assert node.published == [(0.0, 0.0, 0, MANUAL)]
 
 
 def test_apply_brake_hold_publishes_sustained_stop() -> None:
@@ -398,7 +413,7 @@ def test_apply_brake_hold_publishes_sustained_stop() -> None:
     assert ok is True
     assert err == "brake applied"
     assert len(node.published) >= 2
-    assert all(command == (0.0, 0.0, 80) for command in node.published)
+    assert all(command == (0.0, 0.0, 80, SAFETY) for command in node.published)
     assert node.events[-1]["code"] == "BRAKE_APPLIED"
     assert node.events[-1]["details"]["hold"] is True
     assert node.events[-1]["details"]["brake_pct"] == 80
@@ -418,7 +433,7 @@ def test_manual_mode_cancels_active_brake_hold() -> None:
     assert ok is True
     assert enabled_after is True
     assert node._manual_enabled is True
-    assert node.published[published_before_manual:] == [(0.0, 0.0, 0)]
+    assert node.published[published_before_manual:] == [(0.0, 0.0, 0, MANUAL)]
 
 
 def test_set_manual_mode_enables_even_if_cancel_fails() -> None:

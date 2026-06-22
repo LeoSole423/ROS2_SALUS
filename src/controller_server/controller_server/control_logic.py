@@ -3,9 +3,31 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+COMMAND_SOURCE_UNKNOWN = 0
+COMMAND_SOURCE_AUTO = 1
+COMMAND_SOURCE_MANUAL = 2
+COMMAND_SOURCE_SAFETY = 3
+
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def effective_steering_limit_rad(
+    *,
+    steering_limit_rad: float,
+    operational_steering_limit_rad: float | None = None,
+    manual_operational_steering_limit_rad: float | None = None,
+    command_source: int = COMMAND_SOURCE_UNKNOWN,
+) -> float:
+    steering_limit = max(1.0e-6, abs(float(steering_limit_rad)))
+    if int(command_source) == COMMAND_SOURCE_MANUAL:
+        configured_limit = manual_operational_steering_limit_rad
+    else:
+        configured_limit = operational_steering_limit_rad
+    if configured_limit is None:
+        return steering_limit
+    return min(steering_limit, max(1.0e-6, abs(float(configured_limit))))
 
 
 @dataclass(slots=True)
@@ -22,6 +44,8 @@ class DesiredCommand:
     applied_curvature_inv_m: float = 0.0
     requested_steer_rad: float = 0.0
     applied_steer_rad: float = 0.0
+    steering_limit_used_rad: float = 0.0
+    command_source: int = COMMAND_SOURCE_UNKNOWN
     steer_saturated: bool = False
     used_steering_speed_fallback: bool = False
     speed_limited: bool = False
@@ -54,14 +78,17 @@ def _compute_ackermann_steer_command(
     wheelbase_m: float,
     steering_limit_rad: float,
     operational_steering_limit_rad: float | None = None,
+    manual_operational_steering_limit_rad: float | None = None,
+    command_source: int = COMMAND_SOURCE_UNKNOWN,
 ) -> tuple[int, float, float, float, float, float, bool, bool]:
     wheelbase = max(1.0e-6, abs(float(wheelbase_m)))
     steering_limit = max(1.0e-6, abs(float(steering_limit_rad)))
-    if operational_steering_limit_rad is None:
-        applied_limit = steering_limit
-    else:
-        operational_limit = max(1.0e-6, abs(float(operational_steering_limit_rad)))
-        applied_limit = min(steering_limit, operational_limit)
+    applied_limit = effective_steering_limit_rad(
+        steering_limit_rad=steering_limit,
+        operational_steering_limit_rad=operational_steering_limit_rad,
+        manual_operational_steering_limit_rad=manual_operational_steering_limit_rad,
+        command_source=command_source,
+    )
     deadband = max(0.0, float(vx_deadband_mps))
     min_effective = max(0.0, float(vx_min_effective_mps))
     requested_linear = float(linear_x)
@@ -110,6 +137,8 @@ def command_from_cmd_vel(
     auto_drive_enabled: bool,
     reverse_brake_pct: int,
     operational_steering_limit_rad: float | None = None,
+    manual_operational_steering_limit_rad: float | None = None,
+    command_source: int = COMMAND_SOURCE_UNKNOWN,
 ) -> DesiredCommand:
     max_speed = max(0.0, float(max_speed_mps))
     max_reverse = max(0.0, float(max_reverse_mps))
@@ -156,6 +185,8 @@ def command_from_cmd_vel(
         wheelbase_m=wheelbase_m,
         steering_limit_rad=steering_limit_rad,
         operational_steering_limit_rad=operational_steering_limit_rad,
+        manual_operational_steering_limit_rad=manual_operational_steering_limit_rad,
+        command_source=command_source,
     )
     if bool(invert_steer):
         steer = -steer
@@ -179,6 +210,13 @@ def command_from_cmd_vel(
         applied_curvature_inv_m=applied_curvature,
         requested_steer_rad=requested_steer_rad,
         applied_steer_rad=applied_steer_rad,
+        steering_limit_used_rad=effective_steering_limit_rad(
+            steering_limit_rad=steering_limit_rad,
+            operational_steering_limit_rad=operational_steering_limit_rad,
+            manual_operational_steering_limit_rad=manual_operational_steering_limit_rad,
+            command_source=command_source,
+        ),
+        command_source=int(command_source),
         steer_saturated=steer_saturated,
         used_steering_speed_fallback=used_steering_speed_fallback,
         speed_limited=speed_limited,

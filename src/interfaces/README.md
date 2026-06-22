@@ -9,6 +9,7 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
 ## Mensajes principales
 - `CmdVelFinal.msg`
   - comando final de velocidad y freno usado entre `nav_command_server`, web manual y `controller_server`
+  - `source` distingue comandos auto/manual/safety para aplicar limites de control correctos
 - `DriveTelemetry.msg`
   - telemetría de conducción publicada por `controller_server`
 - `NavTelemetry.msg`

@@ -907,11 +907,21 @@ class NavCommandServerNode(Node):
         }
 
     @staticmethod
-    def _build_cmd_vel_final(linear_x: float, angular_z: float, brake_pct: int) -> CmdVelFinal:
+    def _build_cmd_vel_final(
+        linear_x: float,
+        angular_z: float,
+        brake_pct: int,
+        source: Optional[int] = None,
+    ) -> CmdVelFinal:
         msg = CmdVelFinal()
         msg.twist.linear.x = float(linear_x)
         msg.twist.angular.z = float(angular_z)
         msg.brake_pct = int(max(0, min(100, int(brake_pct))))
+        msg.source = (
+            int(source)
+            if source is not None
+            else int(getattr(CmdVelFinal, "SOURCE_UNKNOWN", 0))
+        )
         return msg
 
     def _publish_cmd_vel_final(self, msg: CmdVelFinal) -> None:
@@ -919,7 +929,12 @@ class NavCommandServerNode(Node):
 
     def _publish_stop(self, brake_pct: int) -> None:
         self._publish_cmd_vel_final(
-            self._build_cmd_vel_final(linear_x=0.0, angular_z=0.0, brake_pct=brake_pct)
+            self._build_cmd_vel_final(
+                linear_x=0.0,
+                angular_z=0.0,
+                brake_pct=brake_pct,
+                source=int(getattr(CmdVelFinal, "SOURCE_SAFETY", 3)),
+            )
         )
 
     def _publish_brake_sequence(self, brake_pct: int) -> None:
@@ -1456,6 +1471,7 @@ class NavCommandServerNode(Node):
                 linear_x=float(msg.linear.x),
                 angular_z=float(msg.angular.z),
                 brake_pct=0,
+                source=int(getattr(CmdVelFinal, "SOURCE_AUTO", 1)),
             )
         )
         self._publish_telemetry(force=False)
@@ -1549,6 +1565,7 @@ class NavCommandServerNode(Node):
                 linear_x=linear_x,
                 angular_z=angular_z,
                 brake_pct=brake_pct,
+                source=int(getattr(CmdVelFinal, "SOURCE_MANUAL", 2)),
             )
         )
 

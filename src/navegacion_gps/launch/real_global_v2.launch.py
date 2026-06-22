@@ -691,6 +691,7 @@ def generate_launch_description():
                         "wheelbase_m": 0.94,
                         "steering_limit_rad": 0.5235987756,
                         "operational_steering_limit_rad": 0.3141592654,
+                        "manual_operational_steering_limit_rad": 0.5235987756,
                         "vx_deadband_mps": ParameterValue(
                             vx_deadband_mps, value_type=float
                         ),

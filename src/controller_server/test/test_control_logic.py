@@ -3,6 +3,9 @@ import math
 import pytest
 
 from controller_server.control_logic import (
+    COMMAND_SOURCE_AUTO,
+    COMMAND_SOURCE_MANUAL,
+    COMMAND_SOURCE_UNKNOWN,
     DesiredCommand,
     command_from_cmd_vel,
     select_effective_command,
@@ -12,6 +15,7 @@ ACKERMANN_KWARGS = {
     "wheelbase_m": 0.94,
     "steering_limit_rad": 0.5235987756,
     "operational_steering_limit_rad": 0.3141592654,
+    "manual_operational_steering_limit_rad": 0.5235987756,
 }
 
 
@@ -319,6 +323,61 @@ def test_command_from_cmd_vel_saturates_at_operational_limit() -> None:
     assert cmd.steer_saturated is True
     assert math.degrees(cmd.requested_steer_rad) > 30.0
     assert math.degrees(cmd.applied_steer_rad) == pytest.approx(18.0)
+
+
+def test_manual_command_can_use_physical_steering_limit() -> None:
+    angular_for_30_deg_at_1mps = math.tan(math.radians(30.0)) / 0.94
+    auto_cmd = command_from_cmd_vel(
+        linear_x=1.0,
+        angular_z=angular_for_30_deg_at_1mps,
+        brake_pct=0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        vx_deadband_mps=0.10,
+        vx_min_effective_mps=0.50,
+        max_abs_angular_z=0.4,
+        **ACKERMANN_KWARGS,
+        invert_steer=False,
+        auto_drive_enabled=True,
+        reverse_brake_pct=25,
+        command_source=COMMAND_SOURCE_AUTO,
+    )
+    manual_cmd = command_from_cmd_vel(
+        linear_x=1.0,
+        angular_z=angular_for_30_deg_at_1mps,
+        brake_pct=0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        vx_deadband_mps=0.10,
+        vx_min_effective_mps=0.50,
+        max_abs_angular_z=0.4,
+        **ACKERMANN_KWARGS,
+        invert_steer=False,
+        auto_drive_enabled=True,
+        reverse_brake_pct=25,
+        command_source=COMMAND_SOURCE_MANUAL,
+    )
+    unknown_cmd = command_from_cmd_vel(
+        linear_x=1.0,
+        angular_z=angular_for_30_deg_at_1mps,
+        brake_pct=0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        vx_deadband_mps=0.10,
+        vx_min_effective_mps=0.50,
+        max_abs_angular_z=0.4,
+        **ACKERMANN_KWARGS,
+        invert_steer=False,
+        auto_drive_enabled=True,
+        reverse_brake_pct=25,
+        command_source=COMMAND_SOURCE_UNKNOWN,
+    )
+
+    assert math.degrees(auto_cmd.applied_steer_rad) == pytest.approx(18.0)
+    assert auto_cmd.steer_saturated is True
+    assert math.degrees(manual_cmd.applied_steer_rad) == pytest.approx(30.0)
+    assert manual_cmd.steer_saturated is False
+    assert math.degrees(unknown_cmd.applied_steer_rad) == pytest.approx(18.0)
 
 
 def test_command_from_cmd_vel_never_exceeds_physical_limit() -> None:

@@ -11,6 +11,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from .control_logic import (
+    COMMAND_SOURCE_MANUAL,
     DesiredCommand,
     command_from_cmd_vel,
     safe_command,
@@ -37,6 +38,7 @@ class ControllerServerNode(Node):
         self.declare_parameter("wheelbase_m", 0.94)
         self.declare_parameter("steering_limit_rad", 0.5235987756)
         self.declare_parameter("operational_steering_limit_rad", 0.3141592654)
+        self.declare_parameter("manual_operational_steering_limit_rad", 0.5235987756)
         self.declare_parameter("reverse_brake_pct", 20)
         self.declare_parameter("invert_steer_from_cmd_vel", False)
         self.declare_parameter("auto_drive_enabled", True)
@@ -108,6 +110,18 @@ class ControllerServerNode(Node):
         self._effective_steering_limit_rad = min(
             self._steering_limit_rad,
             self._operational_steering_limit_rad,
+        )
+        self._manual_operational_steering_limit_rad = abs(
+            float(self.get_parameter("manual_operational_steering_limit_rad").value)
+        )
+        if self._manual_operational_steering_limit_rad < 1.0e-6:
+            self.get_logger().warn(
+                "Invalid manual_operational_steering_limit_rad; using steering_limit_rad"
+            )
+            self._manual_operational_steering_limit_rad = self._steering_limit_rad
+        self._manual_effective_steering_limit_rad = min(
+            self._steering_limit_rad,
+            self._manual_operational_steering_limit_rad,
         )
         self._reverse_brake_pct = int(self.get_parameter("reverse_brake_pct").value)
         self._invert_steer_from_cmd_vel = bool(
@@ -195,6 +209,7 @@ class ControllerServerNode(Node):
         )
 
     def _on_cmd_vel_final(self, msg: CmdVelFinal) -> None:
+        command_source = int(getattr(msg, "source", int(CmdVelFinal.SOURCE_UNKNOWN)))
         cmd = command_from_cmd_vel(
             linear_x=msg.twist.linear.x,
             angular_z=msg.twist.angular.z,
@@ -210,6 +225,8 @@ class ControllerServerNode(Node):
             auto_drive_enabled=self._auto_drive_enabled,
             reverse_brake_pct=self._reverse_brake_pct,
             operational_steering_limit_rad=self._operational_steering_limit_rad,
+            manual_operational_steering_limit_rad=self._manual_operational_steering_limit_rad,
+            command_source=command_source,
         )
         self._auto_cmd = cmd
         self._auto_stamp_s = time.monotonic()
@@ -220,7 +237,7 @@ class ControllerServerNode(Node):
                 f"angular_z={cmd.requested_angular_z_rps:.3f} rad/s, "
                 f"requested_curvature={cmd.requested_curvature_inv_m:.3f} 1/m, "
                 f"requested_steer={math.degrees(cmd.requested_steer_rad):.2f} deg, "
-                f"limit={math.degrees(self._effective_steering_limit_rad):.2f} deg)"
+                f"limit={math.degrees(cmd.steering_limit_used_rad):.2f} deg)"
             )
         elif (not cmd.steer_saturated) and self._last_steer_saturated:
             self.get_logger().info("Ackermann steer saturation cleared")
@@ -228,7 +245,7 @@ class ControllerServerNode(Node):
         self.get_logger().info(
             "cmd_vel_final rx "
             f"linear_x={msg.twist.linear.x:.3f} angular_z={msg.twist.angular.z:.3f} "
-            f"brake_pct={int(msg.brake_pct)} -> "
+            f"brake_pct={int(msg.brake_pct)} source={command_source} -> "
             f"drive={int(cmd.drive_enabled)} estop={int(cmd.estop)} "
             f"speed_mps={cmd.speed_mps:.3f} steer_pct={cmd.steer_pct} "
             f"steer_deg={math.degrees(cmd.applied_steer_rad):.2f} "
@@ -293,8 +310,14 @@ class ControllerServerNode(Node):
                 "operational_steering_limit_deg": math.degrees(
                     self._operational_steering_limit_rad
                 ),
+                "manual_operational_steering_limit_deg": math.degrees(
+                    self._manual_operational_steering_limit_rad
+                ),
                 "effective_steering_limit_deg": math.degrees(
                     self._effective_steering_limit_rad
+                ),
+                "manual_effective_steering_limit_deg": math.degrees(
+                    self._manual_effective_steering_limit_rad
                 ),
             },
             "timestamp": time.time(),
