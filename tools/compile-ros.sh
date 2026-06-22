@@ -18,9 +18,11 @@ fi
 if [[ $# -gt 0 ]]; then
   PKG_LIST=("$@")
   BUILD_CMD="colcon build --packages-select ${PKG_LIST[*]} --symlink-install"
+  CLEAN_CMD="for pkg in ${PKG_LIST[*]}; do rm -rf ${WS}/build/\$pkg ${WS}/install/\$pkg; done"
   TARGET_MSG="${PKG_LIST[*]}"
 else
   BUILD_CMD="colcon build --symlink-install"
+  CLEAN_CMD=":"
   TARGET_MSG="todo el workspace"
 fi
 
@@ -33,6 +35,7 @@ docker exec "${DOCKER_TTY_ARGS[@]}" "${CONTAINER}" bash -lc "\
   source /opt/ros/\${ROS_DISTRO:-humble}/setup.bash && \
   if [ -f ${WS}/install/setup.bash ]; then source ${WS}/install/setup.bash; fi && \
   cd ${WS} && \
+  ${CLEAN_CMD} && \
   ${BUILD_CMD} && \
   echo 'Build finalizado. Para usar:' && \
   echo '  source ${WS}/install/setup.bash'"
