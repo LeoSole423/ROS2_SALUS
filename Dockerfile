@@ -5,6 +5,8 @@ ENV ROS_DISTRO=humble
 ENV QT_X11_NO_MITSHM=1
 ENV GZ_VERSION=fortress
 
+ARG INSTALL_GAZEBO_SIM=auto
+
 # Paquetes base de build + ROS + utilidades del stack
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -42,11 +44,6 @@ RUN apt-get update \
     ros-${ROS_DISTRO}-teleop-twist-keyboard \
     ros-${ROS_DISTRO}-twist-mux \
     ros-${ROS_DISTRO}-twist-stamper \
-    # --- GAZEBO SIM (MODERNO) ---
-    ros-${ROS_DISTRO}-ros-gz \
-    ros-${ROS_DISTRO}-ros-gz-sim \
-    ros-${ROS_DISTRO}-ros-gz-bridge \
-    ros-${ROS_DISTRO}-gz-ros2-control \
     # --- VISUALIZATION & TOOLS ---
     ros-${ROS_DISTRO}-rviz2 \
     ros-${ROS_DISTRO}-rqt-graph \
@@ -54,6 +51,27 @@ RUN apt-get update \
     ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     ros-${ROS_DISTRO}-mavros \
     ros-${ROS_DISTRO}-mavros-extras
+
+# Gazebo/ros_gz puede quedar fuera en ARM64 si la base tiene conflictos de
+# dependencias. En la Jetson nos interesa priorizar el stack real del robot.
+RUN arch="$(dpkg --print-architecture)" && \
+  install_gazebo="${INSTALL_GAZEBO_SIM}" && \
+  if [ "${install_gazebo}" = "auto" ]; then \
+    if [ "${arch}" = "arm64" ]; then \
+      install_gazebo="false"; \
+    else \
+      install_gazebo="true"; \
+    fi; \
+  fi && \
+  if [ "${install_gazebo}" = "true" ]; then \
+    apt-get update && apt-get install -y --no-install-recommends \
+      ros-${ROS_DISTRO}-ros-gz \
+      ros-${ROS_DISTRO}-ros-gz-sim \
+      ros-${ROS_DISTRO}-ros-gz-bridge \
+      ros-${ROS_DISTRO}-gz-ros2-control; \
+  else \
+    echo "Gazebo/ros_gz omitido para este build (${arch})."; \
+  fi
 
 # Mapviz: en amd64 hay binarios; en ARM64 se omite (headless).
 RUN arch="$(dpkg --print-architecture)" && \

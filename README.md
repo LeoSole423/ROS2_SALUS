@@ -61,6 +61,27 @@ Los perfiles `simulacion.launch.py`, `real.launch.py`, `sim_local_v2.launch.py` 
   - `/gps/course_heading` es la referencia principal cuando el robot avanza con gate valido.
   - `/imu/compass_heading` puede aportar brujula gateada en arranque/reposo, apagada por defecto.
 
+## Docker y Portabilidad
+
+### Portabilidad del contenedor
+
+Los archivos de compose quedaron ajustados para que el workspace se monte desde el checkout actual del repo, sin depender de rutas absolutas de una maquina particular.
+
+Esto implica que:
+
+- `./src`, `./tools`, `./build`, `./install` y `./log` se resuelven relativo a la raiz de este repo
+- `GZ_SIM_RESOURCE_PATH` e `IGN_GAZEBO_RESOURCE_PATH` apuntan a `/ros2_ws/install` y `/ros2_ws/src`, que son las rutas reales dentro del contenedor
+- si una maquina o robot necesita mounts host especificos fuera de este repo, lo correcto es usar un archivo override propio y no editar el compose compartido
+
+### Jetson ARM64 y Gazebo
+
+El `Dockerfile` ahora usa `INSTALL_GAZEBO_SIM=auto`:
+
+- en `amd64/x86_64`, instala Gazebo y `ros_gz` como parte del flujo de simulacion
+- en `arm64`, los omite por defecto para evitar conflictos de dependencias observados en la Jetson Orin
+
+Con eso buscamos mantener paridad razonable para simulacion en PC sin bloquear el build real en la Jetson.
+
 ## Flujo Docker recomendado
 1. Levantar el contenedor:
 ```bash
