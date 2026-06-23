@@ -190,10 +190,10 @@ controller_server:
       # bajan de 1.2 m/s para conservar empuje en terreno irregular; las
       # reducciones criticas quedan en 0.7 m/s via aproximacion/monitor.
       desired_linear_vel: 1.6
-      lookahead_dist: 2.6
-      min_lookahead_dist: 1.8
-      max_lookahead_dist: 3.6
-      lookahead_time: 1.8
+      lookahead_dist: 3.0
+      min_lookahead_dist: 2.3
+      max_lookahead_dist: 4.5
+      lookahead_time: 2.2
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.7
       approach_velocity_scaling_dist: 1.0
