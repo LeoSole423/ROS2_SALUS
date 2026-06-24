@@ -46,7 +46,7 @@ Levanta / incluye:
 | `pointcloud_to_laserscan` | Node | params `pointcloud_to_laserscan_real.yaml`, remap `cloud_in:=/scan_3d`, `scan:=/scan` |
 | `scan_noise_filter` | Node (IfCondition) | `enable_scan_noise_filter` default **True** → `/scan_clean` |
 | `lidar_obstacle_filter` | Node (IfCondition) | `enable_lidar_obstacle_filter` default **False** (RANSAC) |
-| `controller_server_node` | Node (nombre `vehicle_controller_server`) | UART `/dev/serial0@115200` |
+| `controller_server_node` | Node (nombre `vehicle_controller_server`) | UART `serial_port:=auto` (`USB-TTL by-id` o `/dev/serial0`) @115200 |
 | `gps_course_heading` | Node (IfCondition) | default **True**, RTK-gated |
 | `nav_command_server` | Node | arbitraje + servicios |
 | `route_executor` | Node | misiones multi-waypoint |
@@ -71,7 +71,8 @@ Args destacados (defaults reales):
 | `datum_*` | resueltos por `datum_profile_resolver` | origen ENU |
 
 Supuestos de hardware: Pixhawk en `/dev/ttyACM0`, firmware del vehículo en
-`/dev/serial0`, RS16 en red (`rs16.yaml`).
+`controller_serial_port:=auto` (prioriza USB-TTL estable por `by-id`; cae a
+`/dev/serial0` en Raspberry), RS16 en red (`rs16.yaml`).
 
 ### 2.2 `navegacion_gps/sim_global_v2.launch.py` — simulación (mainline)
 
@@ -117,7 +118,8 @@ Levanta el driver propio `pixhawk_driver` (contrato `/imu/data`, `/gps/fix`,
 ### 2.6 `controller_server/controller_server.launch.py`
 
 `src/controller_server/launch/controller_server.launch.py`. Lanza
-`controller_server_node` **con nombre `controller_server`** y UART `/dev/serial0`.
+`controller_server_node` **con nombre `controller_server`** y UART
+`controller_serial_port:=auto`.
 Útil para banco de actuación aislado.
 
 > Cuidado: ese nombre **colisiona** con el `controller_server` de Nav2. En

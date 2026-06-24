@@ -22,7 +22,8 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 
 ## Backends
 - `transport_backend:=uart`
-  - uso real sobre `/dev/serial0`
+  - uso real sobre `serial_port:=auto` por default
+  - resuelve `SALUS_CONTROLLER_SERIAL_PORT`, USB-TTL por `by-id`, `ttyUSB*` o `/dev/serial0`
 - `transport_backend:=sim_gazebo`
   - usado por `sim_local_v2` y `sim_global_v2`
   - publica `/cmd_vel_gazebo` y sintetiza `DriveTelemetry` desde estado de simulación
@@ -50,6 +51,12 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 ## Launch
 ```bash
 ros2 launch controller_server controller_server.launch.py
+```
+
+Override explícito de puerto:
+```bash
+ros2 launch controller_server controller_server.launch.py \
+  controller_serial_port:=/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
 ```
 
 Helper del workspace:

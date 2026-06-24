@@ -198,6 +198,9 @@ def generate_launch_description():
     enable_rtk = LaunchConfiguration("enable_rtk")
     lidar_config_path = LaunchConfiguration("lidar_config_path")
     fcu_url = LaunchConfiguration("fcu_url")
+    controller_serial_port = LaunchConfiguration("controller_serial_port")
+    controller_serial_baud = LaunchConfiguration("controller_serial_baud")
+    controller_serial_tx_hz = LaunchConfiguration("controller_serial_tx_hz")
     use_cyclone_dds = LaunchConfiguration("use_cyclone_dds")
     nav_start_delay_s = LaunchConfiguration("nav_start_delay_s")
     use_keepout = LaunchConfiguration("use_keepout")
@@ -390,6 +393,9 @@ def generate_launch_description():
                 default_value=os.path.join(sensores_dir, "config", "rs16.yaml"),
             ),
             DeclareLaunchArgument("fcu_url", default_value="/dev/ttyACM0:921600"),
+            DeclareLaunchArgument("controller_serial_port", default_value="auto"),
+            DeclareLaunchArgument("controller_serial_baud", default_value="115200"),
+            DeclareLaunchArgument("controller_serial_tx_hz", default_value="50.0"),
             DeclareLaunchArgument("use_cyclone_dds", default_value="false"),
             DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
             # Perfil operativo actual: keepout deshabilitado por default
@@ -683,9 +689,13 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "serial_port": "/dev/serial0",
-                        "serial_baud": 115200,
-                        "serial_tx_hz": 50.0,
+                        "serial_port": controller_serial_port,
+                        "serial_baud": ParameterValue(
+                            controller_serial_baud, value_type=int
+                        ),
+                        "serial_tx_hz": ParameterValue(
+                            controller_serial_tx_hz, value_type=float
+                        ),
                         "max_reverse_mps": 1.30,
                         "max_abs_angular_z": 0.4,
                         "wheelbase_m": 0.94,

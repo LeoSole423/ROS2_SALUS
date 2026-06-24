@@ -53,6 +53,9 @@ def _assert_real_wifi_wrapper_parity(launch_contents: str) -> None:
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_publish_hz", default_value="2.0"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_beam_stride", default_value="4"' in launch_contents
     assert 'DeclareLaunchArgument(\n                "scan_wifi_debug_range_max_m", default_value="12.0"' in launch_contents
+    assert 'DeclareLaunchArgument("controller_serial_port", default_value="auto")' in launch_contents
+    assert 'DeclareLaunchArgument("controller_serial_baud", default_value="115200")' in launch_contents
+    assert 'DeclareLaunchArgument("controller_serial_tx_hz", default_value="50.0")' in launch_contents
     assert 'source_path.exists()' in launch_contents
     assert "source_path.parent.exists()" not in launch_contents
 
@@ -80,6 +83,9 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert "pointcloud_to_laserscan_real.yaml" in launch_contents
     assert 'executable="pointcloud_to_laserscan_node"' in launch_contents
     assert 'executable="controller_server_node"' in launch_contents
+    assert 'DeclareLaunchArgument("controller_serial_port", default_value="auto")' in launch_contents
+    assert 'DeclareLaunchArgument("controller_serial_baud", default_value="115200")' in launch_contents
+    assert 'DeclareLaunchArgument("controller_serial_tx_hz", default_value="50.0")' in launch_contents
     assert "localization_global_v2.launch.py" in launch_contents
     assert "nav_global_v2.launch.py" in launch_contents
     assert "no_go_editor.launch.py" in launch_contents
@@ -175,6 +181,10 @@ def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> Non
     assert '"allowed_rtk_statuses": gps_course_heading_allowed_rtk_statuses' in launch_contents
     assert '"enable_gps_course_heading": enable_gps_course_heading' in launch_contents
     assert '"gps_course_heading_topic": "/gps/course_heading"' in launch_contents
+    assert '"serial_port": controller_serial_port' in launch_contents
+    assert '"serial_baud": ParameterValue(' in launch_contents
+    assert 'controller_serial_baud, value_type=int' in launch_contents
+    assert 'controller_serial_tx_hz, value_type=float' in launch_contents
     assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
     assert "effective_enable_compass_heading = PythonExpression(" in launch_contents
     assert 'condition=IfCondition(effective_enable_compass_heading)' in launch_contents
@@ -288,6 +298,9 @@ def test_real_global_v2_wifi_launch_wraps_base_without_local_rviz() -> None:
     assert '"scan_wifi_debug_publish_hz": scan_wifi_debug_publish_hz' in launch_contents
     assert '"scan_wifi_debug_beam_stride": scan_wifi_debug_beam_stride' in launch_contents
     assert '"scan_wifi_debug_range_max_m": scan_wifi_debug_range_max_m' in launch_contents
+    assert '"controller_serial_port": controller_serial_port' in launch_contents
+    assert '"controller_serial_baud": controller_serial_baud' in launch_contents
+    assert '"controller_serial_tx_hz": controller_serial_tx_hz' in launch_contents
     assert 'DeclareLaunchArgument("enable_compass_initial_guess", default_value="false")' in launch_contents
     assert '"enable_compass_initial_guess": enable_compass_initial_guess' in launch_contents
     _assert_real_wifi_wrapper_parity(launch_contents)

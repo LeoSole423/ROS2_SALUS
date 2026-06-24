@@ -47,6 +47,9 @@ def generate_launch_description():
     lidar_to_scan_params_file = LaunchConfiguration("lidar_to_scan_params_file")
     lidar_config_path = LaunchConfiguration("lidar_config_path")
     fcu_url = LaunchConfiguration("fcu_url")
+    controller_serial_port = LaunchConfiguration("controller_serial_port")
+    controller_serial_baud = LaunchConfiguration("controller_serial_baud")
+    controller_serial_tx_hz = LaunchConfiguration("controller_serial_tx_hz")
     use_cyclone_dds = LaunchConfiguration("use_cyclone_dds")
     nav_start_delay_s = LaunchConfiguration("nav_start_delay_s")
     use_keepout = LaunchConfiguration("use_keepout")
@@ -183,6 +186,9 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("fcu_url", default_value="/dev/ttyACM0:921600"),
+            DeclareLaunchArgument("controller_serial_port", default_value="auto"),
+            DeclareLaunchArgument("controller_serial_baud", default_value="115200"),
+            DeclareLaunchArgument("controller_serial_tx_hz", default_value="50.0"),
             DeclareLaunchArgument("use_cyclone_dds", default_value="false"),
             DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
             DeclareLaunchArgument("use_keepout", default_value="False"),
@@ -321,6 +327,9 @@ def generate_launch_description():
                     "lidar_to_scan_params_file": lidar_to_scan_params_file,
                     "lidar_config_path": lidar_config_path,
                     "fcu_url": fcu_url,
+                    "controller_serial_port": controller_serial_port,
+                    "controller_serial_baud": controller_serial_baud,
+                    "controller_serial_tx_hz": controller_serial_tx_hz,
                     "use_cyclone_dds": use_cyclone_dds,
                     "nav_start_delay_s": nav_start_delay_s,
                     "use_keepout": use_keepout,

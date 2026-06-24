@@ -17,6 +17,7 @@ from .control_logic import (
     safe_command,
     select_effective_command,
 )
+from .serial_port_resolver import resolve_serial_port
 from .transport_backends import create_transport_backend
 
 
@@ -24,7 +25,7 @@ class ControllerServerNode(Node):
     def __init__(self) -> None:
         super().__init__("controller_server")
 
-        self.declare_parameter("serial_port", "/dev/serial0")
+        self.declare_parameter("serial_port", "auto")
         self.declare_parameter("serial_baud", 115200)
         self.declare_parameter("serial_tx_hz", 50.0)
         self.declare_parameter("max_speed_mps", 4.0)
@@ -58,7 +59,9 @@ class ControllerServerNode(Node):
         self.declare_parameter("sim_invert_measured_steer_sign", True)
         self.declare_parameter("sim_max_joint_odom_steer_delta_deg", 5.0)
 
-        self._serial_port = self.get_parameter("serial_port").value
+        requested_serial_port = self.get_parameter("serial_port").value
+        serial_selection = resolve_serial_port(requested_serial_port)
+        self._serial_port = serial_selection.port
         self._serial_baud = int(self.get_parameter("serial_baud").value)
         self._serial_tx_hz = float(self.get_parameter("serial_tx_hz").value)
         self._max_speed_mps = float(self.get_parameter("max_speed_mps").value)
@@ -191,6 +194,12 @@ class ControllerServerNode(Node):
             sim_max_joint_odom_steer_delta_deg=self._sim_max_joint_odom_steer_delta_deg,
         )
         self._client.start()
+
+        self.get_logger().info(
+            "controller serial port selected "
+            f"(reason={serial_selection.reason}, requested={requested_serial_port}, "
+            f"resolved={self._serial_port})"
+        )
 
         self.create_subscription(CmdVelFinal, "/cmd_vel_final", self._on_cmd_vel_final, 10)
         self._status_pub = self.create_publisher(String, "/controller/status", 10)

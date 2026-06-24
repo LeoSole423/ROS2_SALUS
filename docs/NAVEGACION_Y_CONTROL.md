@@ -149,7 +149,7 @@ por `no_go_editor.launch.py`. La UI vive en `src/map_tools/web/index.html`.
 |---|---|---|
 | `use_sim_time` | True | False |
 | Sensores | Gazebo + `sim_sensor_normalizer_v2` | MAVROS (Pixhawk/GNSS) |
-| Actuación | backend `sim_gazebo` (`/cmd_vel_gazebo`) | UART `/dev/serial0` |
+| Actuación | backend `sim_gazebo` (`/cmd_vel_gazebo`) | UART `serial_port:=auto` (`USB-TTL by-id` o `/dev/serial0`) |
 | `use_keepout` | True | False |
 | Params Nav2 | `*_sim_rolling*` | `*_real_rolling*` |
 | `pointcloud_to_laserscan` | `pointcloud_to_laserscan.yaml` (sim) | `pointcloud_to_laserscan_real.yaml` |
@@ -167,8 +167,10 @@ Política de paridad documentada en `docs/sim-real-parity.md`.
 `control_logic.py`, lo transforma en un `DesiredCommand` (velocidad, steer %,
 brake %) que entrega a un **transport backend** (`transport_backends.py`):
 
-- **`uart`** (real): envía al firmware del vehículo por serie (`/dev/serial0@115200`,
-  `serial_tx_hz=50`). Código de referencia del firmware en el robot:
+- **`uart`** (real): envía al firmware del vehículo por serie
+  (`serial_port:=auto`, `serial_baud:=115200`, `serial_tx_hz=50`). El resolvedor
+  prioriza `SALUS_CONTROLLER_SERIAL_PORT`, un USB-TTL estable por `by-id`, luego
+  `ttyUSB*`, y por último `/dev/serial0`. Código de referencia del firmware en el robot:
   `~/codigo/RASPY_SALUS` (`AGENTS.md`).
 - **`sim_gazebo`** (sim): traduce a `/cmd_vel_gazebo` + lee `/odom_raw` y
   `/joint_states` para telemetría (`sim_gazebo_backend.py`).
