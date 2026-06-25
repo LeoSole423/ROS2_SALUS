@@ -6,6 +6,7 @@ import pytest
 from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import KeyValue
 from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import BatteryState
 
 from navegacion_gps.route_executor import (
     BLOCKED_STATE_NEEDS_OPERATOR,
@@ -13,9 +14,13 @@ from navegacion_gps.route_executor import (
     BLOCKED_STATE_RETRYING,
     BLOCKED_STATE_WAITING,
     RouteExecutorNode,
+    WAYPOINT_ROLE_HOME,
+    WAYPOINT_ROLE_NORMAL,
     RouteWaypoint,
     _parse_route_action_jsons,
+    _parse_waypoint_roles,
     _poses_to_debug_path,
+    _split_home_waypoint,
     _yaw_to_quaternion,
     build_chunk_waypoints,
     drop_duplicate_loop_closure,
@@ -60,13 +65,16 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node = object.__new__(RouteExecutorNode)
     node._lock = threading.RLock()
     node._route_input = []
+    node._route_input_source_indices = [0, 1]
     node._route_expanded = [
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
         RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
     ]
+    node._route_action_jsons = ["", ""]
     node._route_key_waypoint_flags = [True, True]
     node._route_input_indices = [0, 1]
     node._active_chunk = list(node._route_expanded)
+    node._loop_iteration = 0
     node._mission_active = True
     node._mission_paused = False
     node._mission_loop = False
@@ -99,6 +107,18 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node.route_waypoint_reached_tolerance_m = 1.2
     node.clear_costmaps_before_blocked_retry = True
     node.request_timeout_s = 0.01
+    node._battery_pct = 100.0
+    node._low_battery_active = False
+    node._return_home_requested = False
+    node._return_home_active = False
+    node._return_home_exit_route_index = -1
+    node._return_home_exit_input_index = -1
+    node._home_waypoint = RouteWaypoint(lat=0.0, lon=0.002, yaw_deg=0.0)
+    node._home_input_index = 2
+    node.default_home_lat = float("nan")
+    node.default_home_lon = float("nan")
+    node.default_home_yaw_deg = 0.0
+    node.low_battery_threshold_pct = 25.0
     node.events = []
     node.brake_calls = 0
     node.brake_requests = []
@@ -128,6 +148,10 @@ def _fake_blocking_node() -> RouteExecutorNode:
     )
     node._publish_empty_active_chunk_path = lambda: None
     node._publish_empty_route_paths = lambda: None
+    node.return_home_dispatches = 0
+    node._dispatch_return_home = (
+        lambda: setattr(node, "return_home_dispatches", node.return_home_dispatches + 1) or (True, "")
+    )
     node._start_next_chunk_after_success = lambda: setattr(node, "advanced", True)
 
     def _send_chunk(*, start_index: int):
@@ -232,6 +256,33 @@ def test_route_action_jsons_accept_brake_hold_only():
     assert actions is not None
     assert actions[0] == '[{"brake_pct":100,"duration_s":5.0,"type":"brake_hold"}]'
     assert actions[1] == ""
+
+
+def test_waypoint_roles_accept_single_home():
+    roles, err = _parse_waypoint_roles([WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_HOME], 2)
+
+    assert err == ""
+    assert roles == [WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_HOME]
+
+
+def test_split_home_waypoint_excludes_home_from_patrol_route():
+    patrol, actions, roles, home, err = _split_home_waypoint(
+        [
+            RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+            RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+            RouteWaypoint(lat=0.0, lon=0.002, yaw_deg=180.0),
+        ],
+        ["", "", ""],
+        [WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_HOME],
+    )
+
+    assert err == ""
+    assert len(patrol) == 2
+    assert actions == ["", ""]
+    assert roles == [WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_NORMAL]
+    assert home is not None
+    assert home.input_index == 2
+    assert home.waypoint.lon == pytest.approx(0.002)
 
 
 def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():
@@ -1180,3 +1231,64 @@ def test_manual_takeover_clears_blocked_state():
     assert node._mission_paused is True
     assert node._blocked_state == BLOCKED_STATE_NONE
     assert node._blocked_retry_attempt == 0
+
+
+def test_low_battery_stops_non_loop_mission_without_returning_home():
+    node = _fake_blocking_node()
+    node._mission_loop = False
+    msg = BatteryState()
+    msg.percentage = 0.2
+
+    RouteExecutorNode._on_battery_state(node, msg)
+
+    assert node._mission_active is False
+    assert node._low_battery_active is True
+    assert node._return_home_requested is False
+    assert node.cancel_calls == 1
+    assert node.brake_calls == 1
+    assert any(event[1] == "LOW_BATTERY_NON_LOOP_STOPPED" for event in node.events)
+
+
+def test_low_battery_requests_return_home_for_loop_mission():
+    node = _fake_blocking_node()
+    node._mission_loop = True
+    node._route_input = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+    ]
+    node._route_input_source_indices = [0, 1]
+    msg = BatteryState()
+    msg.percentage = 0.2
+
+    RouteExecutorNode._on_battery_state(node, msg)
+
+    assert node._mission_active is True
+    assert node._return_home_requested is True
+    assert node._return_home_active is False
+    assert node._return_home_exit_input_index == 1
+    assert node.cancel_calls == 0
+    assert any(event[1] == "RETURN_HOME_REQUESTED" for event in node.events)
+
+
+def test_next_chunk_success_keeps_loop_running_until_exit_waypoint():
+    node = _fake_blocking_node()
+    node._mission_loop = True
+    node._return_home_requested = True
+    node._return_home_exit_input_index = 0
+
+    RouteExecutorNode._start_next_chunk_after_success(node)
+
+    assert node.return_home_dispatches == 0
+    assert node.sent_chunk_starts == [0]
+
+
+def test_next_chunk_success_dispatches_return_home_at_exit_waypoint():
+    node = _fake_blocking_node()
+    node._mission_loop = True
+    node._return_home_requested = True
+    node._return_home_exit_input_index = 1
+
+    RouteExecutorNode._start_next_chunk_after_success(node)
+
+    assert node.return_home_dispatches == 1
+    assert node.sent_chunk_starts == []

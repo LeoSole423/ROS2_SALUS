@@ -4,6 +4,12 @@ string error
 bool active
 bool paused
 bool loop
+bool low_battery_active
+bool return_home_requested
+bool return_home_active
+int32 return_home_exit_waypoint_index
+string return_home_phase
+bool home_available
 string mission_id
 uint32 chunk_id
 uint32 loop_iteration
@@ -32,10 +38,14 @@ int32 current_progress_expanded_index
 float64 current_progress_ratio
 float64 cross_track_error_m
 float64 distance_to_target_m
+float64 home_lat
+float64 home_lon
+float64 home_yaw_deg
 float64[] mission_lats
 float64[] mission_lons
 float64[] mission_yaws_deg
 string[] mission_action_jsons
+string[] mission_waypoint_roles
 bool[] mission_key_flags
 int32[] mission_input_indices
 float64[] active_lats

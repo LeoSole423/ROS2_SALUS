@@ -119,6 +119,42 @@ def test_save_and_load_waypoints_yaml_file_preserves_actions(tmp_path: Path):
     assert loaded == src
 
 
+def test_save_and_load_waypoints_yaml_file_preserves_home_role(tmp_path: Path):
+    file_path = tmp_path / "saved_waypoints.yaml"
+    src = [
+        {"lat": -31.4, "lon": -64.4, "role": "home"},
+        {"lat": -31.5, "lon": -64.5, "yaw_deg": -15.0},
+    ]
+
+    ok_save, err_save, count = save_waypoints_yaml_file(file_path, src)
+    assert ok_save
+    assert err_save == ""
+    assert count == 2
+
+    raw_text = file_path.read_text(encoding="utf-8")
+    assert "role: home" in raw_text
+
+    ok_load, err_load, loaded = load_waypoints_yaml_file(file_path)
+    assert ok_load
+    assert err_load == ""
+    assert loaded == src
+
+
+def test_parse_waypoints_yaml_text_rejects_multiple_home_roles():
+    text = """
+waypoints:
+  - latitude: -31.0
+    longitude: -64.0
+    role: home
+  - latitude: -31.1
+    longitude: -64.1
+    role: home
+"""
+    waypoints, err = parse_waypoints_yaml_text(text)
+    assert waypoints is None
+    assert "only one HOME waypoint" in err
+
+
 def test_load_waypoints_yaml_file_missing(tmp_path: Path):
     missing = tmp_path / "missing.yaml"
     ok, err, waypoints = load_waypoints_yaml_file(missing)

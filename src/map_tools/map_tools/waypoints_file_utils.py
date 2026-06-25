@@ -31,6 +31,13 @@ def normalize_waypoint(item: Any, index: int) -> Tuple[Optional[Dict[str, Any]],
     waypoint: Dict[str, Any] = {"lat": lat, "lon": lon}
     if yaw is not None:
         waypoint["yaw_deg"] = yaw
+    role_raw = item.get("role", item.get("waypoint_role", None))
+    if role_raw is not None:
+        role = str(role_raw).strip().lower()
+        if role not in ("normal", "home"):
+            return None, f"invalid waypoint[{index}] role"
+        if role != "normal":
+            waypoint["role"] = role
     actions = item.get("actions", None)
     if actions is not None:
         if not isinstance(actions, list):
@@ -44,10 +51,15 @@ def normalize_waypoints(waypoints_raw: Any) -> Tuple[Optional[List[Dict[str, Any
         return None, "waypoints must be a non-empty list"
 
     out: List[Dict[str, Any]] = []
+    home_count = 0
     for idx, item in enumerate(waypoints_raw):
         normalized, err = normalize_waypoint(item, idx)
         if normalized is None:
             return None, err
+        if str(normalized.get("role", "normal")) == "home":
+            home_count += 1
+            if home_count > 1:
+                return None, "only one HOME waypoint is allowed"
         out.append(normalized)
     return out, ""
 
@@ -69,6 +81,9 @@ def _build_waypoint_yaml_entry(wp: Dict[str, Any]) -> Dict[str, Any]:
     actions = wp.get("actions", None)
     if isinstance(actions, list) and actions:
         entry["actions"] = actions
+    role = str(wp.get("role", "normal") or "normal").strip().lower()
+    if role == "home":
+        entry["role"] = "home"
     return entry
 
 

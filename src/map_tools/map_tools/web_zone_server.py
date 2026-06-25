@@ -27,7 +27,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.msg import Log
-from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus
+from sensor_msgs.msg import BatteryState, Image, Imu, NavSatFix, NavSatStatus
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from vision_msgs.msg import Detection2DArray
@@ -211,6 +211,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("nav_snapshot_service", "/nav_snapshot_server/get_nav_snapshot")
         self.declare_parameter("nav_telemetry_topic", "/nav_command_server/telemetry")
         self.declare_parameter("nav_events_topic", "/nav_command_server/events")
+        self.declare_parameter("battery_state_topic", "/battery_state")
         self.declare_parameter("diagnostics_topic", "/diagnostics")
         self.declare_parameter("rosbag_output_dir", "/ros2_ws/bags")
         self.declare_parameter("camera_pan_service", "/camara/camera_pan")
@@ -288,6 +289,7 @@ class WebZoneServerNode(Node):
         self.nav_snapshot_service = str(self.get_parameter("nav_snapshot_service").value)
         self.nav_telemetry_topic = str(self.get_parameter("nav_telemetry_topic").value)
         self.nav_events_topic = str(self.get_parameter("nav_events_topic").value)
+        self.battery_state_topic = str(self.get_parameter("battery_state_topic").value)
         self.diagnostics_topic = str(self.get_parameter("diagnostics_topic").value)
         self.rosbag_output_dir = str(self.get_parameter("rosbag_output_dir").value)
         self.camera_pan_service = str(self.get_parameter("camera_pan_service").value)
@@ -425,6 +427,7 @@ class WebZoneServerNode(Node):
         self._sensor_bridge_ok = False
         self._sensor_bridge_error = ""
         self._sensor_bridge_last_poll_monotonic: Optional[float] = None
+        self._battery_pct: Optional[float] = None
         self._datum_snapshot = self._build_default_datum_snapshot()
         self._datums_doc = build_datums_doc([], "")
         self._datums_error = ""
@@ -449,6 +452,9 @@ class WebZoneServerNode(Node):
         )
         self._nav_events_sub = self.create_subscription(
             NavEvent, self.nav_events_topic, self._on_nav_event, 10
+        )
+        self._battery_state_sub = self.create_subscription(
+            BatteryState, self.battery_state_topic, self._on_battery_state, 10
         )
         self._diagnostics_sub = self.create_subscription(
             DiagnosticArray, self.diagnostics_topic, self._on_diagnostics, 10
@@ -748,6 +754,13 @@ class WebZoneServerNode(Node):
             "active": False,
             "paused": False,
             "loop": False,
+            "low_battery_active": False,
+            "return_home_requested": False,
+            "return_home_active": False,
+            "return_home_exit_waypoint_index": -1,
+            "return_home_phase": "idle",
+            "home_available": False,
+            "home_waypoint": None,
             "status": "idle",
             "input_waypoint_count": 0,
             "expanded_waypoint_count": 0,
@@ -777,10 +790,12 @@ class WebZoneServerNode(Node):
         lons: Sequence[float],
         yaws_deg: Sequence[float],
         action_jsons: Optional[Sequence[str]] = None,
+        roles: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         if not (len(lats) == len(lons) == len(yaws_deg)):
             return []
         actions = list(action_jsons or [])
+        role_values = list(roles or [])
         waypoints: List[Dict[str, Any]] = []
         for idx, (lat, lon, yaw_deg) in enumerate(zip(lats, lons, yaws_deg)):
             lat_value = float(lat)
@@ -805,6 +820,9 @@ class WebZoneServerNode(Node):
                     parsed_actions = []
                 if isinstance(parsed_actions, list) and parsed_actions:
                     waypoint["actions"] = parsed_actions
+            role = str(role_values[idx] if idx < len(role_values) else "normal").strip().lower()
+            if role and role != "normal":
+                waypoint["role"] = role
             waypoints.append(waypoint)
         return waypoints
 
@@ -813,6 +831,14 @@ class WebZoneServerNode(Node):
             "active": bool(response.active),
             "paused": bool(response.paused),
             "loop": bool(response.loop),
+            "low_battery_active": bool(getattr(response, "low_battery_active", False)),
+            "return_home_requested": bool(getattr(response, "return_home_requested", False)),
+            "return_home_active": bool(getattr(response, "return_home_active", False)),
+            "return_home_exit_waypoint_index": int(
+                getattr(response, "return_home_exit_waypoint_index", -1)
+            ),
+            "return_home_phase": str(getattr(response, "return_home_phase", "idle")),
+            "home_available": bool(getattr(response, "home_available", False)),
             "status": str(response.status),
             "input_waypoint_count": int(response.input_waypoint_count),
             "expanded_waypoint_count": int(response.expanded_waypoint_count),
@@ -841,11 +867,19 @@ class WebZoneServerNode(Node):
                 response.mission_lons,
                 response.mission_yaws_deg,
                 getattr(response, "mission_action_jsons", []),
+                getattr(response, "mission_waypoint_roles", []),
             ),
             "active_chunk_waypoints": self._route_waypoints_from_state(
                 response.active_lats, response.active_lons, response.active_yaws_deg
             ),
         }
+        if bool(getattr(response, "home_available", False)):
+            payload["home_waypoint"] = {
+                "lat": float(getattr(response, "home_lat", 0.0)),
+                "lon": float(getattr(response, "home_lon", 0.0)),
+                "yaw_deg": float(getattr(response, "home_yaw_deg", 0.0)),
+                "role": "home",
+            }
         with self._lock:
             self._route_mission = payload
 
@@ -1146,10 +1180,13 @@ class WebZoneServerNode(Node):
         }
 
     def _connection_status_locked(self) -> Dict[str, Any]:
+        battery_pct = 0.0
+        if self._battery_pct is not None and np.isfinite(float(self._battery_pct)):
+            battery_pct = float(self._battery_pct)
         return {
             "connected": True,
             "mode": self._derive_mode(self._goal_active, bool(self._manual_control.get("enabled", False))),
-            "battery_pct": 0.0,
+            "battery_pct": battery_pct,
             "control_locked": bool(self._control_locked),
             "control_lock_reason": str(self._control_lock_reason),
             "locked": bool(self._control_locked),
@@ -1746,6 +1783,16 @@ class WebZoneServerNode(Node):
             return
         with self._lock:
             self._last_imu_heading_deg = float(heading_deg)
+
+    def _on_battery_state(self, msg: BatteryState) -> None:
+        percentage = float(getattr(msg, "percentage", float("nan")))
+        if not np.isfinite(percentage):
+            return
+        if percentage <= 1.0:
+            percentage *= 100.0
+        percentage = max(0.0, min(100.0, percentage))
+        with self._lock:
+            self._battery_pct = float(percentage)
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
         robot_pose_payload = None
@@ -2818,6 +2865,9 @@ class WebZoneServerNode(Node):
             else ""
             for wp in waypoints
         ]
+        req.waypoint_roles = [
+            str(wp.get("role", "normal") or "normal").strip().lower() for wp in waypoints
+        ]
         req.loop = bool(loop)
         req.leg_spacing_m = (
             float(leg_spacing_m)
@@ -3387,10 +3437,18 @@ class WebSocketApi:
                 if not np.isfinite(yaw_deg):
                     return None, False, "yaw_deg must be a finite number"
                 waypoint["yaw_deg"] = float(yaw_deg)
+            role_raw = msg.get("role", "normal")
+            role = str(role_raw or "normal").strip().lower()
+            if role not in ("normal", "home"):
+                return None, False, "role must be 'normal' or 'home'"
+            if role != "normal":
+                waypoint["role"] = role
             actions, actions_err = self._normalize_waypoint_actions(msg.get("actions", []), 0)
             if actions_err:
                 return None, False, actions_err
             if actions:
+                if role == "home":
+                    return None, False, "HOME waypoint cannot include actions"
                 waypoint["actions"] = actions
             return [waypoint], loop, ""
 
@@ -3398,6 +3456,7 @@ class WebSocketApi:
             return None, False, "waypoints must be a non-empty list"
 
         waypoints: List[Dict[str, Any]] = []
+        home_count = 0
         for idx, item in enumerate(waypoints_raw):
             if not isinstance(item, dict):
                 return None, False, f"waypoint[{idx}] must be an object"
@@ -3415,6 +3474,15 @@ class WebSocketApi:
                 if not np.isfinite(yaw_deg):
                     return None, False, f"waypoint[{idx}] yaw_deg must be finite"
                 waypoint["yaw_deg"] = float(yaw_deg)
+            role_raw = item.get("role", "normal")
+            role = str(role_raw or "normal").strip().lower()
+            if role not in ("normal", "home"):
+                return None, False, f"waypoint[{idx}] role must be 'normal' or 'home'"
+            if role == "home":
+                home_count += 1
+                if home_count > 1:
+                    return None, False, "only one HOME waypoint is allowed"
+                waypoint["role"] = role
             actions, actions_err = self._normalize_waypoint_actions(
                 item.get("actions", []),
                 idx,
@@ -3422,6 +3490,8 @@ class WebSocketApi:
             if actions_err:
                 return None, False, actions_err
             if actions:
+                if role == "home":
+                    return None, False, f"waypoint[{idx}] HOME waypoint cannot include actions"
                 waypoint["actions"] = actions
             waypoints.append(waypoint)
 

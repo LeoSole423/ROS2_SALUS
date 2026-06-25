@@ -20,6 +20,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from robot_localization.srv import FromLL
+from sensor_msgs.msg import BatteryState
 import tf2_geometry_msgs  # noqa: F401
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -38,6 +39,8 @@ BLOCKED_STATE_NONE = ""
 BLOCKED_STATE_WAITING = "BLOCKED_WAITING"
 BLOCKED_STATE_RETRYING = "BLOCKED_RETRYING"
 BLOCKED_STATE_NEEDS_OPERATOR = "BLOCKED_NEEDS_OPERATOR"
+WAYPOINT_ROLE_NORMAL = "normal"
+WAYPOINT_ROLE_HOME = "home"
 
 BLOCKING_FAILURE_CODES = {
     "NO_VALID_PATH",
@@ -79,6 +82,7 @@ class RouteAction:
 class PreparedRouteMission:
     waypoints: List[RouteWaypoint]
     action_jsons: List[str]
+    waypoint_roles: List[str]
     start_index: int
     skipped_waypoints: int
     rotated: bool
@@ -109,6 +113,19 @@ class BlockedRetryStartResolution:
     reanchored: bool
     reason: str
     match_distance_m: float
+
+
+@dataclass(frozen=True)
+class RouteMissionHome:
+    waypoint: RouteWaypoint
+    input_index: int
+
+
+@dataclass(frozen=True)
+class ReturnHomeExitSelection:
+    route_index: int
+    input_index: int
+    waypoint: RouteWaypoint
 
 
 def _normalize_yaw_deg(yaw_deg: float) -> float:
@@ -216,6 +233,28 @@ def _actions_from_json(action_json: str) -> List[RouteAction]:
     return actions
 
 
+def _parse_waypoint_roles(
+    waypoint_roles: Sequence[str],
+    waypoint_count: int,
+) -> Tuple[Optional[List[str]], str]:
+    if not waypoint_roles:
+        return [WAYPOINT_ROLE_NORMAL for _ in range(int(waypoint_count))], ""
+    if len(waypoint_roles) != int(waypoint_count):
+        return None, "waypoint_roles length must match lats/lons when provided"
+    normalized: List[str] = []
+    home_count = 0
+    for idx, raw in enumerate(waypoint_roles):
+        role = str(raw or WAYPOINT_ROLE_NORMAL).strip().lower()
+        if role not in (WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_HOME):
+            return None, f"unsupported waypoint role at index {idx}: {role or '<empty>'}"
+        if role == WAYPOINT_ROLE_HOME:
+            home_count += 1
+            if home_count > 1:
+                return None, "only one HOME waypoint is allowed"
+        normalized.append(role)
+    return normalized, ""
+
+
 def _poses_to_debug_path(
     poses: Sequence[PoseStamped],
     *,
@@ -239,6 +278,41 @@ def _distance_m(start_lat: float, start_lon: float, end_lat: float, end_lon: flo
     north_m = (float(end_lat) - float(start_lat)) * meters_per_deg_lat
     east_m = (float(end_lon) - float(start_lon)) * meters_per_deg_lon
     return float(math.hypot(north_m, east_m))
+
+
+def _select_return_home_exit_waypoint(
+    route: Sequence[RouteWaypoint],
+    input_indices: Sequence[int],
+    home_waypoint: Optional[RouteWaypoint],
+) -> Optional[ReturnHomeExitSelection]:
+    route_list = list(route)
+    source_indices = list(input_indices)
+    if not route_list or home_waypoint is None:
+        return None
+
+    best: Optional[ReturnHomeExitSelection] = None
+    best_distance_m = math.inf
+    best_input_index = math.inf
+    for route_index, waypoint in enumerate(route_list):
+        input_index = (
+            int(source_indices[route_index]) if route_index < len(source_indices) else int(route_index)
+        )
+        distance_m = _distance_m(
+            waypoint.lat,
+            waypoint.lon,
+            float(home_waypoint.lat),
+            float(home_waypoint.lon),
+        )
+        candidate = ReturnHomeExitSelection(
+            route_index=int(route_index),
+            input_index=int(input_index),
+            waypoint=waypoint,
+        )
+        if (distance_m, input_index) < (best_distance_m, best_input_index):
+            best = candidate
+            best_distance_m = float(distance_m)
+            best_input_index = int(input_index)
+    return best
 
 
 def _bearing_deg(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> float:
@@ -485,6 +559,43 @@ def _resolve_input_waypoints(
     return resolved
 
 
+def _split_home_waypoint(
+    base_waypoints: Sequence[RouteWaypoint],
+    action_jsons: Sequence[str],
+    waypoint_roles: Sequence[str],
+) -> Tuple[List[RouteWaypoint], List[str], List[str], Optional[RouteMissionHome], str]:
+    route = list(base_waypoints)
+    actions = list(action_jsons)
+    roles = list(waypoint_roles)
+    if len(actions) != len(route):
+        actions = ["" for _ in route]
+    if len(roles) != len(route):
+        roles = [WAYPOINT_ROLE_NORMAL for _ in route]
+
+    patrol_waypoints: List[RouteWaypoint] = []
+    patrol_actions: List[str] = []
+    patrol_roles: List[str] = []
+    home_waypoint: Optional[RouteMissionHome] = None
+
+    for idx, waypoint in enumerate(route):
+        role = str(roles[idx] or WAYPOINT_ROLE_NORMAL).strip().lower()
+        action_json = str(actions[idx] or "")
+        if role == WAYPOINT_ROLE_HOME:
+            if action_json:
+                return [], [], [], None, "HOME waypoint cannot include actions"
+            if home_waypoint is not None:
+                return [], [], [], None, "only one HOME waypoint is allowed"
+            home_waypoint = RouteMissionHome(waypoint=waypoint, input_index=int(idx))
+            continue
+        patrol_waypoints.append(waypoint)
+        patrol_actions.append(action_json)
+        patrol_roles.append(WAYPOINT_ROLE_NORMAL)
+
+    if not patrol_waypoints:
+        return [], [], [], home_waypoint, "at least one non-HOME waypoint is required"
+    return patrol_waypoints, patrol_actions, patrol_roles, home_waypoint, ""
+
+
 def expand_route_waypoints(
     base_waypoints: Sequence[RouteWaypoint],
     *,
@@ -594,14 +705,18 @@ def prepare_route_waypoints(
     waypoint_reached_tolerance_m: float,
     segment_start_tolerance_m: float = 5.0,
     action_jsons: Optional[Sequence[str]] = None,
+    waypoint_roles: Optional[Sequence[str]] = None,
 ) -> Tuple[Optional[PreparedRouteMission], str]:
     route = list(base_waypoints)
     source_indices = list(range(len(route)))
     actions = list(action_jsons or ["" for _ in route])
+    roles = list(waypoint_roles or [WAYPOINT_ROLE_NORMAL for _ in route])
     if len(actions) != len(route):
         actions = ["" for _ in route]
+    if len(roles) != len(route):
+        roles = [WAYPOINT_ROLE_NORMAL for _ in route]
     if not route:
-        return PreparedRouteMission([], [], 0, 0, False, ""), ""
+        return PreparedRouteMission([], [], [], 0, 0, False, ""), ""
 
     if (
         robot_lat is None
@@ -609,7 +724,7 @@ def prepare_route_waypoints(
         or (not np.isfinite(float(robot_lat)))
         or (not np.isfinite(float(robot_lon)))
     ):
-        return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+        return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
 
     tolerance_m = max(0.05, float(waypoint_reached_tolerance_m))
     segment_tolerance_raw = float(segment_start_tolerance_m)
@@ -631,7 +746,7 @@ def prepare_route_waypoints(
             )
 
         if len(route) <= 1:
-            return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+            return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
 
         reached_indexes = [
             idx for idx, distance_m in enumerate(distances_m) if distance_m <= tolerance_m
@@ -647,18 +762,19 @@ def prepare_route_waypoints(
                 closest_segment,
                 segment_tolerance_m=segment_tolerance_m,
             ):
-                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
 
             match = closest_segment
             if match is None:
-                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
             start_index = int(match.next_index)
             if start_index == 0:
-                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
             return (
                 PreparedRouteMission(
                     route[start_index:] + route[:start_index],
                     actions[start_index:] + actions[:start_index],
+                    roles[start_index:] + roles[:start_index],
                     int(start_index),
                     0,
                     True,
@@ -679,12 +795,13 @@ def prepare_route_waypoints(
             start_index = (start_index + 1) % len(route)
 
         if start_index == 0:
-            return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+            return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
 
         return (
             PreparedRouteMission(
                 route[start_index:] + route[:start_index],
                 actions[start_index:] + actions[:start_index],
+                roles[start_index:] + roles[:start_index],
                 int(start_index),
                 0,
                 True,
@@ -718,7 +835,7 @@ def prepare_route_waypoints(
         ):
             match = closest_segment
             if match is None:
-                return PreparedRouteMission(route, actions, 0, 0, False, ""), ""
+                return PreparedRouteMission(route, actions, roles, 0, 0, False, ""), ""
             start_index = max(start_index, int(match.next_index))
             segment_note = (
                 "joined nearest segment "
@@ -736,6 +853,7 @@ def prepare_route_waypoints(
         PreparedRouteMission(
             route[start_index:],
             actions[start_index:],
+            roles[start_index:],
             int(start_index),
             int(start_index),
             False,
@@ -1147,6 +1265,11 @@ class RouteExecutorNode(Node):
         self.declare_parameter("blocked_retry_tick_hz", 2.0)
         self.declare_parameter("nav_event_topic", "/nav_command_server/events")
         self.declare_parameter("nav_brake_service", "/nav_command_server/brake")
+        self.declare_parameter("battery_state_topic", "/battery_state")
+        self.declare_parameter("low_battery_threshold_pct", 25.0)
+        self.declare_parameter("default_home_lat", float("nan"))
+        self.declare_parameter("default_home_lon", float("nan"))
+        self.declare_parameter("default_home_yaw_deg", 0.0)
         self.declare_parameter(
             "clear_local_costmap_service",
             "/local_costmap/clear_entirely_local_costmap",
@@ -1217,6 +1340,15 @@ class RouteExecutorNode(Node):
         )
         self.nav_event_topic = str(self.get_parameter("nav_event_topic").value)
         self.nav_brake_service = str(self.get_parameter("nav_brake_service").value)
+        self.battery_state_topic = str(self.get_parameter("battery_state_topic").value)
+        self.low_battery_threshold_pct = max(
+            0.0, min(100.0, float(self.get_parameter("low_battery_threshold_pct").value))
+        )
+        self.default_home_lat = float(self.get_parameter("default_home_lat").value)
+        self.default_home_lon = float(self.get_parameter("default_home_lon").value)
+        self.default_home_yaw_deg = _normalize_yaw_deg(
+            float(self.get_parameter("default_home_yaw_deg").value)
+        )
         self.clear_local_costmap_service = str(
             self.get_parameter("clear_local_costmap_service").value
         )
@@ -1226,10 +1358,14 @@ class RouteExecutorNode(Node):
 
         self._lock = threading.Lock()
         self._route_input: List[RouteWaypoint] = []
+        self._route_input_source_indices: List[int] = []
         self._route_expanded: List[RouteWaypoint] = []
         self._route_action_jsons: List[str] = []
+        self._route_waypoint_roles: List[str] = []
         self._route_key_waypoint_flags: List[bool] = []
         self._route_input_indices: List[int] = []
+        self._home_waypoint: Optional[RouteWaypoint] = None
+        self._home_input_index: int = -1
         self._active_chunk: List[RouteWaypoint] = []
         self._mission_id = ""
         self._chunk_id = 0
@@ -1265,6 +1401,12 @@ class RouteExecutorNode(Node):
         self._action_waypoint_index = 0
         self._action_type = ""
         self._action_until: Optional[float] = None
+        self._battery_pct: Optional[float] = None
+        self._low_battery_active = False
+        self._return_home_requested = False
+        self._return_home_active = False
+        self._return_home_exit_route_index = -1
+        self._return_home_exit_input_index = -1
         self._event_seq = 0
 
         self._service_group = MutuallyExclusiveCallbackGroup()
@@ -1350,6 +1492,13 @@ class RouteExecutorNode(Node):
             NavEvent,
             self.nav_event_topic,
             self._on_nav_event,
+            10,
+            callback_group=self._client_group,
+        )
+        self._battery_state_sub = self.create_subscription(
+            BatteryState,
+            self.battery_state_topic,
+            self._on_battery_state,
             10,
             callback_group=self._client_group,
         )
@@ -1900,12 +2049,46 @@ class RouteExecutorNode(Node):
     def _publish_empty_active_chunk_path(self) -> None:
         self._publish_empty_path(self._active_chunk_path_pub)
 
+    def _configured_home_waypoint(self) -> Optional[RouteWaypoint]:
+        if not (
+            np.isfinite(float(self.default_home_lat)) and np.isfinite(float(self.default_home_lon))
+        ):
+            return None
+        return RouteWaypoint(
+            lat=float(self.default_home_lat),
+            lon=float(self.default_home_lon),
+            yaw_deg=float(self.default_home_yaw_deg),
+        )
+
+    def _effective_home_waypoint_locked(self) -> Optional[RouteWaypoint]:
+        if self._home_waypoint is not None:
+            return self._home_waypoint
+        return self._configured_home_waypoint()
+
+    def _return_home_phase_locked(self) -> str:
+        status_text = str(self._mission_status or "").lower()
+        if self._return_home_active:
+            return "active"
+        if self._return_home_requested:
+            if self._return_home_exit_input_index >= 0:
+                return "waiting_exit"
+            return "requested"
+        if "return home completed" in status_text:
+            return "completed"
+        if "return home unavailable" in status_text:
+            return "unavailable"
+        return "idle"
+
     def _reset_mission_locked(self, status: str = "idle") -> None:
         self._route_input = []
+        self._route_input_source_indices = []
         self._route_expanded = []
         self._route_action_jsons = []
+        self._route_waypoint_roles = []
         self._route_key_waypoint_flags = []
         self._route_input_indices = []
+        self._home_waypoint = None
+        self._home_input_index = -1
         self._active_chunk = []
         self._mission_id = ""
         self._chunk_id = 0
@@ -1923,6 +2106,11 @@ class RouteExecutorNode(Node):
         self._action_waypoint_index = 0
         self._action_type = ""
         self._action_until = None
+        self._low_battery_active = False
+        self._return_home_requested = False
+        self._return_home_active = False
+        self._return_home_exit_route_index = -1
+        self._return_home_exit_input_index = -1
         self._last_handled_nav_result_event_id = self._last_nav_result_event_id
         self._clear_blocked_state_locked()
 
@@ -1989,6 +2177,140 @@ class RouteExecutorNode(Node):
                 reason_text,
             )
 
+    def _on_battery_state(self, msg: BatteryState) -> None:
+        percentage = float(getattr(msg, "percentage", float("nan")))
+        if not np.isfinite(percentage):
+            return
+        if percentage <= 1.0:
+            percentage *= 100.0
+        percentage = max(0.0, min(100.0, percentage))
+
+        should_request_home = False
+        should_stop_non_loop = False
+        should_stop_missing_home = False
+        already_active = False
+        home_available = False
+        exit_selection: Optional[ReturnHomeExitSelection] = None
+        with self._lock:
+            self._battery_pct = float(percentage)
+            if self._low_battery_active:
+                return
+            if percentage > float(self.low_battery_threshold_pct):
+                return
+            self._low_battery_active = True
+            if not self._mission_active or self._mission_paused:
+                return
+            already_active = bool(self._return_home_requested or self._return_home_active)
+            if already_active:
+                return
+            home_available = self._effective_home_waypoint_locked() is not None
+            if self._mission_loop:
+                if home_available:
+                    exit_selection = _select_return_home_exit_waypoint(
+                        self._route_input,
+                        self._route_input_source_indices,
+                        self._effective_home_waypoint_locked(),
+                    )
+                    if exit_selection is not None:
+                        self._return_home_requested = True
+                        self._return_home_exit_route_index = int(exit_selection.route_index)
+                        self._return_home_exit_input_index = int(exit_selection.input_index)
+                        should_request_home = True
+                        self._mission_status = self._status_with_note_locked(
+                            "return home waiting for exit waypoint"
+                        )
+                    else:
+                        should_stop_missing_home = True
+                else:
+                    should_stop_missing_home = True
+            else:
+                should_stop_non_loop = True
+
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "LOW_BATTERY_DETECTED",
+            "Low battery detected during mission",
+            details={
+                "battery_pct": f"{percentage:.1f}",
+                "threshold_pct": f"{self.low_battery_threshold_pct:.1f}",
+                "loop": int(self._mission_loop),
+                "home_available": int(home_available),
+                "return_home_exit_input_index": (
+                    int(exit_selection.input_index) if exit_selection is not None else -1
+                ),
+            },
+        )
+        if should_request_home:
+            self._publish_route_event(
+                DiagnosticStatus.WARN,
+                "RETURN_HOME_REQUESTED",
+                "Return home requested by low battery",
+                details={
+                    "battery_pct": f"{percentage:.1f}",
+                    "home_exit_input_index": int(exit_selection.input_index)
+                    if exit_selection is not None
+                    else -1,
+                    "home_exit_lat": f"{exit_selection.waypoint.lat:.8f}"
+                    if exit_selection is not None
+                    else "",
+                    "home_exit_lon": f"{exit_selection.waypoint.lon:.8f}"
+                    if exit_selection is not None
+                    else "",
+                },
+            )
+            return
+        if should_stop_non_loop:
+            self._stop_for_low_battery_non_loop(percentage)
+            return
+        if should_stop_missing_home:
+            self._stop_for_missing_home(percentage)
+
+    def _stop_for_low_battery_non_loop(self, battery_pct: float) -> None:
+        self._apply_brake()
+        self._cancel_nav_goal()
+        with self._lock:
+            self._mission_active = False
+            self._mission_paused = False
+            self._awaiting_chunk_result = False
+            self._active_chunk = []
+            self._return_home_requested = False
+            self._return_home_active = False
+            self._return_home_exit_route_index = -1
+            self._return_home_exit_input_index = -1
+            self._mission_status = self._status_with_note_locked(
+                "route stopped: low battery on non-loop mission"
+            )
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "LOW_BATTERY_NON_LOOP_STOPPED",
+            "Low battery stopped non-loop mission",
+            details={"battery_pct": f"{battery_pct:.1f}"},
+        )
+        self._publish_empty_route_paths()
+
+    def _stop_for_missing_home(self, battery_pct: float) -> None:
+        self._apply_brake()
+        self._cancel_nav_goal()
+        with self._lock:
+            self._mission_active = False
+            self._mission_paused = False
+            self._awaiting_chunk_result = False
+            self._active_chunk = []
+            self._return_home_requested = False
+            self._return_home_active = False
+            self._return_home_exit_route_index = -1
+            self._return_home_exit_input_index = -1
+            self._mission_status = self._status_with_note_locked(
+                "return home unavailable: HOME waypoint missing"
+            )
+        self._publish_route_event(
+            DiagnosticStatus.ERROR,
+            "RETURN_HOME_UNAVAILABLE",
+            "Low battery detected but no HOME waypoint is available",
+            details={"battery_pct": f"{battery_pct:.1f}"},
+        )
+        self._publish_empty_route_paths()
+
     def _cancel_nav_goal(self) -> Tuple[bool, str]:
         res = self._call_service(
             self._nav_cancel_goal_client, CancelNavGoal.Request(), self.request_timeout_s
@@ -1996,6 +2318,49 @@ class RouteExecutorNode(Node):
         if res is None:
             return False, "cancel_goal timeout"
         return bool(res.ok), str(res.error)
+
+    def _dispatch_return_home(self) -> Tuple[bool, str]:
+        with self._lock:
+            home_waypoint = self._effective_home_waypoint_locked()
+            if home_waypoint is None:
+                return False, "HOME waypoint unavailable"
+
+        request = SetNavGoalLL.Request()
+        request.lats = [float(home_waypoint.lat)]
+        request.lons = [float(home_waypoint.lon)]
+        request.yaws_deg = [float(home_waypoint.yaw_deg)]
+        request.loop = False
+        request.suppress_success_brake = False
+        request.lat = float(home_waypoint.lat)
+        request.lon = float(home_waypoint.lon)
+        request.yaw_deg = float(home_waypoint.yaw_deg)
+        response = self._call_service(self._nav_set_goal_client, request, self.request_timeout_s)
+        if response is None:
+            return False, "set_goal_ll timeout"
+        if not bool(response.ok):
+            return False, str(response.error)
+
+        with self._lock:
+            self._return_home_active = True
+            self._awaiting_chunk_result = True
+            self._active_chunk = [home_waypoint]
+            self._mission_status = self._status_with_note_locked("return home active")
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "RETURN_HOME_STARTED",
+            "Return home started",
+            details={
+                "home_lat": f"{home_waypoint.lat:.8f}",
+                "home_lon": f"{home_waypoint.lon:.8f}",
+                "home_yaw_deg": f"{home_waypoint.yaw_deg:.2f}",
+            },
+        )
+        self._publish_route_debug_path(
+            self._active_chunk_path_pub,
+            [home_waypoint],
+            label="return home",
+        )
+        return True, ""
 
     def _send_chunk(self, *, start_index: int) -> Tuple[bool, str]:
         with self._lock:
@@ -2236,6 +2601,8 @@ class RouteExecutorNode(Node):
 
         should_clear_paths = False
         should_send_next = False
+        should_send_home = False
+        exit_waypoint_reached = False
         with self._lock:
             self._action_active = False
             self._action_waypoint_index = 0
@@ -2243,7 +2610,20 @@ class RouteExecutorNode(Node):
             self._action_until = None
             if not self._mission_active or self._mission_paused:
                 return
-            if reached_end and (not self._mission_loop):
+            exit_waypoint_reached = bool(
+                self._return_home_requested
+                and not self._return_home_active
+                and self._return_home_exit_input_index >= 0
+                and self._current_target_index < len(self._route_input_indices)
+                and int(self._route_input_indices[self._current_target_index])
+                == int(self._return_home_exit_input_index)
+            )
+            if exit_waypoint_reached:
+                should_send_home = True
+                self._mission_status = self._status_with_note_locked(
+                    "return home exit waypoint reached"
+                )
+            elif reached_end and (not self._mission_loop):
                 self._complete_route_locked()
                 should_clear_paths = True
             else:
@@ -2256,6 +2636,34 @@ class RouteExecutorNode(Node):
                 "Route mission completed after waypoint action",
                 details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
             )
+            self._publish_empty_route_paths()
+            return
+        if should_send_home:
+            self._publish_route_event(
+                DiagnosticStatus.WARN,
+                "RETURN_HOME_EXIT_REACHED",
+                "Return home exit waypoint reached after waypoint action",
+                details={"home_exit_input_index": int(self._return_home_exit_input_index)},
+            )
+            ok, err = self._dispatch_return_home()
+            if ok:
+                return
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "RETURN_HOME_UNAVAILABLE",
+                "Return home could not be dispatched after waypoint action",
+                details={"error": str(err)},
+            )
+            with self._lock:
+                self._mission_active = False
+                self._mission_paused = False
+                self._awaiting_chunk_result = False
+                self._active_chunk = []
+                self._return_home_requested = False
+                self._return_home_active = False
+                self._return_home_exit_route_index = -1
+                self._return_home_exit_input_index = -1
+                self._mission_status = self._status_with_note_locked(f"return home failed: {err}")
             self._publish_empty_route_paths()
             return
         if should_send_next:
@@ -2285,6 +2693,9 @@ class RouteExecutorNode(Node):
         next_start_index = 0
         checkpoint_details: Optional[Dict[str, Any]] = None
         mission_completed = False
+        should_send_home = False
+        exit_waypoint_reached = False
+        reached_input_index = -1
         with self._lock:
             if not self._mission_active or self._mission_paused:
                 return
@@ -2304,6 +2715,7 @@ class RouteExecutorNode(Node):
                     if 0 <= action_waypoint_index < len(input_indices)
                     else -1
                 )
+                reached_input_index = int(input_index)
                 if loop_enabled and action_waypoint_index < start_index:
                     self._loop_iteration += 1
                 if input_index >= 0:
@@ -2324,12 +2736,27 @@ class RouteExecutorNode(Node):
                 )
                 reached_end = next_start_index >= expanded_count
                 should_run_action = bool(action_json) and not self._action_active
+                exit_waypoint_reached = bool(
+                    self._return_home_requested
+                    and not self._return_home_active
+                    and input_index >= 0
+                    and int(input_index) == int(self._return_home_exit_input_index)
+                )
+                should_send_home = bool(exit_waypoint_reached and not should_run_action)
                 if should_run_action:
                     self._mission_status = self._status_with_note_locked("route action pending")
+                elif should_send_home or exit_waypoint_reached:
+                    self._mission_status = self._status_with_note_locked(
+                        "return home exit waypoint reached"
+                    )
                 elif reached_end and (not loop_enabled):
                     self._complete_route_locked()
                     should_clear_paths = True
                     mission_completed = True
+                elif self._return_home_requested and not self._return_home_active:
+                    self._mission_status = self._status_with_note_locked(
+                        "return home waiting for exit waypoint"
+                    )
 
         if checkpoint_details is not None:
             self._publish_route_event(
@@ -2363,6 +2790,34 @@ class RouteExecutorNode(Node):
             )
             thread.start()
             return
+        if should_send_home:
+            self._publish_route_event(
+                DiagnosticStatus.WARN,
+                "RETURN_HOME_EXIT_REACHED",
+                "Return home exit waypoint reached",
+                details={"home_exit_input_index": int(reached_input_index)},
+            )
+            ok, err = self._dispatch_return_home()
+            if ok:
+                return
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "RETURN_HOME_UNAVAILABLE",
+                "Return home could not be dispatched",
+                details={"error": str(err)},
+            )
+            with self._lock:
+                self._mission_active = False
+                self._mission_paused = False
+                self._awaiting_chunk_result = False
+                self._active_chunk = []
+                self._return_home_requested = False
+                self._return_home_active = False
+                self._return_home_exit_route_index = -1
+                self._return_home_exit_input_index = -1
+                self._mission_status = self._status_with_note_locked(f"return home failed: {err}")
+            self._publish_empty_route_paths()
+            return
 
         ok, err = self._send_chunk(start_index=next_start_index)
         if ok:
@@ -2386,6 +2841,7 @@ class RouteExecutorNode(Node):
         should_advance = False
         should_stop = False
         should_enter_blocked = False
+        should_complete_return_home = False
         blocked_reason_code = ""
         blocked_reason_text = ""
         blocked_cancel_goal = False
@@ -2455,10 +2911,21 @@ class RouteExecutorNode(Node):
                 self._awaiting_chunk_result = False
                 status = int(msg.nav_result_status)
                 if status == int(GoalStatus.STATUS_SUCCEEDED):
-                    blocked_was_active = self._clear_blocked_state_locked()
-                    should_advance = True
-                    if blocked_was_active:
-                        self._mission_status = self._status_with_note_locked("route active")
+                    if self._return_home_active:
+                        self._complete_route_locked()
+                        self._return_home_active = False
+                        self._return_home_requested = False
+                        self._return_home_exit_route_index = -1
+                        self._return_home_exit_input_index = -1
+                        self._mission_status = self._status_with_note_locked(
+                            "return home completed"
+                        )
+                        should_complete_return_home = True
+                    else:
+                        blocked_was_active = self._clear_blocked_state_locked()
+                        should_advance = True
+                        if blocked_was_active:
+                            self._mission_status = self._status_with_note_locked("route active")
                 elif status == int(GoalStatus.STATUS_CANCELED):
                     self._mission_active = False
                     self._active_chunk = []
@@ -2490,6 +2957,15 @@ class RouteExecutorNode(Node):
             self.get_logger().warning("Route mission paused by manual takeover")
             self._publish_empty_active_chunk_path()
             return
+        if should_complete_return_home:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "RETURN_HOME_COMPLETED",
+                "Return home completed",
+                details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
+            )
+            self._publish_empty_route_paths()
+            return
         if should_enter_blocked:
             self._enter_blocked_waiting(
                 blocked_reason_code,
@@ -2518,29 +2994,44 @@ class RouteExecutorNode(Node):
 
     def _validate_set_route_request(
         self, request: SetRouteMissionLL.Request
-    ) -> Tuple[Optional[List[RouteWaypoint]], Optional[List[str]], bool, float, float, int, str]:
+    ) -> Tuple[
+        Optional[List[RouteWaypoint]],
+        Optional[List[str]],
+        Optional[List[str]],
+        bool,
+        float,
+        float,
+        int,
+        str,
+    ]:
         lats = [float(value) for value in request.lats]
         lons = [float(value) for value in request.lons]
         yaws = [float(value) for value in request.yaws_deg]
         if len(lats) == 0:
-            return None, None, False, 0.0, 0.0, 0, "at least one waypoint is required"
+            return None, None, None, False, 0.0, 0.0, 0, "at least one waypoint is required"
         if len(lats) != len(lons):
-            return None, None, False, 0.0, 0.0, 0, "lats and lons must have the same length"
+            return None, None, None, False, 0.0, 0.0, 0, "lats and lons must have the same length"
         if len(yaws) not in (0, len(lats)):
-            return None, None, False, 0.0, 0.0, 0, "yaws_deg must be empty or match lats length"
+            return None, None, None, False, 0.0, 0.0, 0, "yaws_deg must be empty or match lats length"
         for idx, (lat, lon) in enumerate(zip(lats, lons)):
             if (not np.isfinite(lat)) or (not np.isfinite(lon)):
-                return None, None, False, 0.0, 0.0, 0, f"invalid waypoint values at index {idx}"
+                return None, None, None, False, 0.0, 0.0, 0, f"invalid waypoint values at index {idx}"
         for idx, yaw_deg in enumerate(yaws):
             if not np.isfinite(yaw_deg):
-                return None, None, False, 0.0, 0.0, 0, f"invalid yaw_deg at index {idx}"
+                return None, None, None, False, 0.0, 0.0, 0, f"invalid yaw_deg at index {idx}"
 
         action_jsons, actions_error = _parse_route_action_jsons(
             list(getattr(request, "waypoint_action_jsons", [])),
             len(lats),
         )
         if action_jsons is None:
-            return None, None, False, 0.0, 0.0, 0, actions_error
+            return None, None, None, False, 0.0, 0.0, 0, actions_error
+        waypoint_roles, roles_error = _parse_waypoint_roles(
+            list(getattr(request, "waypoint_roles", [])),
+            len(lats),
+        )
+        if waypoint_roles is None:
+            return None, None, None, False, 0.0, 0.0, 0, roles_error
 
         leg_spacing_m = (
             float(request.leg_spacing_m)
@@ -2561,6 +3052,7 @@ class RouteExecutorNode(Node):
         return (
             resolved,
             action_jsons,
+            waypoint_roles,
             bool(request.loop),
             leg_spacing_m,
             chunk_span_m,
@@ -2571,12 +3063,24 @@ class RouteExecutorNode(Node):
     def _on_set_route(
         self, request: SetRouteMissionLL.Request, response: SetRouteMissionLL.Response
     ) -> SetRouteMissionLL.Response:
-        route_input, action_jsons, loop_enabled, leg_spacing_m, chunk_span_m, chunk_max_waypoints, error = (
+        route_input, action_jsons, waypoint_roles, loop_enabled, leg_spacing_m, chunk_span_m, chunk_max_waypoints, error = (
             self._validate_set_route_request(request)
         )
-        if route_input is None or action_jsons is None:
+        if route_input is None or action_jsons is None or waypoint_roles is None:
             response.ok = False
             response.error = error
+            return response
+
+        route_input, action_jsons, waypoint_roles, home_waypoint, split_error = _split_home_waypoint(
+            route_input,
+            action_jsons,
+            waypoint_roles,
+        )
+        if split_error:
+            response.ok = False
+            response.error = split_error
+            response.input_waypoint_count = 0
+            response.expanded_waypoint_count = 0
             return response
 
         route_input, action_jsons, dropped_loop_closure = drop_duplicate_loop_closure_with_actions(
@@ -2596,6 +3100,7 @@ class RouteExecutorNode(Node):
             waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
             segment_start_tolerance_m=self.route_segment_start_tolerance_m,
             action_jsons=action_jsons,
+            waypoint_roles=waypoint_roles,
         )
         if prepared is None:
             response.ok = False
@@ -2633,13 +3138,23 @@ class RouteExecutorNode(Node):
         mission_id = uuid.uuid4().hex[:12]
         with self._lock:
             self._route_input = list(prepared.waypoints)
+            self._route_input_source_indices = list(
+                prepared.input_indices
+                if prepared.input_indices is not None
+                else range(len(prepared.waypoints))
+            )
             self._route_expanded = list(expanded)
             self._route_action_jsons = list(expanded_action_jsons)
+            self._route_waypoint_roles = [WAYPOINT_ROLE_NORMAL for _ in expanded]
             self._route_key_waypoint_flags = list(expanded_key_flags)
             self._route_input_indices = expanded_input_indices(
                 expanded_key_flags,
                 prepared.input_indices,
             )
+            self._home_waypoint = (
+                home_waypoint.waypoint if home_waypoint is not None else self._configured_home_waypoint()
+            )
+            self._home_input_index = int(home_waypoint.input_index) if home_waypoint is not None else -1
             self._active_chunk = []
             self._mission_id = mission_id
             self._chunk_id = 0
@@ -2660,6 +3175,11 @@ class RouteExecutorNode(Node):
             self._action_waypoint_index = 0
             self._action_type = ""
             self._action_until = None
+            self._low_battery_active = False
+            self._return_home_requested = False
+            self._return_home_active = False
+            self._return_home_exit_route_index = -1
+            self._return_home_exit_input_index = -1
             self._last_handled_nav_result_event_id = self._last_nav_result_event_id
             self._clear_blocked_state_locked()
 
@@ -2674,6 +3194,7 @@ class RouteExecutorNode(Node):
                 "synthetic_waypoint_count": sum(not bool(flag) for flag in expanded_key_flags),
                 "loop": int(loop_enabled),
                 "leg_spacing_m": float(leg_spacing_m),
+                "home_available": int(self._home_waypoint is not None),
             },
         )
         ok, err = self._send_chunk(start_index=0)
@@ -2699,6 +3220,7 @@ class RouteExecutorNode(Node):
                 self._mission_paused = False
                 self._active_chunk = []
                 self._route_action_jsons = []
+                self._route_waypoint_roles = []
                 self._route_key_waypoint_flags = []
                 self._route_input_indices = []
                 self._mission_status = self._status_with_note_locked(f"route failed: {err}")
@@ -2742,6 +3264,13 @@ class RouteExecutorNode(Node):
             response.active = bool(self._mission_active)
             response.paused = bool(self._mission_paused)
             response.loop = bool(self._mission_loop)
+            response.low_battery_active = bool(self._low_battery_active)
+            response.return_home_requested = bool(self._return_home_requested)
+            response.return_home_active = bool(self._return_home_active)
+            response.return_home_exit_waypoint_index = int(self._return_home_exit_input_index)
+            response.return_home_phase = str(self._return_home_phase_locked())
+            effective_home = self._effective_home_waypoint_locked()
+            response.home_available = bool(effective_home is not None)
             response.mission_id = str(self._mission_id)
             response.chunk_id = int(self._chunk_id)
             response.loop_iteration = int(self._loop_iteration)
@@ -2780,10 +3309,18 @@ class RouteExecutorNode(Node):
             response.distance_to_target_m = (
                 float(progress.distance_to_target_m) if progress is not None else float("nan")
             )
+            response.home_lat = float(effective_home.lat) if effective_home is not None else float("nan")
+            response.home_lon = float(effective_home.lon) if effective_home is not None else float("nan")
+            response.home_yaw_deg = (
+                float(effective_home.yaw_deg) if effective_home is not None else float("nan")
+            )
             response.mission_lats = [float(entry.lat) for entry in self._route_expanded]
             response.mission_lons = [float(entry.lon) for entry in self._route_expanded]
             response.mission_yaws_deg = [float(entry.yaw_deg) for entry in self._route_expanded]
             response.mission_action_jsons = [str(entry or "") for entry in self._route_action_jsons]
+            response.mission_waypoint_roles = [
+                str(entry or WAYPOINT_ROLE_NORMAL) for entry in self._route_waypoint_roles
+            ]
             response.mission_key_flags = [bool(entry) for entry in self._route_key_waypoint_flags]
             response.mission_input_indices = [int(entry) for entry in input_indices]
             response.active_lats = [float(entry.lat) for entry in self._active_chunk]

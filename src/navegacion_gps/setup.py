@@ -64,6 +64,7 @@ setup(
             'scan_ground_validation = navegacion_gps.scan_ground_validation:main',
             'scan_noise_filter = navegacion_gps.scan_noise_filter:main',
             'scan_wifi_debug = navegacion_gps.scan_wifi_debug:main',
+            'sim_battery_publisher = navegacion_gps.sim_battery_publisher:main',
             'sim_drive_telemetry = navegacion_gps.sim_drive_telemetry:main',
             'sim_compass_hdg = navegacion_gps.sim_compass_hdg:main',
             'sim_sensor_normalizer_v2 = navegacion_gps.sim_sensor_normalizer_v2:main',

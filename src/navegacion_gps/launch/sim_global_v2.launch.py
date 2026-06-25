@@ -682,6 +682,21 @@ def generate_launch_description():
             ),
             Node(
                 package="navegacion_gps",
+                executable="sim_battery_publisher",
+                name="sim_battery_publisher",
+                output="screen",
+                parameters=[
+                    {
+                        "battery_state_topic": "/battery_state",
+                        "publish_hz": 2.0,
+                        "initial_percentage": 100.0,
+                        "low_percentage": 15.0,
+                        "drain_per_second": 0.0,
+                    }
+                ],
+            ),
+            Node(
+                package="navegacion_gps",
                 executable="route_executor",
                 name="route_executor",
                 output="screen",
@@ -691,6 +706,8 @@ def generate_launch_description():
                         "nav_set_goal_service": "/nav_command_server/set_goal_ll",
                         "nav_cancel_goal_service": "/nav_command_server/cancel_goal",
                         "nav_telemetry_topic": "/nav_command_server/telemetry",
+                        "battery_state_topic": "/battery_state",
+                        "low_battery_threshold_pct": 25.0,
                         "set_route_service": "/route_executor/set_route_ll",
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",

@@ -326,6 +326,13 @@ def test_resolve_waypoint_yaws_preserves_manual_and_uses_robot_for_single_auto()
 def test_default_route_mission_payload_includes_blocked_fields():
     payload = _FakeRouteStateNode._build_default_route_mission_payload()
 
+    assert payload["low_battery_active"] is False
+    assert payload["return_home_requested"] is False
+    assert payload["return_home_active"] is False
+    assert payload["return_home_exit_waypoint_index"] == -1
+    assert payload["return_home_phase"] == "idle"
+    assert payload["home_available"] is False
+    assert payload["home_waypoint"] is None
     assert payload["blocked_state"] == ""
     assert payload["blocked_reason_code"] == ""
     assert payload["blocked_reason_text"] == ""
@@ -340,6 +347,12 @@ def test_update_route_state_exposes_blocked_fields_for_websocket_payload():
         active=True,
         paused=False,
         loop=False,
+        low_battery_active=True,
+        return_home_requested=True,
+        return_home_active=False,
+        return_home_exit_waypoint_index=7,
+        return_home_phase="waiting_exit",
+        home_available=True,
         input_waypoint_count=2,
         expanded_waypoint_count=3,
         current_start_index=1,
@@ -355,9 +368,13 @@ def test_update_route_state_exposes_blocked_fields_for_websocket_payload():
         blocked_retry_attempt=1,
         blocked_retry_max_attempts=3,
         blocked_wait_remaining_s=7.5,
+        home_lat=-31.002,
+        home_lon=-64.002,
+        home_yaw_deg=180.0,
         mission_lats=[-31.0, -31.001],
         mission_lons=[-64.0, -64.001],
         mission_yaws_deg=[0.0, 90.0],
+        mission_waypoint_roles=["normal", "normal"],
         active_lats=[-31.001],
         active_lons=[-64.001],
         active_yaws_deg=[90.0],
@@ -371,6 +388,12 @@ def test_update_route_state_exposes_blocked_fields_for_websocket_payload():
     assert node._route_mission["blocked_retry_attempt"] == 1
     assert node._route_mission["blocked_retry_max_attempts"] == 3
     assert node._route_mission["blocked_wait_remaining_s"] == pytest.approx(7.5)
+    assert node._route_mission["low_battery_active"] is True
+    assert node._route_mission["return_home_requested"] is True
+    assert node._route_mission["return_home_exit_waypoint_index"] == 7
+    assert node._route_mission["return_home_phase"] == "waiting_exit"
+    assert node._route_mission["home_available"] is True
+    assert node._route_mission["home_waypoint"]["role"] == "home"
 
 
 def test_mission_session_starts_only_after_goal_accepted(monkeypatch):
