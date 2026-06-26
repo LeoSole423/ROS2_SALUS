@@ -484,7 +484,7 @@ class ControllerServerNode(Node):
                 else BatteryState.POWER_SUPPLY_HEALTH_GOOD
             )
             battery_msg.power_supply_technology = (
-                BatteryState.POWER_SUPPLY_TECHNOLOGY_LEAD_ACID
+                BatteryState.POWER_SUPPLY_TECHNOLOGY_UNKNOWN
             )
             self._battery_state_pub.publish(battery_msg)
 
