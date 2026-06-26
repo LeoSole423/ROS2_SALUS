@@ -49,7 +49,7 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `auto_drive_enabled`
 - `estop_brake_pct`
 - `battery_state_topic`
-- `battery_full_voltage`
+- `battery_full_voltage` (default operativo: `62.4 V`; el pico de carga alto puede ser mayor)
 - `battery_empty_voltage`
 - `battery_low_voltage`
 - `battery_critical_voltage`
