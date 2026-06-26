@@ -1,6 +1,6 @@
 # RAPY_ESP32_COMMS
 
-Cliente UART v2 para controlar la ESP32 desde Raspberry Pi y leer telemetría.
+Cliente UART v2 para controlar la ESP32 desde Raspberry Pi y leer telemetría de control y batería.
 
 ## Requisitos
 
@@ -65,6 +65,7 @@ python3 -m controller_server.rpy_esp32_comms \
 - `CommsClient.set_drive_enabled(v)`
 - `CommsClient.set_estop(v)`
 - `CommsClient.get_latest_telemetry()`
+- `CommsClient.get_latest_battery_telemetry()`
 
 ## Protocolo UART v2
 
@@ -77,7 +78,7 @@ python3 -m controller_server.rpy_esp32_comms \
   - bit1: `DRIVE_EN`
   - bit2: `REV_REQ`
 
-### ESP32 -> Pi (8 bytes)
+### ESP32 -> Pi control (8 bytes)
 
 `0x55 | status_flags | speed_meas_u16_le | steer_meas_i16_le | brake_applied_u8 | crc8`
 
@@ -85,6 +86,14 @@ Sentinels:
 
 - `speed_meas_u16 == 0xFFFF` -> `speed_mps=None`
 - `steer_meas_i16 == -32768` -> `steer_deg=None`
+
+### ESP32 -> Pi batería (8 bytes)
+
+`0x56 | battery_flags | battery_cv_u16_le | adc_pin_mv_u16_le | sample_age_ds_u8 | crc8`
+
+- `battery_cv_u16_le`: voltaje de batería ya calibrado en `V x100`
+- `adc_pin_mv_u16_le`: voltaje del pin ADC en `mV`
+- `sample_age_ds_u8`: antigüedad de muestra en decisegundos
 
 ## Tests
 

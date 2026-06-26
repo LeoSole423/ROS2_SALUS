@@ -335,6 +335,9 @@ class SimGazeboBackend:
             max_joint_odom_delta_rad=self._max_joint_odom_delta_rad,
         )
 
+    def get_latest_battery_telemetry(self):
+        return None
+
     def get_command_state(self) -> dict:
         with self._state_lock:
             return self._state.to_dict()
@@ -345,6 +348,8 @@ class SimGazeboBackend:
                 tx_frames_ok=self._stats.tx_frames_ok,
                 tx_errors=self._stats.tx_errors,
                 rx_frames_ok=self._stats.rx_frames_ok,
+                rx_control_frames_ok=self._stats.rx_control_frames_ok,
+                rx_battery_frames_ok=self._stats.rx_battery_frames_ok,
                 rx_crc_errors=self._stats.rx_crc_errors,
                 rx_parse_drops=self._stats.rx_parse_drops,
             )

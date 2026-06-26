@@ -19,6 +19,7 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `/controller/status` (`std_msgs/msg/String`, payload JSON)
 - `/controller/telemetry` (`std_msgs/msg/String`, payload JSON)
 - `/controller/drive_telemetry` (`interfaces/msg/DriveTelemetry`)
+- `/battery_state` (`sensor_msgs/msg/BatteryState`)
 
 ## Backends
 - `transport_backend:=uart`
@@ -47,6 +48,12 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `invert_steer_from_cmd_vel`
 - `auto_drive_enabled`
 - `estop_brake_pct`
+- `battery_state_topic`
+- `battery_full_voltage`
+- `battery_empty_voltage`
+- `battery_low_voltage`
+- `battery_critical_voltage`
+- `battery_telemetry_stale_timeout_s`
 
 ## Launch
 ```bash

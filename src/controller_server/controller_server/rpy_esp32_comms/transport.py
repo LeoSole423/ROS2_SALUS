@@ -8,8 +8,8 @@ from typing import Optional
 import serial
 
 from .controller import CommandState, DEFAULT_MAX_SPEED_MPS, DEFAULT_MAX_REVERSE_MPS
-from .protocol import EspFrameParser, decode_esp_frame, encode_pi_frame
-from .telemetry import Telemetry
+from .protocol import EspFrameParser, decode_transport_frame, encode_pi_frame
+from .telemetry import BatteryTelemetry, Telemetry
 
 
 @dataclass(slots=True)
@@ -17,6 +17,8 @@ class CommsStats:
     tx_frames_ok: int = 0
     tx_errors: int = 0
     rx_frames_ok: int = 0
+    rx_control_frames_ok: int = 0
+    rx_battery_frames_ok: int = 0
     rx_crc_errors: int = 0
     rx_parse_drops: int = 0
 
@@ -46,6 +48,8 @@ class CommsClient:
 
         self._latest_telemetry: Optional[Telemetry] = None
         self._telemetry_lock = threading.Lock()
+        self._latest_battery_telemetry: Optional[BatteryTelemetry] = None
+        self._battery_telemetry_lock = threading.Lock()
 
         self._stats = CommsStats()
         self._stats_lock = threading.Lock()
@@ -139,6 +143,10 @@ class CommsClient:
         with self._telemetry_lock:
             return self._latest_telemetry
 
+    def get_latest_battery_telemetry(self) -> Optional[BatteryTelemetry]:
+        with self._battery_telemetry_lock:
+            return self._latest_battery_telemetry
+
     def get_command_state(self) -> dict:
         with self._state_lock:
             return self._state.to_dict()
@@ -149,6 +157,8 @@ class CommsClient:
                 tx_frames_ok=self._stats.tx_frames_ok,
                 tx_errors=self._stats.tx_errors,
                 rx_frames_ok=self._stats.rx_frames_ok,
+                rx_control_frames_ok=self._stats.rx_control_frames_ok,
+                rx_battery_frames_ok=self._stats.rx_battery_frames_ok,
                 rx_crc_errors=self._stats.rx_crc_errors,
                 rx_parse_drops=self._stats.rx_parse_drops,
             )
@@ -223,26 +233,48 @@ class CommsClient:
 
             for frame in frames:
                 try:
-                    telemetry = decode_esp_frame(frame)
+                    frame_kind, payload = decode_transport_frame(frame)
                 except ValueError:
                     with self._stats_lock:
                         self._stats.rx_crc_errors += 1
                     continue
 
-                with self._telemetry_lock:
-                    self._latest_telemetry = telemetry
-
                 with self._stats_lock:
                     self._stats.rx_frames_ok += 1
+                    if frame_kind == "telemetry":
+                        self._stats.rx_control_frames_ok += 1
+                    elif frame_kind == "battery":
+                        self._stats.rx_battery_frames_ok += 1
 
-                if self._log_enabled:
-                    speed = "N/A" if telemetry.speed_mps is None else f"{telemetry.speed_mps:.2f}"
-                    steer = "N/A" if telemetry.steer_deg is None else f"{telemetry.steer_deg:.2f}"
-                    print(
-                        "[RX]"
-                        f" src={telemetry.control_source.name}"
-                        f" speed={speed}m/s"
-                        f" steer={steer}deg"
-                        f" brake={telemetry.brake_applied_pct}%"
-                        f" flags=0x{telemetry.status_flags:02X}"
-                    )
+                if frame_kind == "telemetry":
+                    telemetry = payload
+                    with self._telemetry_lock:
+                        self._latest_telemetry = telemetry
+
+                    if self._log_enabled:
+                        speed = "N/A" if telemetry.speed_mps is None else f"{telemetry.speed_mps:.2f}"
+                        steer = "N/A" if telemetry.steer_deg is None else f"{telemetry.steer_deg:.2f}"
+                        print(
+                            "[RX]"
+                            f" src={telemetry.control_source.name}"
+                            f" speed={speed}m/s"
+                            f" steer={steer}deg"
+                            f" brake={telemetry.brake_applied_pct}%"
+                            f" flags=0x{telemetry.status_flags:02X}"
+                        )
+                elif frame_kind == "battery":
+                    battery = payload
+                    with self._battery_telemetry_lock:
+                        self._latest_battery_telemetry = battery
+
+                    if self._log_enabled:
+                        print(
+                            "[RX][BAT]"
+                            f" voltage={battery.battery_voltage_v:.2f}V"
+                            f" adc={battery.adc_pin_voltage_v:.3f}V"
+                            f" age={battery.sample_age_s:.1f}s"
+                            f" ready={int(battery.ready)}"
+                            f" fresh={int(battery.fresh)}"
+                            f" suspect={int(battery.suspect)}"
+                            f" flags=0x{battery.status_flags:02X}"
+                        )

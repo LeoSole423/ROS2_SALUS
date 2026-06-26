@@ -62,3 +62,47 @@ class Telemetry:
             "raw_steer_centi_deg": self.raw_steer_centi_deg,
             "rx_monotonic_s": self.rx_monotonic_s,
         }
+
+
+@dataclass(slots=True)
+class BatteryTelemetry:
+    status_flags: int
+    battery_voltage_v: float
+    adc_pin_voltage_v: float
+    sample_age_s: float
+    raw_battery_centi_volts: int
+    raw_adc_pin_mv: int
+    raw_sample_age_ds: int
+    rx_monotonic_s: float
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.status_flags & (1 << 0))
+
+    @property
+    def fresh(self) -> bool:
+        return bool(self.status_flags & (1 << 1))
+
+    @property
+    def suspect(self) -> bool:
+        return bool(self.status_flags & (1 << 2))
+
+    @property
+    def calibrated(self) -> bool:
+        return bool(self.status_flags & (1 << 3))
+
+    def as_dict(self) -> dict:
+        return {
+            "status_flags": self.status_flags,
+            "ready": self.ready,
+            "fresh": self.fresh,
+            "suspect": self.suspect,
+            "calibrated": self.calibrated,
+            "battery_voltage_v": self.battery_voltage_v,
+            "adc_pin_voltage_v": self.adc_pin_voltage_v,
+            "sample_age_s": self.sample_age_s,
+            "raw_battery_centi_volts": self.raw_battery_centi_volts,
+            "raw_adc_pin_mv": self.raw_adc_pin_mv,
+            "raw_sample_age_ds": self.raw_sample_age_ds,
+            "rx_monotonic_s": self.rx_monotonic_s,
+        }

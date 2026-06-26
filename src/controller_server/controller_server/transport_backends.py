@@ -44,6 +44,9 @@ class UartTransportBackend:
     def get_latest_telemetry(self):
         return self._client.get_latest_telemetry()
 
+    def get_latest_battery_telemetry(self):
+        return self._client.get_latest_battery_telemetry()
+
     def get_stats(self):
         return self._client.get_stats()
 

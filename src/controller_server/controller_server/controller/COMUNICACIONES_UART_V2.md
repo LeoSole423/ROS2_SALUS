@@ -7,7 +7,7 @@ Este documento describe como funciona la comunicacion entre la Raspberry Pi y la
 - Transporte fisico: UART (`/dev/serial0` en Raspberry).
 - Velocidad: `115200` baudios.
 - Direccion Pi -> ESP32: comandos de manejo (drive, estop, velocidad, direccion, freno).
-- Direccion ESP32 -> Pi: telemetria y estado de seguridad.
+- Direccion ESP32 -> Pi: telemetria de control, estado de seguridad y batería.
 - Envio continuo Pi -> ESP32: `50 Hz` por defecto (para mantener frames frescos).
 
 ## 2. Formato de frames
@@ -33,7 +33,7 @@ Campos:
 - `brake_u8`: freno `0..100`.
 - `crc8`: CRC-8 Dallas/Maxim del frame sin el ultimo byte.
 
-## 2.2 ESP32 -> Pi (8 bytes)
+## 2.2 ESP32 -> Pi control (8 bytes)
 
 Formato:
 
@@ -53,7 +53,32 @@ Sentinels:
 - `speed_meas_u16 == 0xFFFF` -> `speed_mps = None`.
 - `steer_meas_i16 == -32768` -> `steer_deg = None`.
 
-## 2.3 status_flags
+## 2.3 ESP32 -> Pi batería (8 bytes)
+
+Formato:
+
+`0x56 | battery_flags | battery_cv_u16_le | adc_pin_mv_u16_le | sample_age_ds_u8 | crc8`
+
+Campos:
+
+- `0x56`: header de telemetría de batería.
+- `battery_flags`:
+  - bit0: `READY`
+  - bit1: `FRESH`
+  - bit2: `SUSPECT`
+  - bit3: `CALIBRATED`
+- `battery_cv_u16_le`: voltaje de batería ya calibrado en `V x100`.
+- `adc_pin_mv_u16_le`: voltaje real del pin ADC en `mV`.
+- `sample_age_ds_u8`: antigüedad de la muestra en decisegundos.
+- `crc8`: CRC-8 Dallas/Maxim.
+
+Notas:
+
+- La calibración ADC/divisor vive del lado ESP32, para que ROS2 reciba un voltaje útil directamente.
+- ROS2 usa `battery_cv` como dato principal, y `adc_pin_mv` para diagnóstico/recalibración.
+- La trama `0x55` anterior no cambia y sigue siendo válida.
+
+## 2.4 status_flags
 
 Bits:
 
@@ -82,13 +107,15 @@ Bits:
 El parser de telemetria en Raspberry:
 
 - usa buffer incremental,
-- busca header `0x55`,
+- busca headers `0x55` y `0x56`,
 - valida CRC antes de aceptar un frame,
 - resincroniza descartando bytes solo cuando hay desalineacion/CRC invalido.
 
 Metricas expuestas en `stats`:
 
 - `rx_frames_ok`
+- `rx_control_frames_ok`
+- `rx_battery_frames_ok`
 - `rx_crc_errors`
 - `rx_parse_drops`
 
@@ -107,13 +134,13 @@ python -m controller_server.rpy_esp32_comms
 Comandos disponibles dentro del prompt `rpy>`:
 
 - `help`: muestra ayuda.
-- `status`: estado deseado + ultima telemetria + estadisticas.
+- `status`: estado deseado + ultima telemetria de control + última batería + estadísticas.
 - `drive on|off`: habilita/deshabilita mando de traccion desde Pi.
 - `estop on|off`: activa/desactiva parada de emergencia.
 - `speed <mps>`: setpoint firmado de velocidad (ej: `speed 1.2` o `speed -0.8`).
 - `steer <int -100..100>`: direccion en porcentaje.
 - `brake <0..100>`: freno deseado.
-- `watch on|off`: imprime telemetria periodica.
+- `watch on|off`: imprime telemetria periódica de control y batería.
 - `log on|off`: imprime frames TX/RX en consola.
 - `quit`: salida segura.
 

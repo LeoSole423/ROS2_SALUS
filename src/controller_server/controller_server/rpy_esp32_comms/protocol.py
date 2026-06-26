@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import struct
 import time
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple, Union
 
 from .controller import CommandState
-from .telemetry import Telemetry
+from .telemetry import BatteryTelemetry, Telemetry
 
 PI_HEADER = 0xAA
 ESP_HEADER = 0x55
+BATTERY_HEADER = 0x56
 PI_FRAME_SIZE = 7
 ESP_FRAME_SIZE = 8
+BATTERY_FRAME_SIZE = 8
 PROTOCOL_VERSION = 2
 
 CMD_FLAG_ESTOP = 1 << 0
@@ -19,6 +21,11 @@ CMD_FLAG_REV_REQ = 1 << 2
 
 SPEED_SENTINEL = 0xFFFF
 STEER_SENTINEL = -32768
+BATTERY_FRAME_STATUS_READY = 1 << 0
+BATTERY_FRAME_STATUS_FRESH = 1 << 1
+BATTERY_FRAME_STATUS_SUSPECT = 1 << 2
+BATTERY_FRAME_STATUS_CALIBRATED = 1 << 3
+VALID_RX_HEADERS = (ESP_HEADER, BATTERY_HEADER)
 
 
 def crc8_maxim(data: bytes) -> int:
@@ -91,6 +98,52 @@ def decode_esp_frame(frame: bytes, rx_monotonic_s: Optional[float] = None) -> Te
     )
 
 
+def decode_battery_frame(
+    frame: bytes, rx_monotonic_s: Optional[float] = None
+) -> BatteryTelemetry:
+    if len(frame) != BATTERY_FRAME_SIZE:
+        raise ValueError(f"Invalid battery frame length: {len(frame)}")
+    if frame[0] != BATTERY_HEADER:
+        raise ValueError(f"Invalid battery frame header: 0x{frame[0]:02X}")
+
+    expected_crc = crc8_maxim(frame[:-1])
+    if frame[-1] != expected_crc:
+        raise ValueError(
+            f"Invalid battery frame CRC: got 0x{frame[-1]:02X}, expected 0x{expected_crc:02X}"
+        )
+
+    status_flags = frame[1]
+    battery_raw = frame[2] | (frame[3] << 8)
+    adc_raw = frame[4] | (frame[5] << 8)
+    sample_age_ds = frame[6]
+
+    return BatteryTelemetry(
+        status_flags=status_flags,
+        battery_voltage_v=battery_raw / 100.0,
+        adc_pin_voltage_v=adc_raw / 1000.0,
+        sample_age_s=sample_age_ds / 10.0,
+        raw_battery_centi_volts=battery_raw,
+        raw_adc_pin_mv=adc_raw,
+        raw_sample_age_ds=sample_age_ds,
+        rx_monotonic_s=time.monotonic() if rx_monotonic_s is None else rx_monotonic_s,
+    )
+
+
+DecodedRxFrame = Tuple[str, Union[Telemetry, BatteryTelemetry]]
+
+
+def decode_transport_frame(
+    frame: bytes, rx_monotonic_s: Optional[float] = None
+) -> DecodedRxFrame:
+    if not frame:
+        raise ValueError("Empty RX frame")
+    if frame[0] == ESP_HEADER:
+        return ("telemetry", decode_esp_frame(frame, rx_monotonic_s=rx_monotonic_s))
+    if frame[0] == BATTERY_HEADER:
+        return ("battery", decode_battery_frame(frame, rx_monotonic_s=rx_monotonic_s))
+    raise ValueError(f"Unsupported RX frame header: 0x{frame[0]:02X}")
+
+
 class EspFrameParser:
     """Streaming parser with CRC-aware re-sync for fixed-size ESP telemetry frames."""
 
@@ -112,8 +165,15 @@ class EspFrameParser:
         self._buffer.extend(data)
 
         while len(self._buffer) >= ESP_FRAME_SIZE:
-            if self._buffer[0] != ESP_HEADER:
-                header_index = self._buffer.find(ESP_HEADER)
+            if self._buffer[0] not in VALID_RX_HEADERS:
+                header_index = min(
+                    (
+                        idx
+                        for idx in (self._buffer.find(header) for header in VALID_RX_HEADERS)
+                        if idx != -1
+                    ),
+                    default=-1,
+                )
                 if header_index == -1:
                     self.dropped_partial_frames += len(self._buffer)
                     self._buffer.clear()
@@ -144,5 +204,6 @@ def decode_stream_chunks(chunks: Iterable[bytes]) -> List[Telemetry]:
     out: List[Telemetry] = []
     for chunk in chunks:
         for frame in parser.feed(chunk):
-            out.append(decode_esp_frame(frame))
+            if frame and frame[0] == ESP_HEADER:
+                out.append(decode_esp_frame(frame))
     return out

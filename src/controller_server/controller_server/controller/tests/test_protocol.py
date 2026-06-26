@@ -6,6 +6,7 @@ from controller_server.rpy_esp32_comms.controller import CommandState
 from controller_server.rpy_esp32_comms.protocol import (
     EspFrameParser,
     crc8_maxim,
+    decode_battery_frame,
     decode_esp_frame,
     encode_pi_frame,
 )
@@ -20,6 +21,21 @@ def make_esp_frame(status: int, speed_raw: int, steer_raw: int, brake: int) -> b
     frame[3] = (speed_raw >> 8) & 0xFF
     frame[4:6] = struct.pack("<h", steer_raw)
     frame[6] = brake & 0xFF
+    frame[7] = crc8_maxim(frame[:-1])
+    return bytes(frame)
+
+
+def make_battery_frame(
+    status: int, battery_centi_volts: int, adc_mv: int, sample_age_ds: int
+) -> bytes:
+    frame = bytearray(8)
+    frame[0] = 0x56
+    frame[1] = status & 0xFF
+    frame[2] = battery_centi_volts & 0xFF
+    frame[3] = (battery_centi_volts >> 8) & 0xFF
+    frame[4] = adc_mv & 0xFF
+    frame[5] = (adc_mv >> 8) & 0xFF
+    frame[6] = sample_age_ds & 0xFF
     frame[7] = crc8_maxim(frame[:-1])
     return bytes(frame)
 
@@ -74,6 +90,27 @@ def test_decode_esp_frame_bad_crc_raises() -> None:
         decode_esp_frame(bytes(frame))
 
 
+def test_decode_battery_frame_ok() -> None:
+    frame = make_battery_frame(status=0x0B, battery_centi_volts=6870, adc_mv=3075, sample_age_ds=12)
+    telemetry = decode_battery_frame(frame, rx_monotonic_s=321.0)
+
+    assert telemetry.ready is True
+    assert telemetry.fresh is True
+    assert telemetry.calibrated is True
+    assert telemetry.suspect is False
+    assert telemetry.battery_voltage_v == pytest.approx(68.70)
+    assert telemetry.adc_pin_voltage_v == pytest.approx(3.075)
+    assert telemetry.sample_age_s == pytest.approx(1.2)
+    assert telemetry.rx_monotonic_s == pytest.approx(321.0)
+
+
+def test_decode_battery_frame_bad_crc_raises() -> None:
+    frame = bytearray(make_battery_frame(status=0x01, battery_centi_volts=5500, adc_mv=2500, sample_age_ds=5))
+    frame[-1] ^= 0xFF
+    with pytest.raises(ValueError, match="CRC"):
+        decode_battery_frame(bytes(frame))
+
+
 def test_parser_resync_after_corrupt_bytes() -> None:
     parser = EspFrameParser()
 
@@ -97,6 +134,21 @@ def test_parser_does_not_drop_on_payload_0x55() -> None:
     out = parser.feed(frame)
 
     assert out == [frame]
+    assert parser.dropped_partial_frames == 0
+    assert parser.crc_error_frames == 0
+
+
+def test_parser_accepts_mixed_control_and_battery_frames() -> None:
+    parser = EspFrameParser()
+
+    control_frame = make_esp_frame(status=0x09, speed_raw=123, steer_raw=456, brake=7)
+    battery_frame = make_battery_frame(
+        status=0x0B, battery_centi_volts=6870, adc_mv=3075, sample_age_ds=8
+    )
+
+    out = parser.feed(control_frame + battery_frame)
+
+    assert out == [control_frame, battery_frame]
     assert parser.dropped_partial_frames == 0
     assert parser.crc_error_frames == 0
 

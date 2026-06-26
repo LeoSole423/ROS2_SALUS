@@ -85,6 +85,22 @@ def _format_telemetry(telemetry) -> str:
     )
 
 
+def _format_battery_telemetry(battery) -> str:
+    if battery is None:
+        return "battery: N/A"
+    return (
+        "battery: "
+        f"voltage={battery.battery_voltage_v:.2f} V "
+        f"adc={battery.adc_pin_voltage_v:.3f} V "
+        f"sample_age={battery.sample_age_s:.1f} s "
+        f"ready={int(battery.ready)} "
+        f"fresh={int(battery.fresh)} "
+        f"suspect={int(battery.suspect)} "
+        f"cal={int(battery.calibrated)} "
+        f"flags=0x{battery.status_flags:02X}"
+    )
+
+
 def _watch_loop(
     client: CommsClient,
     stop_event: threading.Event,
@@ -94,6 +110,7 @@ def _watch_loop(
     while not stop_event.is_set():
         if enabled_ref.get("watch", False):
             print(_format_telemetry(client.get_latest_telemetry()))
+            print(_format_battery_telemetry(client.get_latest_battery_telemetry()))
         stop_event.wait(period_s)
 
 
@@ -141,10 +158,14 @@ def run_cli(args: argparse.Namespace) -> int:
                     stats = client.get_stats()
                     print(f"desired: {desired}")
                     print(_format_telemetry(client.get_latest_telemetry()))
+                    print(_format_battery_telemetry(client.get_latest_battery_telemetry()))
                     print(
                         "stats: "
                         f"tx_ok={stats.tx_frames_ok} tx_err={stats.tx_errors} "
-                        f"rx_ok={stats.rx_frames_ok} rx_crc={stats.rx_crc_errors} "
+                        f"rx_ok={stats.rx_frames_ok} "
+                        f"rx_ctrl={stats.rx_control_frames_ok} "
+                        f"rx_bat={stats.rx_battery_frames_ok} "
+                        f"rx_crc={stats.rx_crc_errors} "
                         f"rx_drop={stats.rx_parse_drops}"
                     )
 
@@ -206,6 +227,13 @@ def run_cli(args: argparse.Namespace) -> int:
                             if client.get_latest_telemetry() is not None
                             else None
                         ),
+                        extra={
+                            "battery": (
+                                client.get_latest_battery_telemetry().as_dict()
+                                if client.get_latest_battery_telemetry() is not None
+                                else None
+                            )
+                        },
                     )
                     break
 
@@ -217,7 +245,14 @@ def run_cli(args: argparse.Namespace) -> int:
                     event="command",
                     command=raw,
                     telemetry=telemetry.as_dict() if telemetry else None,
-                    extra={"desired": client.get_command_state()},
+                    extra={
+                        "desired": client.get_command_state(),
+                        "battery": (
+                            client.get_latest_battery_telemetry().as_dict()
+                            if client.get_latest_battery_telemetry() is not None
+                            else None
+                        ),
+                    },
                 )
 
             except ValueError as exc:
