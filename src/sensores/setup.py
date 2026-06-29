@@ -28,6 +28,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name, ['pixhawk_dashboard.html']),
         ('share/' + package_name + '/launch', [
+            'launch/camara.launch.py',
             'launch/mavros.launch.py',
             'launch/pixhawk.launch.py',
             'launch/rs16.launch.py',

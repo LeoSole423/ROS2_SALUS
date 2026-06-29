@@ -35,7 +35,11 @@ def generate_launch_description():
     nav_snapshot_scan_topic = LaunchConfiguration("nav_snapshot_scan_topic")
     nav_telemetry_topic = LaunchConfiguration("nav_telemetry_topic")
     camera_pan_service = LaunchConfiguration("camera_pan_service")
+    camera_zoom_toggle_service = LaunchConfiguration("camera_zoom_toggle_service")
     camera_status_service = LaunchConfiguration("camera_status_service")
+    camera_ptz_service = LaunchConfiguration("camera_ptz_service")
+    camera_preset_service = LaunchConfiguration("camera_preset_service")
+    camera_ptz_state_service = LaunchConfiguration("camera_ptz_state_service")
     enable_control_lock = LaunchConfiguration("enable_control_lock")
     control_lock_start_locked = LaunchConfiguration("control_lock_start_locked")
     sensor_bridge_enabled = LaunchConfiguration("sensor_bridge_enabled")
@@ -119,8 +123,24 @@ def generate_launch_description():
                 default_value="/camara/camera_pan",
             ),
             DeclareLaunchArgument(
+                "camera_zoom_toggle_service",
+                default_value="/camara/camera_zoom_toggle",
+            ),
+            DeclareLaunchArgument(
                 "camera_status_service",
                 default_value="/camara/camera_status",
+            ),
+            DeclareLaunchArgument(
+                "camera_ptz_service",
+                default_value="/camara/camera_ptz",
+            ),
+            DeclareLaunchArgument(
+                "camera_preset_service",
+                default_value="/camara/camera_preset",
+            ),
+            DeclareLaunchArgument(
+                "camera_ptz_state_service",
+                default_value="/camara/camera_ptz_state",
             ),
             DeclareLaunchArgument("enable_control_lock", default_value="false"),
             DeclareLaunchArgument("control_lock_start_locked", default_value="true"),
@@ -238,7 +258,11 @@ def generate_launch_description():
                         "nav_snapshot_service": nav_snapshot_service,
                         "nav_telemetry_topic": nav_telemetry_topic,
                         "camera_pan_service": camera_pan_service,
+                        "camera_zoom_toggle_service": camera_zoom_toggle_service,
                         "camera_status_service": camera_status_service,
+                        "camera_ptz_service": camera_ptz_service,
+                        "camera_preset_service": camera_preset_service,
+                        "camera_ptz_state_service": camera_ptz_state_service,
                         "enable_control_lock": enable_control_lock,
                         "control_lock_start_locked": control_lock_start_locked,
                         "sensor_bridge_enabled": sensor_bridge_enabled,

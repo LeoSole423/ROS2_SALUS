@@ -36,6 +36,9 @@ from interfaces.msg import CmdVelFinal, DriveTelemetry, NavEvent, NavTelemetry
 from interfaces.srv import (
     BrakeNav,
     CameraPan,
+    CameraPreset,
+    CameraPtz,
+    CameraPtzState,
     CameraStatus,
     CancelNavGoal,
     CancelRouteMission,
@@ -217,6 +220,9 @@ class WebZoneServerNode(Node):
         self.declare_parameter("camera_pan_service", "/camara/camera_pan")
         self.declare_parameter("camera_zoom_toggle_service", "/camara/camera_zoom_toggle")
         self.declare_parameter("camera_status_service", "/camara/camera_status")
+        self.declare_parameter("camera_ptz_service", "/camara/camera_ptz")
+        self.declare_parameter("camera_preset_service", "/camara/camera_preset")
+        self.declare_parameter("camera_ptz_state_service", "/camara/camera_ptz_state")
         self.declare_parameter("camera_image_topic", "/camera/image_raw")
         self.declare_parameter("camera_detections_topic", "/detections")
         self.declare_parameter("camera_frame_encoding", "jpeg")
@@ -297,6 +303,13 @@ class WebZoneServerNode(Node):
             self.get_parameter("camera_zoom_toggle_service").value
         )
         self.camera_status_service = str(self.get_parameter("camera_status_service").value)
+        self.camera_ptz_service = str(self.get_parameter("camera_ptz_service").value)
+        self.camera_preset_service = str(
+            self.get_parameter("camera_preset_service").value
+        )
+        self.camera_ptz_state_service = str(
+            self.get_parameter("camera_ptz_state_service").value
+        )
         self.camera_image_topic = str(self.get_parameter("camera_image_topic").value)
         self.camera_detections_topic = str(
             self.get_parameter("camera_detections_topic").value
@@ -396,6 +409,10 @@ class WebZoneServerNode(Node):
             "error": "camera status unavailable",
             "last_command": "none",
             "zoom_in": False,
+            "pan_deg": 0.0,
+            "tilt_deg": 0.0,
+            "zoom_level": 0.0,
+            "active_preset": "",
         }
         self._route_mission = self._build_default_route_mission_payload()
         self._recent_nav_events: deque[Dict[str, Any]] = deque(maxlen=30)
@@ -522,6 +539,13 @@ class WebZoneServerNode(Node):
         self._camera_status_client = self.create_client(
             CameraStatus, self.camera_status_service
         )
+        self._camera_ptz_client = self.create_client(CameraPtz, self.camera_ptz_service)
+        self._camera_preset_client = self.create_client(
+            CameraPreset, self.camera_preset_service
+        )
+        self._camera_ptz_state_client = self.create_client(
+            CameraPtzState, self.camera_ptz_state_service
+        )
         self._datum_get_client = self.create_client(GetDatum, self.datum_get_service)
         self._control_lock_watchdog_timer = self.create_timer(
             0.25, self._control_lock_watchdog_tick
@@ -543,6 +567,8 @@ class WebZoneServerNode(Node):
             f"rosbag_dir={self.rosbag_output_dir}, "
             f"camera_pan={self.camera_pan_service}, camera_zoom_toggle={self.camera_zoom_toggle_service}, "
             f"camera_status={self.camera_status_service}, "
+            f"camera_ptz={self.camera_ptz_service}, camera_preset={self.camera_preset_service}, "
+            f"camera_ptz_state={self.camera_ptz_state_service}, "
             f"camera_image={self.camera_image_topic}, "
             f"camera_detections={self.camera_detections_topic}, "
             f"camera_frame_encoding={self.camera_frame_encoding}, "
@@ -3301,11 +3327,25 @@ class WebZoneServerNode(Node):
                 self._camera_status["ok"] = True
                 self._camera_status["error"] = ""
                 self._camera_status["last_command"] = f"angle:{applied:.1f}"
+            self.get_camera_ptz_state()
         else:
             with self._lock:
                 self._camera_status["ok"] = False
                 self._camera_status["error"] = str(res.error)
         return bool(res.ok), str(res.error), applied
+
+    def _store_camera_status_payload(self, payload: Dict[str, Any]) -> None:
+        with self._lock:
+            self._camera_status = {
+                "ok": bool(payload.get("ok", False)),
+                "error": str(payload.get("error", "")),
+                "last_command": str(payload.get("last_command", "none")),
+                "zoom_in": bool(payload.get("zoom_in", False)),
+                "pan_deg": float(payload.get("pan_deg", 0.0)),
+                "tilt_deg": float(payload.get("tilt_deg", 0.0)),
+                "zoom_level": float(payload.get("zoom_level", 0.0)),
+                "active_preset": str(payload.get("active_preset", "")),
+            }
 
     def camera_zoom_toggle(self) -> Tuple[bool, str]:
         req = Trigger.Request()
@@ -3321,11 +3361,116 @@ class WebZoneServerNode(Node):
                 self._camera_status["ok"] = True
                 self._camera_status["error"] = ""
                 self._camera_status["last_command"] = "zoom_toggle"
+            self.get_camera_ptz_state()
         else:
             with self._lock:
                 self._camera_status["ok"] = False
                 self._camera_status["error"] = str(res.message)
         return bool(res.success), str(res.message)
+
+    def camera_ptz_move(
+        self,
+        *,
+        relative: bool,
+        pan_deg: Optional[float] = None,
+        tilt_deg: Optional[float] = None,
+        zoom_level: Optional[float] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        req = CameraPtz.Request()
+        req.relative = bool(relative)
+        req.apply_pan = pan_deg is not None
+        req.pan_deg = float(pan_deg if pan_deg is not None else 0.0)
+        req.apply_tilt = tilt_deg is not None
+        req.tilt_deg = float(tilt_deg if tilt_deg is not None else 0.0)
+        req.apply_zoom = zoom_level is not None
+        req.zoom_level = float(zoom_level if zoom_level is not None else 0.0)
+        res = self._call_service(self._camera_ptz_client, req, self.request_timeout_s)
+        if res is None:
+            payload = {
+                "op": "camera_ptz_state",
+                "ok": False,
+                "error": "camera_ptz timeout",
+                "pan_deg": 0.0,
+                "tilt_deg": 0.0,
+                "zoom_level": 0.0,
+            }
+            return False, payload["error"], payload
+
+        payload = {
+            "op": "camera_ptz_state",
+            "ok": bool(res.ok),
+            "error": str(res.error),
+            "pan_deg": float(res.pan_deg),
+            "tilt_deg": float(res.tilt_deg),
+            "zoom_level": float(res.zoom_level),
+        }
+        if res.ok:
+            _, _, state_payload = self.get_camera_ptz_state()
+            return True, "", state_payload
+        return False, str(res.error), payload
+
+    def camera_preset(self, preset: str) -> Tuple[bool, str, Dict[str, Any]]:
+        req = CameraPreset.Request()
+        req.preset = str(preset)
+        res = self._call_service(self._camera_preset_client, req, self.request_timeout_s)
+        if res is None:
+            payload = {
+                "op": "camera_ptz_state",
+                "ok": False,
+                "error": "camera_preset timeout",
+                "applied_preset": "",
+                "pan_deg": 0.0,
+                "tilt_deg": 0.0,
+                "zoom_level": 0.0,
+            }
+            return False, payload["error"], payload
+
+        payload = {
+            "op": "camera_ptz_state",
+            "ok": bool(res.ok),
+            "error": str(res.error),
+            "applied_preset": str(res.applied_preset),
+            "pan_deg": float(res.pan_deg),
+            "tilt_deg": float(res.tilt_deg),
+            "zoom_level": float(res.zoom_level),
+        }
+        if res.ok:
+            _, _, state_payload = self.get_camera_ptz_state()
+            return True, "", state_payload
+        return False, str(res.error), payload
+
+    def get_camera_ptz_state(self) -> Tuple[bool, str, Dict[str, Any]]:
+        req = CameraPtzState.Request()
+        res = self._call_service(
+            self._camera_ptz_state_client, req, self.request_timeout_s
+        )
+        if res is None:
+            payload = {
+                "op": "camera_ptz_state",
+                "ok": False,
+                "error": "camera_ptz_state timeout",
+                "last_command": "",
+                "zoom_in": False,
+                "pan_deg": 0.0,
+                "tilt_deg": 0.0,
+                "zoom_level": 0.0,
+                "active_preset": "",
+            }
+            return False, payload["error"], payload
+
+        payload = {
+            "op": "camera_ptz_state",
+            "ok": bool(res.ok),
+            "error": str(res.error),
+            "last_command": str(res.last_command),
+            "zoom_in": bool(res.zoom_in),
+            "pan_deg": float(res.pan_deg),
+            "tilt_deg": float(res.tilt_deg),
+            "zoom_level": float(res.zoom_level),
+            "active_preset": str(res.active_preset),
+        }
+        self._store_camera_status_payload(payload)
+        return bool(res.ok), str(res.error), payload
 
     def get_camera_status(self) -> Tuple[bool, str, Dict[str, Any]]:
         req = CameraStatus.Request()
@@ -3337,6 +3482,10 @@ class WebZoneServerNode(Node):
                 "error": "camera_status timeout",
                 "last_command": "",
                 "zoom_in": False,
+                "pan_deg": 0.0,
+                "tilt_deg": 0.0,
+                "zoom_level": 0.0,
+                "active_preset": "",
             }
             return False, payload["error"], payload
 
@@ -3346,14 +3495,12 @@ class WebZoneServerNode(Node):
             "error": str(res.error),
             "last_command": str(res.last_command),
             "zoom_in": bool(res.zoom_in),
+            "pan_deg": float(res.pan_deg),
+            "tilt_deg": float(res.tilt_deg),
+            "zoom_level": float(res.zoom_level),
+            "active_preset": str(res.active_preset),
         }
-        with self._lock:
-            self._camera_status = {
-                "ok": bool(res.ok),
-                "error": str(res.error),
-                "last_command": str(res.last_command),
-                "zoom_in": bool(res.zoom_in),
-            }
+        self._store_camera_status_payload(payload)
         return bool(res.ok), str(res.error), payload
 
     def bootstrap_backend_state(self) -> None:
@@ -3367,7 +3514,7 @@ class WebZoneServerNode(Node):
         ok_r, err_r = self.get_route_state()
         if not ok_r and err_r:
             self.get_logger().warning(f"route bootstrap failed: {err_r}")
-        ok_c, err_c, _ = self.get_camera_status()
+        ok_c, err_c, _ = self.get_camera_ptz_state()
         if not ok_c and err_c:
             self.get_logger().warning(f"camera bootstrap failed: {err_c}")
         self._refresh_datum_snapshot()
@@ -4390,6 +4537,94 @@ class WebSocketApi:
 
         if op == "get_camera_status":
             _, _, payload = await asyncio.to_thread(self.node.get_camera_status)
+            if client_req_id is not None:
+                payload = dict(payload)
+                payload["client_req_id"] = client_req_id
+            await self._send_json(ws, payload)
+            return
+
+        if op == "camera_ptz_move":
+            relative = bool(msg.get("relative", False))
+            payload_fields: Dict[str, Optional[float]] = {
+                "pan_deg": None,
+                "tilt_deg": None,
+                "zoom_level": None,
+            }
+            for key in payload_fields:
+                raw_value = msg.get(key)
+                if raw_value is None:
+                    continue
+                try:
+                    numeric = float(raw_value)
+                except (ValueError, TypeError):
+                    await self._send_ack(
+                        ws,
+                        "camera_ptz_move",
+                        False,
+                        f"{key} must be numeric",
+                        client_req_id=client_req_id,
+                    )
+                    return
+                if not np.isfinite(numeric):
+                    await self._send_ack(
+                        ws,
+                        "camera_ptz_move",
+                        False,
+                        f"{key} must be finite",
+                        client_req_id=client_req_id,
+                    )
+                    return
+                payload_fields[key] = numeric
+            if all(value is None for value in payload_fields.values()):
+                await self._send_ack(
+                    ws,
+                    "camera_ptz_move",
+                    False,
+                    "at least one PTZ axis is required",
+                    client_req_id=client_req_id,
+                )
+                return
+            ok, err, payload = await asyncio.to_thread(
+                self.node.camera_ptz_move,
+                relative=relative,
+                pan_deg=payload_fields["pan_deg"],
+                tilt_deg=payload_fields["tilt_deg"],
+                zoom_level=payload_fields["zoom_level"],
+            )
+            await self._send_ack(
+                ws,
+                "camera_ptz_move",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra={"payload": payload},
+            )
+            return
+
+        if op == "camera_ptz_preset":
+            preset = str(msg.get("preset", "")).strip()
+            if not preset:
+                await self._send_ack(
+                    ws,
+                    "camera_ptz_preset",
+                    False,
+                    "preset is required",
+                    client_req_id=client_req_id,
+                )
+                return
+            ok, err, payload = await asyncio.to_thread(self.node.camera_preset, preset)
+            await self._send_ack(
+                ws,
+                "camera_ptz_preset",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra={"payload": payload},
+            )
+            return
+
+        if op == "get_camera_ptz_state":
+            _, _, payload = await asyncio.to_thread(self.node.get_camera_ptz_state)
             if client_req_id is not None:
                 payload = dict(payload)
                 payload["client_req_id"] = client_req_id

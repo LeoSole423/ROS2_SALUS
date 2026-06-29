@@ -96,10 +96,18 @@ Servicios:
 - `/camara/camera_pan`
 - `/camara/camera_zoom_toggle`
 - `/camara/camera_status`
+- `/camara/camera_ptz`
+- `/camara/camera_preset`
+- `/camara/camera_ptz_state`
 
 Ejecutar:
 ```bash
 ros2 run sensores camara
+```
+
+Launch dedicado:
+```bash
+ros2 launch sensores camara.launch.py
 ```
 
 ## Launch de Pixhawk legacy

@@ -205,6 +205,7 @@ def generate_launch_description():
     nav_start_delay_s = LaunchConfiguration("nav_start_delay_s")
     use_keepout = LaunchConfiguration("use_keepout")
     launch_web_app = LaunchConfiguration("launch_web_app")
+    launch_camera = LaunchConfiguration("launch_camera")
     ws_host = LaunchConfiguration("ws_host")
     web_app_port = LaunchConfiguration("web_app_port")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -403,6 +404,7 @@ def generate_launch_description():
             # 300 x 300 m. Se puede reactivar explícitamente por launch arg.
             DeclareLaunchArgument("use_keepout", default_value="False"),
             DeclareLaunchArgument("launch_web_app", default_value="True"),
+            DeclareLaunchArgument("launch_camera", default_value="True"),
             DeclareLaunchArgument("ws_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_app_port", default_value="8766"),
             DeclareLaunchArgument("use_rviz", default_value="False"),
@@ -592,6 +594,12 @@ def generate_launch_description():
                     "config_path": lidar_config_path,
                     "use_cyclone_dds": use_cyclone_dds,
                 }.items(),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(sensores_dir, "launch", "camara.launch.py")
+                ),
+                condition=IfCondition(launch_camera),
             ),
             OpaqueFunction(
                 function=_build_scan_ground_pipeline,

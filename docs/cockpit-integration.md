@@ -30,6 +30,9 @@ Fuente de verdad: `web_zone_server.py`, launches `real_global_v2` / `sim_global_
   - `camera_pan`
   - `camera_zoom_toggle`
   - `get_camera_status`
+  - `camera_ptz_move`
+  - `camera_ptz_preset`
+  - `get_camera_ptz_state`
 - Cockpit bridge:
   - `set_control_lock`
   - `control_heartbeat`
@@ -49,6 +52,7 @@ Fuente de verdad: `web_zone_server.py`, launches `real_global_v2` / `sim_global_
 ## Launches
 - `real_global_v2.launch.py`
   - arranca `sensores_web` junto al stack MAVROS cuando `launch_web_app=true`
+  - arranca `sensores/camara.launch.py` cuando `launch_camera=true`
   - pasa a `web_zone_server` el datum fijo del perfil
   - habilita el bridge HTTP hacia `sensores_web`
 - `sim_global_v2.launch.py`

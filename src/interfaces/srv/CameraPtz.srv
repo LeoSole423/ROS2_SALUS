@@ -1,0 +1,13 @@
+bool relative
+bool apply_pan
+float32 pan_deg
+bool apply_tilt
+float32 tilt_deg
+bool apply_zoom
+float32 zoom_level
+---
+bool ok
+string error
+float32 pan_deg
+float32 tilt_deg
+float32 zoom_level

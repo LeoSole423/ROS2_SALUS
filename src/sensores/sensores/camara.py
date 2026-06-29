@@ -16,7 +16,13 @@ from requests.exceptions import RequestException
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
-from interfaces.srv import CameraPan, CameraStatus
+from interfaces.srv import (
+    CameraPan,
+    CameraPreset,
+    CameraPtz,
+    CameraPtzState,
+    CameraStatus,
+)
 
 
 def _parse_env_file(path: Path) -> Dict[str, str]:
@@ -28,9 +34,7 @@ def _parse_env_file(path: Path) -> Dict[str, str]:
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
+        if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
@@ -55,7 +59,6 @@ def _resolve_default_env_file() -> Path:
                 return candidate
         return candidates[0]
     except Exception:
-        # Fallback when ament index is unavailable; keep this non-fatal.
         return Path(__file__).resolve().parents[2] / ".env"
 
 
@@ -80,6 +83,16 @@ def _to_float(value: str) -> float:
 
 
 class CamaraNode(Node):
+    _PRESET_ALIASES = {
+        "center": "home",
+        "home": "home",
+        "front": "front",
+        "left": "left",
+        "right": "right",
+        "rear": "rear",
+        "back": "rear",
+    }
+
     def __init__(self) -> None:
         super().__init__("camara")
 
@@ -95,7 +108,6 @@ class CamaraNode(Node):
         self.declare_parameter("camera_channel", int(self._env_cfg("CAMERA_CHANNEL", "1")))
         self.declare_parameter("camera_timeout_s", 2.0)
 
-        # ISAPI PTZ limits (Hikvision defaults used in ptz.sh)
         self.declare_parameter("camera_az_min", 0.0)
         self.declare_parameter("camera_az_max", 355.0)
         self.declare_parameter("camera_el_min", 0.0)
@@ -105,6 +117,12 @@ class CamaraNode(Node):
         self.declare_parameter("camera_zoom_fixed_level", 4.0)
         self.declare_parameter("camera_zoom_zero_level", 1.0)
         self.declare_parameter("camera_zoom_initial_in", False)
+        self.declare_parameter("camera_preset_front_azimuth_deg", 0.0)
+        self.declare_parameter("camera_preset_left_azimuth_deg", 90.0)
+        self.declare_parameter("camera_preset_right_azimuth_deg", 270.0)
+        self.declare_parameter("camera_preset_rear_azimuth_deg", 180.0)
+        self.declare_parameter("camera_preset_neutral_elevation_deg", 0.0)
+        self.declare_parameter("camera_preset_home_zoom_level", 1.0)
 
         self._host = str(self.get_parameter("camera_host").value)
         self._port = int(self.get_parameter("camera_port").value)
@@ -129,16 +147,63 @@ class CamaraNode(Node):
             self._zoom_max,
         )
         self._zoom_in = bool(self.get_parameter("camera_zoom_initial_in").value)
+        self._preset_neutral_elevation = self._clamp(
+            float(self.get_parameter("camera_preset_neutral_elevation_deg").value),
+            self._el_min,
+            self._el_max,
+        )
+        self._preset_home_zoom = self._clamp(
+            float(self.get_parameter("camera_preset_home_zoom_level").value),
+            self._zoom_min,
+            self._zoom_max,
+        )
         self._base_url = (
             f"http://{self._host}:{self._port}/ISAPI/PTZCtrl/channels/{self._channel}"
         )
         self._absolute_url = f"{self._base_url}/absoluteEx"
-        self._continuous_url = f"{self._base_url}/continuous"
         self._session = requests.Session()
         self._session.auth = HTTPDigestAuth(self._user, self._password)
         self._ready = False
         self._ready_error = ""
         self._last_command = "none"
+
+        self._presets = {
+            "home": (
+                self._normalize_azimuth(
+                    float(self.get_parameter("camera_preset_front_azimuth_deg").value)
+                ),
+                self._preset_neutral_elevation,
+                self._preset_home_zoom,
+            ),
+            "front": (
+                self._normalize_azimuth(
+                    float(self.get_parameter("camera_preset_front_azimuth_deg").value)
+                ),
+                self._preset_neutral_elevation,
+                self._zoom_zero_level,
+            ),
+            "left": (
+                self._normalize_azimuth(
+                    float(self.get_parameter("camera_preset_left_azimuth_deg").value)
+                ),
+                self._preset_neutral_elevation,
+                self._zoom_zero_level,
+            ),
+            "right": (
+                self._normalize_azimuth(
+                    float(self.get_parameter("camera_preset_right_azimuth_deg").value)
+                ),
+                self._preset_neutral_elevation,
+                self._zoom_zero_level,
+            ),
+            "rear": (
+                self._normalize_azimuth(
+                    float(self.get_parameter("camera_preset_rear_azimuth_deg").value)
+                ),
+                self._preset_neutral_elevation,
+                self._zoom_zero_level,
+            ),
+        }
 
         self._connect_isapi()
 
@@ -149,6 +214,17 @@ class CamaraNode(Node):
             self._on_camera_zoom_toggle,
         )
         self.create_service(CameraStatus, "/camara/camera_status", self._on_camera_status)
+        self.create_service(CameraPtz, "/camara/camera_ptz", self._on_camera_ptz)
+        self.create_service(
+            CameraPreset,
+            "/camara/camera_preset",
+            self._on_camera_preset,
+        )
+        self.create_service(
+            CameraPtzState,
+            "/camara/camera_ptz_state",
+            self._on_camera_ptz_state,
+        )
 
         self.get_logger().info(
             "camara node ready "
@@ -169,23 +245,15 @@ class CamaraNode(Node):
     def _connect_isapi(self) -> None:
         if not self._host or not self._user or not self._password:
             self._ready = False
-            self._ready_error = (
-                "missing CAMERA_HOST/CAMERA_USER/CAMERA_PASS in env config"
-            )
+            self._ready_error = "missing CAMERA_HOST/CAMERA_USER/CAMERA_PASS in env config"
             self.get_logger().error(self._ready_error)
             return
 
         try:
-            self.get_logger().info(
-                "Attempting ISAPI connection "
-                f"(host={self._host}, port={self._port}, user={self._user}, "
-                f"channel={self._channel}, absolute_url={self._absolute_url})"
-            )
             state, err = self._get_absolute_state()
             if state is None:
                 raise RuntimeError(err or "ISAPI absoluteEx probe failed")
-            _, _, zoom = state
-            self._zoom_in = abs(zoom - self._zoom_zero_level) > 0.05
+            self._zoom_in = abs(state[2] - self._zoom_zero_level) > 0.05
             self._ready = True
             self._ready_error = ""
         except Exception as exc:
@@ -193,17 +261,17 @@ class CamaraNode(Node):
             self._ready_error = f"ISAPI init failed: {exc}"
             self.get_logger().error(self._ready_error)
 
-    def _clamp(self, value: float, lo: float, hi: float) -> float:
+    @staticmethod
+    def _clamp(value: float, lo: float, hi: float) -> float:
         return max(float(lo), min(float(hi), float(value)))
 
     def _normalize_azimuth(self, angle_deg: float) -> float:
         angle = math.fmod(float(angle_deg), 360.0)
         if angle < 0.0:
             angle += 360.0
-        # Align with ptz.sh behavior: if wrapped past max, snap to min.
         if angle > self._az_max:
             angle = self._az_min
-        return angle
+        return self._clamp(angle, self._az_min, self._az_max)
 
     def _request_isapi(
         self, method: str, url: str, data: Optional[str] = None
@@ -242,17 +310,16 @@ class CamaraNode(Node):
                     None,
                     "ISAPI absoluteEx response missing elevation/azimuth/absoluteZoom",
                 )
-            elevation = _to_float(el_raw)
-            azimuth = _to_float(az_raw)
-            zoom = _to_float(zm_raw)
-            return (elevation, azimuth, zoom), ""
+            return (_to_float(el_raw), _to_float(az_raw), _to_float(zm_raw)), ""
         except Exception as exc:
             body = _compact_body(xml_text)
             return None, f"invalid ISAPI absoluteEx XML: {exc}; body='{body}'"
 
-    def _set_absolute_state(self, elevation: float, azimuth: float, zoom: float) -> Tuple[bool, str]:
+    def _set_absolute_state(
+        self, elevation: float, azimuth: float, zoom: float
+    ) -> Tuple[bool, str]:
         el = int(round(self._clamp(elevation, self._el_min, self._el_max)))
-        az = int(round(self._clamp(azimuth, self._az_min, self._az_max)))
+        az = int(round(self._normalize_azimuth(azimuth)))
         zm = int(round(self._clamp(zoom, self._zoom_min, self._zoom_max)))
         payload = (
             '<PTZAbsoluteEx version="2.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">'
@@ -266,47 +333,131 @@ class CamaraNode(Node):
             return False, err
         return True, ""
 
-    def _set_pan_absolute(self, target_azimuth: float) -> Tuple[bool, str]:
-        state, err = self._get_absolute_state()
-        if state is None:
-            return False, f"cannot read current PTZ state: {err}"
-        _, _, current_zoom = state
-        # Force neutral tilt in every outgoing pan command.
-        return self._set_absolute_state(0.0, target_azimuth, current_zoom)
-
-    def _set_zoom_absolute(self, target_zoom: float) -> Tuple[bool, str]:
-        state, err = self._get_absolute_state()
-        if state is None:
-            return False, f"cannot read current PTZ state: {err}"
-        _, current_az, _ = state
-        # Keep zoom command aligned with neutral tilt convention.
-        return self._set_absolute_state(0.0, current_az, target_zoom)
-
-    def _zoom_toggle(self) -> Tuple[bool, str]:
-        epsilon = 0.05
-        state, err = self._get_absolute_state()
-        if state is not None:
-            current_zoom = float(state[2])
-            is_zero = abs(current_zoom - self._zoom_zero_level) <= epsilon
-            target = self._zoom_fixed_level if is_zero else self._zoom_zero_level
-        else:
-            target = self._zoom_zero_level if self._zoom_in else self._zoom_fixed_level
-            self.get_logger().warning(
-                f"zoom_toggle: using fallback toggle state because absoluteEx read failed ({err})"
-            )
-
-        ok, set_err = self._set_zoom_absolute(target)
-        if ok:
-            self._zoom_in = abs(target - self._zoom_zero_level) > epsilon
+    def _require_ready(self) -> Tuple[bool, str]:
+        if self._ready:
             return True, ""
-        return False, set_err
+        return False, self._ready_error or "camera is not ready"
+
+    def _state_to_payload(self, state: Tuple[float, float, float]) -> Dict[str, float | str | bool]:
+        pan_deg = float(self._normalize_azimuth(state[1]))
+        tilt_deg = float(self._clamp(state[0], self._el_min, self._el_max))
+        zoom_level = float(self._clamp(state[2], self._zoom_min, self._zoom_max))
+        active_preset = self._match_preset(pan_deg, tilt_deg, zoom_level)
+        self._zoom_in = abs(zoom_level - self._zoom_zero_level) > 0.05
+        return {
+            "pan_deg": pan_deg,
+            "tilt_deg": tilt_deg,
+            "zoom_level": zoom_level,
+            "zoom_in": bool(self._zoom_in),
+            "last_command": self._last_command,
+            "active_preset": active_preset,
+        }
+
+    def _read_state_payload(self) -> Tuple[Optional[Dict[str, float | str | bool]], str]:
+        state, err = self._get_absolute_state()
+        if state is None:
+            return None, err
+        return self._state_to_payload(state), ""
+
+    def _match_preset(self, pan_deg: float, tilt_deg: float, zoom_level: float) -> str:
+        tolerance_deg = 1.5
+        tolerance_zoom = 0.2
+        for name, (preset_pan, preset_tilt, preset_zoom) in self._presets.items():
+            pan_error = abs(self._normalize_azimuth(pan_deg - preset_pan))
+            pan_error = min(pan_error, abs(360.0 - pan_error))
+            if (
+                pan_error <= tolerance_deg
+                and abs(tilt_deg - preset_tilt) <= tolerance_deg
+                and abs(zoom_level - preset_zoom) <= tolerance_zoom
+            ):
+                return name
+        return ""
+
+    def _apply_ptz_move(
+        self,
+        *,
+        relative: bool,
+        apply_pan: bool,
+        pan_deg: float,
+        apply_tilt: bool,
+        tilt_deg: float,
+        apply_zoom: bool,
+        zoom_level: float,
+        command_label: str,
+    ) -> Tuple[bool, str, Optional[Dict[str, float | str | bool]]]:
+        state, err = self._get_absolute_state()
+        if state is None:
+            return False, f"cannot read current PTZ state: {err}", None
+
+        current_tilt, current_pan, current_zoom = state
+        target_pan = current_pan
+        target_tilt = current_tilt
+        target_zoom = current_zoom
+
+        if apply_pan:
+            if relative:
+                target_pan = self._normalize_azimuth(current_pan + float(pan_deg))
+            else:
+                target_pan = self._normalize_azimuth(float(pan_deg))
+        if apply_tilt:
+            if relative:
+                target_tilt = self._clamp(current_tilt + float(tilt_deg), self._el_min, self._el_max)
+            else:
+                target_tilt = self._clamp(float(tilt_deg), self._el_min, self._el_max)
+        if apply_zoom:
+            if relative:
+                target_zoom = self._clamp(current_zoom + float(zoom_level), self._zoom_min, self._zoom_max)
+            else:
+                target_zoom = self._clamp(float(zoom_level), self._zoom_min, self._zoom_max)
+
+        ok, set_err = self._set_absolute_state(target_tilt, target_pan, target_zoom)
+        if not ok:
+            return False, set_err, None
+
+        updated_state, read_err = self._read_state_payload()
+        if updated_state is None:
+            return False, f"PTZ updated but state refresh failed: {read_err}", None
+        self._last_command = command_label
+        updated_state["last_command"] = self._last_command
+        return True, "", updated_state
+
+    def _resolve_preset(self, preset_raw: str) -> Tuple[Optional[str], str]:
+        normalized = str(preset_raw or "").strip().lower()
+        if not normalized:
+            return None, "preset is required"
+        preset = self._PRESET_ALIASES.get(normalized)
+        if preset is None:
+            return None, f"unsupported preset '{preset_raw}'"
+        if preset not in self._presets:
+            return None, f"preset '{preset}' is not configured"
+        return preset, ""
+
+    def _fill_status_response(
+        self,
+        response: CameraStatus.Response | CameraPtzState.Response,
+        *,
+        ok: bool,
+        error: str,
+        payload: Optional[Dict[str, float | str | bool]],
+    ) -> None:
+        response.ok = bool(ok)
+        response.error = str(error)
+        response.last_command = str(
+            (payload or {}).get("last_command", self._last_command)
+        )
+        response.zoom_in = bool((payload or {}).get("zoom_in", self._zoom_in))
+        response.pan_deg = float((payload or {}).get("pan_deg", 0.0))
+        response.tilt_deg = float((payload or {}).get("tilt_deg", 0.0))
+        response.zoom_level = float((payload or {}).get("zoom_level", 0.0))
+        response.active_preset = str((payload or {}).get("active_preset", ""))
 
     def _on_camera_pan(
         self, request: CameraPan.Request, response: CameraPan.Response
     ) -> CameraPan.Response:
-        if not self._ready:
+        ready, err = self._require_ready()
+        if not ready:
             response.ok = False
-            response.error = self._ready_error or "camera is not ready"
+            response.error = err
             response.applied_angle_deg = 0.0
             return response
 
@@ -318,53 +469,165 @@ class CamaraNode(Node):
             return response
 
         applied_angle = self._normalize_azimuth(input_angle)
-        ok, err = self._set_pan_absolute(applied_angle)
-
+        ok, err, _ = self._apply_ptz_move(
+            relative=False,
+            apply_pan=True,
+            pan_deg=applied_angle,
+            apply_tilt=False,
+            tilt_deg=0.0,
+            apply_zoom=False,
+            zoom_level=0.0,
+            command_label=f"angle:{applied_angle:.1f}",
+        )
         response.ok = bool(ok)
         response.error = "" if ok else err
         response.applied_angle_deg = float(applied_angle)
-        if ok:
-            self._last_command = f"angle:{applied_angle:.1f}"
         return response
 
     def _on_camera_zoom_toggle(
         self, _request: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
-        if not self._ready:
+        ready, err = self._require_ready()
+        if not ready:
             response.success = False
-            response.message = self._ready_error or "camera is not ready"
+            response.message = err
             return response
 
-        ok, err = self._zoom_toggle()
+        state, state_err = self._get_absolute_state()
+        if state is None:
+            response.success = False
+            response.message = state_err
+            return response
+
+        current_zoom = float(state[2])
+        epsilon = 0.05
+        is_zero = abs(current_zoom - self._zoom_zero_level) <= epsilon
+        target = self._zoom_fixed_level if is_zero else self._zoom_zero_level
+        ok, err, _ = self._apply_ptz_move(
+            relative=False,
+            apply_pan=False,
+            pan_deg=0.0,
+            apply_tilt=False,
+            tilt_deg=0.0,
+            apply_zoom=True,
+            zoom_level=target,
+            command_label="zoom_toggle",
+        )
         response.success = bool(ok)
         response.message = "" if ok else err
-        if ok:
-            self._last_command = "zoom_toggle"
         return response
 
     def _on_camera_status(
         self, _request: CameraStatus.Request, response: CameraStatus.Response
     ) -> CameraStatus.Response:
-        if not self._ready:
-            response.ok = False
-            response.error = self._ready_error or "camera is not ready"
-            response.last_command = self._last_command
-            response.zoom_in = bool(self._zoom_in)
+        ready, err = self._require_ready()
+        if not ready:
+            self._fill_status_response(response, ok=False, error=err, payload=None)
             return response
 
-        state, err = self._get_absolute_state()
-        if state is None:
+        payload, state_err = self._read_state_payload()
+        if payload is None:
+            self._fill_status_response(response, ok=False, error=state_err, payload=None)
+            return response
+
+        self._fill_status_response(response, ok=True, error="", payload=payload)
+        return response
+
+    def _on_camera_ptz(
+        self, request: CameraPtz.Request, response: CameraPtz.Response
+    ) -> CameraPtz.Response:
+        ready, err = self._require_ready()
+        if not ready:
             response.ok = False
             response.error = err
-            response.last_command = self._last_command
-            response.zoom_in = bool(self._zoom_in)
             return response
 
-        self._zoom_in = abs(state[2] - self._zoom_zero_level) > 0.05
-        response.ok = True
-        response.error = ""
-        response.last_command = self._last_command
-        response.zoom_in = bool(self._zoom_in)
+        if not (request.apply_pan or request.apply_tilt or request.apply_zoom):
+            response.ok = False
+            response.error = "at least one PTZ axis must be requested"
+            return response
+
+        for value, label, enabled in (
+            (request.pan_deg, "pan_deg", request.apply_pan),
+            (request.tilt_deg, "tilt_deg", request.apply_tilt),
+            (request.zoom_level, "zoom_level", request.apply_zoom),
+        ):
+            if enabled and not math.isfinite(float(value)):
+                response.ok = False
+                response.error = f"{label} must be finite"
+                return response
+
+        ok, err, payload = self._apply_ptz_move(
+            relative=bool(request.relative),
+            apply_pan=bool(request.apply_pan),
+            pan_deg=float(request.pan_deg),
+            apply_tilt=bool(request.apply_tilt),
+            tilt_deg=float(request.tilt_deg),
+            apply_zoom=bool(request.apply_zoom),
+            zoom_level=float(request.zoom_level),
+            command_label=(
+                "ptz:relative"
+                if bool(request.relative)
+                else "ptz:absolute"
+            ),
+        )
+        response.ok = bool(ok)
+        response.error = "" if ok else err
+        if payload is not None:
+            response.pan_deg = float(payload["pan_deg"])
+            response.tilt_deg = float(payload["tilt_deg"])
+            response.zoom_level = float(payload["zoom_level"])
+        return response
+
+    def _on_camera_preset(
+        self, request: CameraPreset.Request, response: CameraPreset.Response
+    ) -> CameraPreset.Response:
+        ready, err = self._require_ready()
+        if not ready:
+            response.ok = False
+            response.error = err
+            return response
+
+        preset, preset_err = self._resolve_preset(request.preset)
+        if preset is None:
+            response.ok = False
+            response.error = preset_err
+            return response
+
+        target_pan, target_tilt, target_zoom = self._presets[preset]
+        ok, err, payload = self._apply_ptz_move(
+            relative=False,
+            apply_pan=True,
+            pan_deg=target_pan,
+            apply_tilt=True,
+            tilt_deg=target_tilt,
+            apply_zoom=True,
+            zoom_level=target_zoom,
+            command_label=f"preset:{preset}",
+        )
+        response.ok = bool(ok)
+        response.error = "" if ok else err
+        response.applied_preset = preset if ok else ""
+        if payload is not None:
+            response.pan_deg = float(payload["pan_deg"])
+            response.tilt_deg = float(payload["tilt_deg"])
+            response.zoom_level = float(payload["zoom_level"])
+        return response
+
+    def _on_camera_ptz_state(
+        self, _request: CameraPtzState.Request, response: CameraPtzState.Response
+    ) -> CameraPtzState.Response:
+        ready, err = self._require_ready()
+        if not ready:
+            self._fill_status_response(response, ok=False, error=err, payload=None)
+            return response
+
+        payload, state_err = self._read_state_payload()
+        if payload is None:
+            self._fill_status_response(response, ok=False, error=state_err, payload=None)
+            return response
+
+        self._fill_status_response(response, ok=True, error="", payload=payload)
         return response
 
 
