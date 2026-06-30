@@ -39,6 +39,7 @@ def generate_launch_description():
     camera_status_service = LaunchConfiguration("camera_status_service")
     camera_ptz_service = LaunchConfiguration("camera_ptz_service")
     camera_preset_service = LaunchConfiguration("camera_preset_service")
+    camera_save_preset_service = LaunchConfiguration("camera_save_preset_service")
     camera_ptz_state_service = LaunchConfiguration("camera_ptz_state_service")
     enable_control_lock = LaunchConfiguration("enable_control_lock")
     control_lock_start_locked = LaunchConfiguration("control_lock_start_locked")
@@ -137,6 +138,10 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "camera_preset_service",
                 default_value="/camara/camera_preset",
+            ),
+            DeclareLaunchArgument(
+                "camera_save_preset_service",
+                default_value="/camara/camera_save_preset",
             ),
             DeclareLaunchArgument(
                 "camera_ptz_state_service",
@@ -262,6 +267,7 @@ def generate_launch_description():
                         "camera_status_service": camera_status_service,
                         "camera_ptz_service": camera_ptz_service,
                         "camera_preset_service": camera_preset_service,
+                        "camera_save_preset_service": camera_save_preset_service,
                         "camera_ptz_state_service": camera_ptz_state_service,
                         "enable_control_lock": enable_control_lock,
                         "control_lock_start_locked": control_lock_start_locked,

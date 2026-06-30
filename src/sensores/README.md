@@ -10,6 +10,7 @@ Paquete ROS 2 para integración con Pixhawk, dashboard web y utilidades auxiliar
 - Índice general: [docs/INDEX.md](/home/leo/codigo/ROS2_SALUS/docs/INDEX.md)
 - Matriz de launches: [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
 - Arquitectura runtime: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
+- Cámara WebRTC + PTZ: [docs/camera-webrtc-ptz.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/camera-webrtc-ptz.md)
 
 ## Ejecutables reales
 - `mavros_compat_bridge`
@@ -98,6 +99,7 @@ Servicios:
 - `/camara/camera_status`
 - `/camara/camera_ptz`
 - `/camara/camera_preset`
+- `/camara/camera_save_preset`
 - `/camara/camera_ptz_state`
 
 Ejecutar:
@@ -109,6 +111,17 @@ Launch dedicado:
 ```bash
 ros2 launch sensores camara.launch.py
 ```
+
+Configuración:
+- lee `.env` desde `install/sensores/share/sensores/.env` o `src/sensores/.env`
+- persiste overrides PTZ editables en `install/sensores/share/sensores/.camera_presets.json` o `src/sensores/.camera_presets.json`
+- variables soportadas: `CAMERA_HOST`, `CAMERA_PORT`, `CAMERA_USER`, `CAMERA_PASS`, `CAMERA_CHANNEL`
+- también expone parámetros ROS para límites PTZ y presets
+
+Integración operativa:
+- `real_global_v2.launch.py` lo incluye con `launch_camera:=True`
+- el video no lo sirve este nodo: el camino recomendado para `cockpit` es MediaMTX + WHEP/WebRTC con source on-demand
+- detalle completo en [docs/camera-webrtc-ptz.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/camera-webrtc-ptz.md)
 
 ## Launch de Pixhawk legacy
 Solo driver:

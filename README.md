@@ -26,6 +26,7 @@ Todos los paquetes bajo `src/` viven dentro de este mismo repositorio git.
 - Arquitectura runtime y flujo de tópicos: [docs/runtime-architecture.md](/home/leo/codigo/ROS2_SALUS/docs/runtime-architecture.md)
 - Brujula gateada para heading inicial/reposo: [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md)
 - Integración con `cockpit`: [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md)
+- Cámara WebRTC + PTZ: [docs/camera-webrtc-ptz.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/camera-webrtc-ptz.md)
 - Históricos, transiciones y third-party: [docs/archive/README.md](/home/leo/codigo/ROS2_SALUS/docs/archive/README.md)
 
 ## Launches operativos

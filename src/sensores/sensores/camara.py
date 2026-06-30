@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import rclpy
 import requests
@@ -19,6 +20,7 @@ from std_srvs.srv import Trigger
 from interfaces.srv import (
     CameraPan,
     CameraPreset,
+    CameraSavePreset,
     CameraPtz,
     CameraPtzState,
     CameraStatus,
@@ -62,6 +64,11 @@ def _resolve_default_env_file() -> Path:
         return Path(__file__).resolve().parents[2] / ".env"
 
 
+def _resolve_default_presets_file(env_file: Path) -> Path:
+    env_parent = env_file.parent if str(env_file.parent) else Path(".")
+    return env_parent / ".camera_presets.json"
+
+
 def _compact_body(body: str, max_len: int = 280) -> str:
     compact = " ".join((body or "").strip().split())
     if not compact:
@@ -82,6 +89,59 @@ def _to_float(value: str) -> float:
     return float(value.replace(",", ".").strip())
 
 
+def _serialize_preset_map(presets: Dict[str, Tuple[float, float, float]]) -> Dict[str, Dict[str, float]]:
+    return {
+        name: {
+            "pan_deg": round(float(values[0]), 4),
+            "tilt_deg": round(float(values[1]), 4),
+            "zoom_level": round(float(values[2]), 4),
+        }
+        for name, values in sorted(presets.items())
+    }
+
+
+def _parse_preset_entry(raw: Any) -> Optional[Tuple[float, float, float]]:
+    if not isinstance(raw, dict):
+        return None
+    pan_deg = raw.get("pan_deg")
+    tilt_deg = raw.get("tilt_deg")
+    zoom_level = raw.get("zoom_level")
+    values = (pan_deg, tilt_deg, zoom_level)
+    if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
+        return None
+    return (float(pan_deg), float(tilt_deg), float(zoom_level))
+
+
+def _load_preset_overrides_file(path: Path) -> Tuple[Dict[str, Tuple[float, float, float]], str]:
+    if not path.exists():
+        return {}, ""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {}, f"cannot read preset overrides file '{path}': {exc}"
+    if not isinstance(raw, dict):
+        return {}, f"preset overrides file '{path}' must contain a JSON object"
+
+    overrides: Dict[str, Tuple[float, float, float]] = {}
+    invalid_names = []
+    for name, value in raw.items():
+        if not isinstance(name, str):
+            invalid_names.append(str(name))
+            continue
+        parsed = _parse_preset_entry(value)
+        if parsed is None:
+            invalid_names.append(name)
+            continue
+        overrides[name.strip().lower()] = parsed
+
+    if invalid_names:
+        return overrides, (
+            f"preset overrides file '{path}' contains invalid entries: "
+            + ", ".join(sorted(invalid_names))
+        )
+    return overrides, ""
+
+
 class CamaraNode(Node):
     _PRESET_ALIASES = {
         "center": "home",
@@ -92,6 +152,7 @@ class CamaraNode(Node):
         "rear": "rear",
         "back": "rear",
     }
+    _SAVEABLE_PRESETS = {"home", "left", "right"}
 
     def __init__(self) -> None:
         super().__init__("camara")
@@ -100,6 +161,11 @@ class CamaraNode(Node):
         self.declare_parameter("env_file", default_env_file)
         self._env_file = Path(str(self.get_parameter("env_file").value))
         self._env_data = _parse_env_file(self._env_file)
+        self.declare_parameter(
+            "camera_presets_file",
+            str(_resolve_default_presets_file(self._env_file)),
+        )
+        self._presets_file = Path(str(self.get_parameter("camera_presets_file").value))
 
         self.declare_parameter("camera_host", self._env_cfg("CAMERA_HOST", "192.168.1.64"))
         self.declare_parameter("camera_port", int(self._env_cfg("CAMERA_PORT", "80")))
@@ -167,7 +233,7 @@ class CamaraNode(Node):
         self._ready_error = ""
         self._last_command = "none"
 
-        self._presets = {
+        self._base_presets = {
             "home": (
                 self._normalize_azimuth(
                     float(self.get_parameter("camera_preset_front_azimuth_deg").value)
@@ -204,6 +270,9 @@ class CamaraNode(Node):
                 self._zoom_zero_level,
             ),
         }
+        self._preset_overrides = {}
+        self._presets = dict(self._base_presets)
+        self._load_preset_overrides()
 
         self._connect_isapi()
 
@@ -221,6 +290,11 @@ class CamaraNode(Node):
             self._on_camera_preset,
         )
         self.create_service(
+            CameraSavePreset,
+            "/camara/camera_save_preset",
+            self._on_camera_save_preset,
+        )
+        self.create_service(
             CameraPtzState,
             "/camara/camera_ptz_state",
             self._on_camera_ptz_state,
@@ -230,6 +304,7 @@ class CamaraNode(Node):
             "camara node ready "
             f"(env_file={self._env_file}, host={self._host}:{self._port}, "
             f"channel={self._channel}, absolute_url={self._absolute_url}, "
+            f"presets_file={self._presets_file}, "
             f"isapi_ready={self._ready})"
         )
 
@@ -260,6 +335,49 @@ class CamaraNode(Node):
             self._ready = False
             self._ready_error = f"ISAPI init failed: {exc}"
             self.get_logger().error(self._ready_error)
+
+    def _normalize_preset_state(
+        self, values: Tuple[float, float, float]
+    ) -> Tuple[float, float, float]:
+        pan_deg, tilt_deg, zoom_level = values
+        return (
+            self._normalize_azimuth(float(pan_deg)),
+            self._clamp(float(tilt_deg), self._el_min, self._el_max),
+            self._clamp(float(zoom_level), self._zoom_min, self._zoom_max),
+        )
+
+    def _refresh_presets_from_sources(self) -> None:
+        presets = dict(self._base_presets)
+        for name, values in self._preset_overrides.items():
+            if name not in presets:
+                continue
+            presets[name] = self._normalize_preset_state(values)
+        self._presets = presets
+
+    def _load_preset_overrides(self) -> None:
+        overrides, err = _load_preset_overrides_file(self._presets_file)
+        sanitized: Dict[str, Tuple[float, float, float]] = {}
+        for name, values in overrides.items():
+            if name not in self._base_presets:
+                continue
+            sanitized[name] = self._normalize_preset_state(values)
+        self._preset_overrides = sanitized
+        self._refresh_presets_from_sources()
+        if err:
+            self.get_logger().warning(err)
+
+    def _write_preset_overrides(
+        self, overrides: Dict[str, Tuple[float, float, float]]
+    ) -> Tuple[bool, str]:
+        try:
+            self._presets_file.parent.mkdir(parents=True, exist_ok=True)
+            self._presets_file.write_text(
+                json.dumps(_serialize_preset_map(overrides), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            return False, f"cannot write preset overrides file '{self._presets_file}': {exc}"
+        return True, ""
 
     @staticmethod
     def _clamp(value: float, lo: float, hi: float) -> float:
@@ -431,6 +549,43 @@ class CamaraNode(Node):
         if preset not in self._presets:
             return None, f"preset '{preset}' is not configured"
         return preset, ""
+
+    def _save_preset_from_current_state(
+        self, preset_raw: str, *, save_zoom: bool
+    ) -> Tuple[bool, str, Optional[Dict[str, float | str | bool]]]:
+        preset, preset_err = self._resolve_preset(preset_raw)
+        if preset is None:
+            return False, preset_err, None
+        if preset not in self._SAVEABLE_PRESETS:
+            return False, f"preset '{preset}' cannot be overwritten from the UI", None
+
+        state, err = self._get_absolute_state()
+        if state is None:
+            return False, f"cannot read current PTZ state: {err}", None
+
+        current_tilt, current_pan, current_zoom = state
+        target_pan = self._normalize_azimuth(current_pan)
+        target_tilt = self._clamp(current_tilt, self._el_min, self._el_max)
+        preserved_zoom = self._presets[preset][2]
+        target_zoom = (
+            self._clamp(current_zoom, self._zoom_min, self._zoom_max)
+            if save_zoom
+            else preserved_zoom
+        )
+
+        next_overrides = dict(self._preset_overrides)
+        next_overrides[preset] = (target_pan, target_tilt, target_zoom)
+        ok, write_err = self._write_preset_overrides(next_overrides)
+        if not ok:
+            return False, write_err, None
+
+        self._preset_overrides = next_overrides
+        self._refresh_presets_from_sources()
+        self._last_command = f"save_preset:{preset}"
+        payload = self._state_to_payload(state)
+        payload["saved_preset"] = preset
+        payload["saved_zoom"] = bool(save_zoom)
+        return True, "", payload
 
     def _fill_status_response(
         self,
@@ -628,6 +783,38 @@ class CamaraNode(Node):
             return response
 
         self._fill_status_response(response, ok=True, error="", payload=payload)
+        return response
+
+    def _on_camera_save_preset(
+        self, request: CameraSavePreset.Request, response: CameraSavePreset.Response
+    ) -> CameraSavePreset.Response:
+        ready, err = self._require_ready()
+        if not ready:
+            response.ok = False
+            response.error = err
+            return response
+
+        ok, err, payload = self._save_preset_from_current_state(
+            request.preset,
+            save_zoom=bool(request.save_zoom),
+        )
+        response.ok = bool(ok)
+        response.error = "" if ok else err
+        response.saved_preset = str((payload or {}).get("saved_preset", "")) if ok else ""
+        if payload is not None:
+            saved_preset = str(payload.get("saved_preset", ""))
+            response.saved_preset = saved_preset if ok else ""
+            target_pan, target_tilt, target_zoom = self._presets.get(
+                saved_preset,
+                (
+                    float(payload.get("pan_deg", 0.0)),
+                    float(payload.get("tilt_deg", 0.0)),
+                    float(payload.get("zoom_level", 0.0)),
+                ),
+            )
+            response.pan_deg = float(target_pan)
+            response.tilt_deg = float(target_tilt)
+            response.zoom_level = float(target_zoom)
         return response
 
 

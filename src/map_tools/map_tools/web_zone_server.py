@@ -37,6 +37,7 @@ from interfaces.srv import (
     BrakeNav,
     CameraPan,
     CameraPreset,
+    CameraSavePreset,
     CameraPtz,
     CameraPtzState,
     CameraStatus,
@@ -222,6 +223,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("camera_status_service", "/camara/camera_status")
         self.declare_parameter("camera_ptz_service", "/camara/camera_ptz")
         self.declare_parameter("camera_preset_service", "/camara/camera_preset")
+        self.declare_parameter("camera_save_preset_service", "/camara/camera_save_preset")
         self.declare_parameter("camera_ptz_state_service", "/camara/camera_ptz_state")
         self.declare_parameter("camera_image_topic", "/camera/image_raw")
         self.declare_parameter("camera_detections_topic", "/detections")
@@ -306,6 +308,9 @@ class WebZoneServerNode(Node):
         self.camera_ptz_service = str(self.get_parameter("camera_ptz_service").value)
         self.camera_preset_service = str(
             self.get_parameter("camera_preset_service").value
+        )
+        self.camera_save_preset_service = str(
+            self.get_parameter("camera_save_preset_service").value
         )
         self.camera_ptz_state_service = str(
             self.get_parameter("camera_ptz_state_service").value
@@ -543,6 +548,9 @@ class WebZoneServerNode(Node):
         self._camera_preset_client = self.create_client(
             CameraPreset, self.camera_preset_service
         )
+        self._camera_save_preset_client = self.create_client(
+            CameraSavePreset, self.camera_save_preset_service
+        )
         self._camera_ptz_state_client = self.create_client(
             CameraPtzState, self.camera_ptz_state_service
         )
@@ -568,6 +576,7 @@ class WebZoneServerNode(Node):
             f"camera_pan={self.camera_pan_service}, camera_zoom_toggle={self.camera_zoom_toggle_service}, "
             f"camera_status={self.camera_status_service}, "
             f"camera_ptz={self.camera_ptz_service}, camera_preset={self.camera_preset_service}, "
+            f"camera_save_preset={self.camera_save_preset_service}, "
             f"camera_ptz_state={self.camera_ptz_state_service}, "
             f"camera_image={self.camera_image_topic}, "
             f"camera_detections={self.camera_detections_topic}, "
@@ -3439,6 +3448,44 @@ class WebZoneServerNode(Node):
             return True, "", state_payload
         return False, str(res.error), payload
 
+    def camera_save_preset(
+        self, preset: str, *, save_zoom: bool
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        req = CameraSavePreset.Request()
+        req.preset = str(preset)
+        req.save_zoom = bool(save_zoom)
+        res = self._call_service(
+            self._camera_save_preset_client, req, self.request_timeout_s
+        )
+        if res is None:
+            payload = {
+                "op": "camera_ptz_state",
+                "ok": False,
+                "error": "camera_save_preset timeout",
+                "saved_preset": "",
+                "pan_deg": 0.0,
+                "tilt_deg": 0.0,
+                "zoom_level": 0.0,
+            }
+            return False, payload["error"], payload
+
+        payload = {
+            "op": "camera_ptz_state",
+            "ok": bool(res.ok),
+            "error": str(res.error),
+            "saved_preset": str(res.saved_preset),
+            "pan_deg": float(res.pan_deg),
+            "tilt_deg": float(res.tilt_deg),
+            "zoom_level": float(res.zoom_level),
+        }
+        if res.ok:
+            _, _, state_payload = self.get_camera_ptz_state()
+            state_payload = dict(state_payload)
+            state_payload["saved_preset"] = str(res.saved_preset)
+            state_payload["saved_zoom"] = bool(save_zoom)
+            return True, "", state_payload
+        return False, str(res.error), payload
+
     def get_camera_ptz_state(self) -> Tuple[bool, str, Dict[str, Any]]:
         req = CameraPtzState.Request()
         res = self._call_service(
@@ -4616,6 +4663,32 @@ class WebSocketApi:
             await self._send_ack(
                 ws,
                 "camera_ptz_preset",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra={"payload": payload},
+            )
+            return
+
+        if op == "camera_ptz_set_preset":
+            preset = str(msg.get("preset", "")).strip()
+            if not preset:
+                await self._send_ack(
+                    ws,
+                    "camera_ptz_set_preset",
+                    False,
+                    "preset is required",
+                    client_req_id=client_req_id,
+                )
+                return
+            ok, err, payload = await asyncio.to_thread(
+                self.node.camera_save_preset,
+                preset,
+                save_zoom=bool(msg.get("save_zoom", False)),
+            )
+            await self._send_ack(
+                ws,
+                "camera_ptz_set_preset",
                 ok,
                 err,
                 client_req_id=client_req_id,

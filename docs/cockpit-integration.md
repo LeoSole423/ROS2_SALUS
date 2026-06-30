@@ -9,6 +9,7 @@ Fuente de verdad: `web_zone_server.py`, launches `real_global_v2` / `sim_global_
 - `web_zone_server` sigue siendo el backend principal de navegación.
 - En `real_global_v2`, `web_zone_server` ahora puede puentear datos de `sensores_web` vía `http://127.0.0.1:8000/data`.
 - El contrato nuevo cubre `set_control_lock`, `control_heartbeat` y `set_sensor_info_view`, además de los ops que SALUS ya exponía.
+- Para video, el camino recomendado ya no es MJPEG desde ROS: usar MediaMTX + WHEP/WebRTC. Ver [docs/camera-webrtc-ptz.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/camera-webrtc-ptz.md).
 
 ## Qué queda cubierto
 - Navegación:
@@ -32,6 +33,7 @@ Fuente de verdad: `web_zone_server.py`, launches `real_global_v2` / `sim_global_
   - `get_camera_status`
   - `camera_ptz_move`
   - `camera_ptz_preset`
+  - `camera_ptz_set_preset`
   - `get_camera_ptz_state`
 - Cockpit bridge:
   - `set_control_lock`
@@ -100,3 +102,4 @@ ros2 launch navegacion_gps real_global_v2.launch.py
 - El tab `topics` de `cockpit` todavía no tiene stream ROS detallado desde SALUS.
 - `rtk_sources` y `rtk_source_state` dependen de que la cadena RTK publique esos datos en `sensores_web`.
 - El battery percentage no existe hoy como señal canónica en este bridge; `cockpit` lo verá como `0`.
+- La configuración exacta de MediaMTX vive fuera de este monorepo; este documento cubre el contrato `cockpit <-> SALUS`, no el despliegue multimedia completo.

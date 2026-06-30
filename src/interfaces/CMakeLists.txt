@@ -37,6 +37,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetDatum.srv"
   "srv/CameraPan.srv"
   "srv/CameraPreset.srv"
+  "srv/CameraSavePreset.srv"
   "srv/CameraPtz.srv"
   "srv/CameraPtzState.srv"
   "srv/CameraStatus.srv"

@@ -14,6 +14,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 - Usar [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md) para el plan inmediato de reduccion de ruido sobre el pipeline legacy.
 - Usar [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md) como plan futuro de rediseño LiDAR 3D inspirado en pipelines tipo Autoware/Nav2/PCL.
 - Usar [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md) para el contrato con la UI `cockpit`.
+- Usar [docs/camera-webrtc-ptz.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/camera-webrtc-ptz.md) para operación de cámara IP, PTZ y streaming WebRTC vía MediaMTX.
 - Usar [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md) para la brujula gateada de arranque/reposo.
 - Usar [docs/navigation-traces.md](/home/leo/codigo/ROS2_SALUS/docs/navigation-traces.md) para diagnosticar replanning y progreso de checkpoints en simulacion.
 
@@ -31,6 +32,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md)
   - [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md)
   - [docs/cockpit-integration.md](/home/leo/codigo/ROS2_SALUS/docs/cockpit-integration.md)
+  - [docs/camera-webrtc-ptz.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/camera-webrtc-ptz.md)
 - Paquetes:
   - [src/interfaces/README.md](/home/leo/codigo/ROS2_SALUS/src/interfaces/README.md)
   - [src/controller_server/README.md](/home/leo/codigo/ROS2_SALUS/src/controller_server/README.md)
