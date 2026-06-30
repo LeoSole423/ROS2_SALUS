@@ -192,7 +192,7 @@ Global costmap: ObstacleLayer, `observation_persistence: 1.0`, `obstacle_max_ran
 
 ## 6. Notas operativas
 
-- El robot real (100.111.4.7) ejecuta el contenedor montado sobre
+- El robot real (100.66.15.45) ejecuta el contenedor montado sobre
   `/home/franco/final/2antenas` **(desactualizado: este trabajo se valida y
   despliega sobre ROS2_SALUS, no sobre 2antenas — verificar/recrear los montajes
   del contenedor del robot antes de la sesión de campo; ver Etapa B del plan)**.
