@@ -136,6 +136,10 @@ class CommsClient:
         with self._state_lock:
             self._state.set_estop(bool(value))
 
+    def set_hazard_enabled(self, value: bool) -> None:
+        with self._state_lock:
+            self._state.set_hazard_enabled(bool(value))
+
     def set_log_enabled(self, enabled: bool) -> None:
         self._log_enabled = bool(enabled)
 

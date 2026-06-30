@@ -26,6 +26,7 @@ Campos:
   - bit0: `ESTOP`.
   - bit1: `DRIVE_EN`.
   - bit2: `REV_REQ`.
+  - bit3: `HAZARD`.
 - `steer_i8`: direccion en `-100..100`.
 - `speed_cmd_u16_le`: magnitud de velocidad objetivo en `m/s x100` (little-endian).
   - Ejemplo: `1.60 m/s -> 160`.
@@ -97,7 +98,7 @@ Bits:
 ## 3. Comportamiento de seguridad
 
 - Al iniciar el cliente en Raspberry, el estado arranca seguro:
-  - `drive=off`, `estop=off`, `speed=0`, `steer=0`, `brake=0`.
+  - `drive=off`, `estop=off`, `speed=0`, `steer=0`, `brake=0`, `hazard=off`.
 - Al cerrar, se envian 3 frames finales en estado seguro.
 - `estop on` fuerza frenado fuerte en ESP32 (telemetria reporta `ESTOP_ACTIVE` y freno alto).
 - Si `drive off`, la fuente efectiva deja de ser `PI` y pasa a `NONE` (o la que arbitre firmware).
@@ -140,6 +141,7 @@ Comandos disponibles dentro del prompt `rpy>`:
 - `speed <mps>`: setpoint firmado de velocidad (ej: `speed 1.2` o `speed -0.8`).
 - `steer <int -100..100>`: direccion en porcentaje.
 - `brake <0..100>`: freno deseado.
+- `hazard on|off`: solicitud de luz naranja de emergencia por UART.
 - `watch on|off`: imprime telemetria periódica de control y batería.
 - `log on|off`: imprime frames TX/RX en consola.
 - `quit`: salida segura.

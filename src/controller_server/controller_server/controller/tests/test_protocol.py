@@ -173,6 +173,25 @@ def test_encode_pi_frame_negative_speed_sets_rev_req() -> None:
     assert frame[6] == crc8_maxim(frame[:-1])
 
 
+def test_encode_pi_frame_hazard_sets_bit3() -> None:
+    state = CommandState(
+        drive_enabled=True,
+        estop=False,
+        hazard_enabled=True,
+        steer_pct=0,
+        speed_mps=0.0,
+        brake_pct=0,
+    )
+    frame = encode_pi_frame(state)
+
+    assert len(frame) == 7
+    assert frame[0] == 0xAA
+    assert frame[1] == 0x2A  # version=2, DRIVE_EN=1, HAZARD=1
+    assert frame[3] == 0x00
+    assert frame[4] == 0x00
+    assert frame[6] == crc8_maxim(frame[:-1])
+
+
 def test_encode_pi_frame_zero_speed_clears_rev_req() -> None:
     state = CommandState(
         drive_enabled=True,
@@ -188,4 +207,21 @@ def test_encode_pi_frame_zero_speed_clears_rev_req() -> None:
     assert frame[1] == 0x22  # version=2, DRIVE_EN=1
     assert frame[3] == 0x00
     assert frame[4] == 0x00
+    assert frame[6] == crc8_maxim(frame[:-1])
+
+
+def test_encode_pi_frame_hazard_and_rev_req_can_coexist() -> None:
+    state = CommandState(
+        drive_enabled=True,
+        estop=False,
+        hazard_enabled=True,
+        steer_pct=5,
+        speed_mps=-0.75,
+        brake_pct=0,
+    )
+    frame = encode_pi_frame(state)
+
+    assert len(frame) == 7
+    assert frame[0] == 0xAA
+    assert frame[1] == 0x2E  # version=2, DRIVE_EN=1, REV_REQ=1, HAZARD=1
     assert frame[6] == crc8_maxim(frame[:-1])

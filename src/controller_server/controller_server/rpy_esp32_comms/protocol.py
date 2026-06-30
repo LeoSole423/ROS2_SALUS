@@ -18,6 +18,7 @@ PROTOCOL_VERSION = 2
 CMD_FLAG_ESTOP = 1 << 0
 CMD_FLAG_DRIVE_EN = 1 << 1
 CMD_FLAG_REV_REQ = 1 << 2
+CMD_FLAG_HAZARD = 1 << 3
 
 SPEED_SENTINEL = 0xFFFF
 STEER_SENTINEL = -32768
@@ -46,6 +47,8 @@ def encode_pi_frame(state: CommandState) -> bytes:
         flags |= CMD_FLAG_ESTOP
     if state.drive_enabled:
         flags |= CMD_FLAG_DRIVE_EN
+    if state.hazard_enabled:
+        flags |= CMD_FLAG_HAZARD
 
     signed_speed_mps = float(state.speed_mps)
     if signed_speed_mps < 0.0:

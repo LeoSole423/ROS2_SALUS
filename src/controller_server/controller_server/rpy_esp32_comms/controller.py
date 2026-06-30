@@ -15,6 +15,7 @@ def _clamp(value: float, low: float, high: float) -> float:
 class CommandState:
     drive_enabled: bool = False
     estop: bool = False
+    hazard_enabled: bool = False
     steer_pct: int = 0
     speed_mps: float = 0.0
     brake_pct: int = 0
@@ -42,9 +43,13 @@ class CommandState:
     def set_estop(self, enabled: bool) -> None:
         self.estop = bool(enabled)
 
+    def set_hazard_enabled(self, enabled: bool) -> None:
+        self.hazard_enabled = bool(enabled)
+
     def safe_reset(self) -> None:
         self.drive_enabled = False
         self.estop = False
+        self.hazard_enabled = False
         self.speed_mps = 0.0
         self.steer_pct = 0
         self.brake_pct = 0
@@ -53,6 +58,7 @@ class CommandState:
         return {
             "drive_enabled": self.drive_enabled,
             "estop": self.estop,
+            "hazard_enabled": self.hazard_enabled,
             "steer_pct": self.steer_pct,
             "speed_mps": self.speed_mps,
             "brake_pct": self.brake_pct,

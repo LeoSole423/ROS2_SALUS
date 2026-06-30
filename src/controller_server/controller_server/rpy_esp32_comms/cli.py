@@ -15,6 +15,7 @@ HELP_TEXT = """Comandos:
   status
   drive on|off
   estop on|off
+  hazard on|off
   speed <mps signed>
   steer <int -100..100>
   brake <0..100>
@@ -182,6 +183,13 @@ def run_cli(args: argparse.Namespace) -> int:
                     enabled = _parse_on_off(parts[1].lower())
                     client.set_estop(enabled)
                     print(f"estop={'on' if enabled else 'off'}")
+
+                elif cmd == "hazard":
+                    if len(parts) != 2:
+                        raise ValueError("uso: hazard on|off")
+                    enabled = _parse_on_off(parts[1].lower())
+                    client.set_hazard_enabled(enabled)
+                    print(f"hazard={'on' if enabled else 'off'}")
 
                 elif cmd == "speed":
                     if len(parts) != 2:

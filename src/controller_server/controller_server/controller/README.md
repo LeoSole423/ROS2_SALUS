@@ -43,13 +43,14 @@ python3 -m controller_server.rpy_esp32_comms \
 - `speed <mps signed>`
 - `steer <int -100..100>`
 - `brake <0..100>`
+- `hazard on|off`
 - `watch on|off`
 - `log on|off`
 - `quit`
 
 ## Seguridad
 
-- Al iniciar, el estado sale en seguro: `drive=off`, `speed=0`, `steer=0`, `brake=0`, `estop=off`.
+- Al iniciar, el estado sale en seguro: `drive=off`, `speed=0`, `steer=0`, `brake=0`, `estop=off`, `hazard=off`.
 - Al salir, se envían 3 frames finales en estado seguro antes de cerrar UART.
 - El TX Pi->ESP32 es continuo a 50 Hz por default.
 
@@ -77,6 +78,7 @@ python3 -m controller_server.rpy_esp32_comms \
   - bit0: `ESTOP`
   - bit1: `DRIVE_EN`
   - bit2: `REV_REQ`
+  - bit3: `HAZARD`
 
 ### ESP32 -> Pi control (8 bytes)
 
