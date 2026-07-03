@@ -55,6 +55,18 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `battery_critical_voltage`
 - `battery_telemetry_stale_timeout_s`
 
+## Batería real
+- La ESP32 publica por UART una medición calibrada de voltaje (`battery_cv`) y la edad de muestra.
+- `controller_server` aplica un filtro temporal EMA (`tau=20 s`) sobre ese voltaje y calcula SOC con una curva no lineal de batería de plomo.
+- `/battery_state` publica el voltaje y porcentaje filtrados.
+- `/controller/telemetry` conserva el voltaje crudo recibido por UART y agrega:
+  - `raw_voltage_v`
+  - `filtered_voltage_v`
+  - `raw_percentage`
+  - `filtered_percentage`
+  - `soc_model="lead_acid_curve_v1"`
+- El protocolo UART de batería no cambia: la mejora de suavizado/SOC ocurre del lado ROS2.
+
 ## Launch
 ```bash
 ros2 launch controller_server controller_server.launch.py

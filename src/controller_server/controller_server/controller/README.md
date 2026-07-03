@@ -97,6 +97,12 @@ Sentinels:
 - `adc_pin_mv_u16_le`: voltaje del pin ADC en `mV`
 - `sample_age_ds_u8`: antigüedad de muestra en decisegundos
 
+Notas:
+
+- `battery_cv` llega desde la ESP32 como voltaje calibrado y listo para usar.
+- El suavizado temporal, la curva SOC de plomo y la histéresis de estado (`LOW`/`CRITICAL`) se calculan en `controller_server`.
+- `/battery_state` y el bloque `battery` de `/controller/telemetry` exponen el valor filtrado; el payload JSON también conserva `raw_voltage_v` para diagnóstico.
+
 ## Tests
 
 ```bash

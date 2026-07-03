@@ -11,6 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
+from .battery_estimator import BatteryEstimator, battery_state_label
 from .control_logic import (
     DesiredCommand,
     command_from_cmd_vel,
@@ -23,40 +24,6 @@ from .transport_backends import create_transport_backend
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
-
-
-def _battery_percentage_from_voltage(
-    voltage_v: float,
-    empty_voltage_v: float,
-    full_voltage_v: float,
-) -> float:
-    span_v = max(1.0e-6, float(full_voltage_v) - float(empty_voltage_v))
-    return _clamp01((float(voltage_v) - float(empty_voltage_v)) / span_v)
-
-
-def _battery_state_label(
-    *,
-    ready: bool,
-    fresh: bool,
-    link_fresh: bool,
-    suspect: bool,
-    voltage_v: float,
-    low_voltage_v: float,
-    critical_voltage_v: float,
-) -> str:
-    if not ready:
-        return "UNAVAILABLE"
-    if not link_fresh:
-        return "LINK_STALE"
-    if not fresh:
-        return "STALE"
-    if suspect:
-        return "SUSPECT"
-    if float(voltage_v) <= float(critical_voltage_v):
-        return "CRITICAL"
-    if float(voltage_v) <= float(low_voltage_v):
-        return "LOW"
-    return "OK"
 
 
 class ControllerServerNode(Node):
@@ -195,6 +162,12 @@ class ControllerServerNode(Node):
                 "adjusting to keep a valid range"
             )
             self._battery_full_voltage = self._battery_empty_voltage + 1.0
+        self._battery_estimator = BatteryEstimator(
+            empty_voltage_v=self._battery_empty_voltage,
+            full_voltage_v=self._battery_full_voltage,
+            low_voltage_v=self._battery_low_voltage,
+            critical_voltage_v=self._battery_critical_voltage,
+        )
         self._transport_backend = str(self.get_parameter("transport_backend").value)
         self._sim_cmd_vel_topic = str(self.get_parameter("sim_cmd_vel_topic").value)
         self._sim_odom_topic = str(self.get_parameter("sim_odom_topic").value)
@@ -380,31 +353,34 @@ class ControllerServerNode(Node):
             battery_link_fresh = (
                 battery_link_age_s <= self._battery_telemetry_stale_timeout_s
             )
-            battery_percentage = _battery_percentage_from_voltage(
+            battery_estimate = self._battery_estimator.update(
                 battery_telemetry.battery_voltage_v,
-                self._battery_empty_voltage,
-                self._battery_full_voltage,
+                sample_time_s=float(battery_telemetry.rx_monotonic_s),
             )
-            battery_state_text = _battery_state_label(
+            battery_percentage = _clamp01(battery_estimate.filtered_percentage)
+            battery_state_text = battery_state_label(
                 ready=bool(battery_telemetry.ready),
                 fresh=bool(battery_telemetry.fresh),
                 link_fresh=battery_link_fresh,
                 suspect=bool(battery_telemetry.suspect),
-                voltage_v=battery_telemetry.battery_voltage_v,
-                low_voltage_v=self._battery_low_voltage,
-                critical_voltage_v=self._battery_critical_voltage,
+                severity=battery_estimate.severity,
             )
             battery_payload = battery_telemetry.as_dict()
             battery_payload.update(
                 {
+                    "raw_voltage_v": float(battery_estimate.raw_voltage_v),
+                    "filtered_voltage_v": float(battery_estimate.filtered_voltage_v),
                     "link_age_s": battery_link_age_s,
                     "link_fresh": bool(battery_link_fresh),
                     "percentage": battery_percentage,
+                    "raw_percentage": float(battery_estimate.raw_percentage),
+                    "filtered_percentage": float(battery_estimate.filtered_percentage),
                     "state": battery_state_text,
                     "low_voltage_v": self._battery_low_voltage,
                     "critical_voltage_v": self._battery_critical_voltage,
                     "full_voltage_v": self._battery_full_voltage,
                     "empty_voltage_v": self._battery_empty_voltage,
+                    "soc_model": str(battery_estimate.model_name),
                 }
             )
         payload = {
@@ -468,15 +444,15 @@ class ControllerServerNode(Node):
         self._drive_telemetry_pub.publish(drive_msg)
 
         if battery_telemetry is not None:
+            battery_estimate = self._battery_estimator.update(
+                battery_telemetry.battery_voltage_v,
+                sample_time_s=float(battery_telemetry.rx_monotonic_s),
+            )
             battery_msg = BatteryState()
             battery_msg.header.stamp = self.get_clock().now().to_msg()
             battery_msg.present = bool(battery_telemetry.ready)
-            battery_msg.voltage = float(battery_telemetry.battery_voltage_v)
-            battery_msg.percentage = _battery_percentage_from_voltage(
-                battery_telemetry.battery_voltage_v,
-                self._battery_empty_voltage,
-                self._battery_full_voltage,
-            )
+            battery_msg.voltage = float(battery_estimate.filtered_voltage_v)
+            battery_msg.percentage = _clamp01(battery_estimate.filtered_percentage)
             battery_msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_UNKNOWN
             battery_msg.power_supply_health = (
                 BatteryState.POWER_SUPPLY_HEALTH_UNSPEC_FAILURE
