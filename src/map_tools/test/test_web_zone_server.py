@@ -167,6 +167,7 @@ class _FakeBatteryTelemetryNode(_FakeNode):
     _derive_mode = staticmethod(WebZoneServerNode._derive_mode)
     _connection_status_locked = WebZoneServerNode._connection_status_locked
     _on_controller_telemetry = WebZoneServerNode._on_controller_telemetry
+    _on_battery_state = WebZoneServerNode._on_battery_state
     _safe_float = staticmethod(WebZoneServerNode._safe_float)
     _safe_int = staticmethod(WebZoneServerNode._safe_int)
 
@@ -182,6 +183,7 @@ class _FakeBatteryTelemetryNode(_FakeNode):
         self._battery_present = None
         self._battery_updated_age_s = None
         self._battery_ws_key = None
+        self._battery_use_controller_telemetry = False
         self._mission_last_controller_telemetry_key = None
         self._broadcast_payloads = []
         self._mission_records = []
@@ -503,3 +505,21 @@ def test_controller_telemetry_updates_battery_fields_and_broadcasts():
     assert node._battery_updated_age_s == pytest.approx(0.6)
     assert node._broadcast_payloads[-1]["battery_voltage_v"] == pytest.approx(61.87)
     assert node._broadcast_payloads[-1]["battery_state"] == "OK"
+
+
+def test_battery_state_callback_does_not_desync_controller_battery_snapshot():
+    node = _FakeBatteryTelemetryNode()
+    msg = SimpleNamespace(
+        data=(
+            '{"source":"auto","telemetry":{"ready":true},"requested_auto_command":{"drive_enabled":true},'
+            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","ready":true,"link_age_s":0.6}}'
+        )
+    )
+
+    node._on_controller_telemetry(msg)
+    node._on_battery_state(SimpleNamespace(percentage=0.15))
+
+    assert node._battery_use_controller_telemetry is True
+    assert node._battery_pct == pytest.approx(92.0)
+    assert node._battery_state == "OK"
+    assert node._battery_voltage_v == pytest.approx(61.87)

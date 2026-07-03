@@ -455,6 +455,7 @@ class WebZoneServerNode(Node):
         self._battery_present: Optional[bool] = None
         self._battery_updated_age_s: Optional[float] = None
         self._battery_ws_key: Optional[str] = None
+        self._battery_use_controller_telemetry = False
         self._datum_snapshot = self._build_default_datum_snapshot()
         self._datums_doc = build_datums_doc([], "")
         self._datums_error = ""
@@ -1844,6 +1845,8 @@ class WebZoneServerNode(Node):
             percentage *= 100.0
         percentage = max(0.0, min(100.0, percentage))
         with self._lock:
+            if self._battery_use_controller_telemetry:
+                return
             self._battery_pct = float(percentage)
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
@@ -2250,6 +2253,8 @@ class WebZoneServerNode(Node):
             battery_present = battery.get("ready", battery.get("present"))
             battery_updated_age_s = battery.get("link_age_s", battery.get("sample_age_s"))
             with self._lock:
+                if battery:
+                    self._battery_use_controller_telemetry = True
                 if filtered_percentage is not None:
                     battery_pct = self._safe_float(filtered_percentage, float("nan"))
                     if np.isfinite(battery_pct):

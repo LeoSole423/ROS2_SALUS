@@ -51,7 +51,7 @@ class ControllerServerNode(Node):
         self.declare_parameter("estop_brake_pct", 100)
         self.declare_parameter("telemetry_stale_timeout_s", 0.5)
         self.declare_parameter("battery_state_topic", "/battery_state")
-        self.declare_parameter("battery_full_voltage", 62.4)
+        self.declare_parameter("battery_full_voltage", 60.0)
         self.declare_parameter("battery_empty_voltage", 55.0)
         self.declare_parameter("battery_low_voltage", 58.0)
         self.declare_parameter("battery_critical_voltage", 56.0)
