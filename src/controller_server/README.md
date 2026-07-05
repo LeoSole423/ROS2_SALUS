@@ -20,6 +20,7 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `/controller/telemetry` (`std_msgs/msg/String`, payload JSON)
 - `/controller/drive_telemetry` (`interfaces/msg/DriveTelemetry`)
 - `/battery_state` (`sensor_msgs/msg/BatteryState`)
+- `/battery_mission_guard` (`interfaces/msg/BatteryMissionGuard`)
 
 ## Backends
 - `transport_backend:=uart`
@@ -49,22 +50,44 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `auto_drive_enabled`
 - `estop_brake_pct`
 - `battery_state_topic`
+- `battery_guard_topic`
 - `battery_full_voltage` (default operativo en reposo: `60.0 V`; el pico de carga alto puede ser mayor)
 - `battery_empty_voltage`
 - `battery_low_voltage`
 - `battery_critical_voltage`
 - `battery_telemetry_stale_timeout_s`
+- `battery_soc_curve_points`
+- `battery_loaded_fast_tau_s`
+- `battery_loaded_slow_tau_s`
+- `battery_recovered_tau_s`
+- `battery_soc_discharge_tau_s`
+- `battery_guard_loaded_low_voltage`
+- `battery_guard_recovered_low_voltage`
+- `battery_guard_loaded_low_persist_s`
+- `battery_guard_recovered_low_persist_s`
 
 ## Batería real
 - La ESP32 publica por UART una medición calibrada de voltaje (`battery_cv`) y la edad de muestra.
-- `controller_server` aplica un filtro temporal EMA (`tau=20 s`) sobre ese voltaje y calcula SOC con una curva no lineal de batería de plomo.
-- `/battery_state` publica el voltaje y porcentaje filtrados.
+- `controller_server` separa batería en dos lógicas:
+  - **SOC de operador**: `%` suave publicado en `/battery_state`
+  - **guardia de misión**: recomendación de `return_home` publicada en `/battery_mission_guard`
+- `/battery_state` publica `voltage=filtered_voltage_v` y `percentage=SOC de operador`.
+- `/battery_mission_guard` publica si la misión debería volver a HOME usando persistencia temporal y voltajes de carga/recuperación.
 - `/controller/telemetry` conserva el voltaje crudo recibido por UART y agrega:
   - `raw_voltage_v`
   - `filtered_voltage_v`
-  - `raw_percentage`
-  - `filtered_percentage`
-  - `soc_model="lead_acid_curve_v1"`
+  - `loaded_voltage_fast_v`
+  - `loaded_voltage_slow_v`
+  - `recovered_voltage_v`
+  - `soc_voltage_v`
+  - `operator_soc_pct`
+  - `traction_active`
+  - `mission_guard_state`
+  - `return_home_recommended`
+  - `loaded_low_persist_s`
+  - `recovered_low_persist_s`
+  - `operator_soc_model`
+  - `mission_guard_model`
 - El protocolo UART de batería no cambia: la mejora de suavizado/SOC ocurre del lado ROS2.
 
 ## Launch

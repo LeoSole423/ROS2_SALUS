@@ -68,9 +68,21 @@ Los perfiles de rosbag del backend web incluyen la cadena GPS necesaria para rep
   - `/odometry/local`
   - `/nav_command_server/telemetry`
   - `/nav_command_server/events`
+  - `/battery_state`
+  - `/controller/telemetry`
   - `/diagnostics`
 - Tópico publicado:
   - `/cmd_vel_teleop`
+
+## Batería en WebSocket
+- `battery_pct` sigue siendo el valor principal para UI.
+- El backend también propaga desde `/controller/telemetry`:
+  - `battery_state`
+  - `battery_mission_state`
+  - `battery_return_home_recommended`
+  - `battery_loaded_voltage_v`
+  - `battery_recovered_voltage_v`
+  - `battery_voltage_v`
 
 ## Tests
 ```bash

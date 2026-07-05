@@ -1,99 +1,102 @@
-import math
-
 import pytest
 
 from controller_server.battery_estimator import (
     BatteryEstimator,
     battery_state_label,
+    parse_soc_curve_points,
     piecewise_soc_from_voltage,
 )
 
 
-def test_piecewise_soc_curve_hits_endpoints_and_named_points() -> None:
-    assert piecewise_soc_from_voltage(55.0, 55.0, 62.4) == pytest.approx(0.0)
-    assert piecewise_soc_from_voltage(62.4, 55.0, 62.4) == pytest.approx(1.0)
-    assert piecewise_soc_from_voltage(59.64, 55.0, 62.4) == pytest.approx(0.5)
+def test_parse_soc_curve_points_accepts_custom_pairs() -> None:
+    curve = parse_soc_curve_points([55.0, 0.0, 57.0, 0.8, 60.0, 1.0])
+
+    assert curve == ((55.0, 0.0), (57.0, 0.8), (60.0, 1.0))
+
+
+def test_piecewise_soc_curve_hits_named_points() -> None:
+    curve = parse_soc_curve_points([55.0, 0.0, 57.0, 0.8, 57.5, 0.9, 60.0, 1.0])
+
+    assert piecewise_soc_from_voltage(55.0, curve) == pytest.approx(0.0)
+    assert piecewise_soc_from_voltage(57.0, curve) == pytest.approx(0.8)
+    assert piecewise_soc_from_voltage(57.5, curve) == pytest.approx(0.9)
+    assert piecewise_soc_from_voltage(60.0, curve) == pytest.approx(1.0)
 
 
 def test_piecewise_soc_curve_is_monotonic() -> None:
-    voltages = [55.0 + 0.2 * i for i in range(38)]
-    percentages = [piecewise_soc_from_voltage(voltage, 55.0, 62.4) for voltage in voltages]
+    curve = parse_soc_curve_points([55.0, 0.0, 57.0, 0.8, 57.5, 0.9, 60.0, 1.0])
+    voltages = [55.0 + 0.2 * i for i in range(26)]
+    percentages = [piecewise_soc_from_voltage(voltage, curve) for voltage in voltages]
 
     assert all(next_pct >= pct for pct, next_pct in zip(percentages, percentages[1:]))
 
 
-def test_battery_estimator_initializes_from_first_sample() -> None:
-    estimator = BatteryEstimator(
-        empty_voltage_v=55.0,
-        full_voltage_v=62.4,
-        low_voltage_v=58.0,
-        critical_voltage_v=56.0,
+def test_battery_estimator_initializes_operator_soc_from_first_sample() -> None:
+    estimator = BatteryEstimator()
+
+    estimate = estimator.update(60.0, sample_time_s=10.0, traction_active=False)
+
+    assert estimate.raw_voltage_v == pytest.approx(60.0)
+    assert estimate.filtered_voltage_v == pytest.approx(60.0)
+    assert estimate.operator_soc_pct == pytest.approx(100.0)
+    assert estimate.mission_guard_state == "OK"
+
+
+def test_battery_estimator_detects_traction_active_sag_without_triggering_immediately() -> None:
+    estimator = BatteryEstimator()
+    estimator.update(60.0, sample_time_s=0.0, traction_active=False)
+
+    estimate = estimator.update(55.2, sample_time_s=5.0, traction_active=True)
+
+    assert estimate.loaded_voltage_fast_v < 60.0
+    assert estimate.loaded_voltage_slow_v > estimate.loaded_voltage_fast_v
+    assert estimate.return_home_recommended is False
+    assert estimate.loaded_low_persist_s == pytest.approx(0.0)
+
+
+def test_battery_estimator_triggers_after_sustained_loaded_low_voltage() -> None:
+    estimator = BatteryEstimator()
+    estimator.update(56.0, sample_time_s=0.0, traction_active=False)
+
+    estimate = estimator.update(56.0, sample_time_s=91.0, traction_active=True)
+
+    assert estimate.loaded_voltage_slow_v == pytest.approx(56.0)
+    assert estimate.loaded_low_persist_s == pytest.approx(91.0)
+    assert estimate.return_home_recommended is True
+    assert estimate.mission_guard_state == "LOW_ENERGY_GO_HOME"
+
+
+def test_battery_estimator_triggers_after_recovered_low_voltage_window() -> None:
+    estimator = BatteryEstimator()
+    estimator.update(56.8, sample_time_s=0.0, traction_active=False)
+
+    estimate = estimator.update(56.8, sample_time_s=21.0, traction_active=False)
+
+    assert estimate.recovered_voltage_v == pytest.approx(56.8)
+    assert estimate.recovered_low_persist_s == pytest.approx(21.0)
+    assert estimate.return_home_recommended is True
+
+
+def test_battery_state_label_prioritizes_sensor_validity() -> None:
+    assert (
+        battery_state_label(
+            ready=False,
+            fresh=True,
+            link_fresh=True,
+            suspect=False,
+            mission_guard_state="OK",
+        )
+        == "UNAVAILABLE"
     )
-
-    estimate = estimator.update(62.4, sample_time_s=10.0)
-
-    assert estimate.raw_voltage_v == pytest.approx(62.4)
-    assert estimate.filtered_voltage_v == pytest.approx(62.4)
-    assert estimate.filtered_percentage == pytest.approx(1.0)
-    assert estimate.severity == "OK"
-
-
-def test_battery_estimator_ema_converges_using_sample_dt() -> None:
-    estimator = BatteryEstimator(
-        empty_voltage_v=55.0,
-        full_voltage_v=62.4,
-        low_voltage_v=58.0,
-        critical_voltage_v=56.0,
-    )
-    estimator.update(62.4, sample_time_s=0.0)
-
-    estimate = estimator.update(55.0, sample_time_s=1.0)
-    expected_alpha = 1.0 - math.exp(-1.0 / 20.0)
-    expected_voltage = 62.4 + expected_alpha * (55.0 - 62.4)
-
-    assert estimate.filtered_voltage_v == pytest.approx(expected_voltage)
-    assert estimate.raw_voltage_v == pytest.approx(55.0)
-    assert estimate.filtered_voltage_v > estimate.raw_voltage_v
-
-
-def test_battery_estimator_hysteresis_keeps_low_until_release_voltage() -> None:
-    estimator = BatteryEstimator(
-        empty_voltage_v=55.0,
-        full_voltage_v=62.4,
-        low_voltage_v=58.0,
-        critical_voltage_v=56.0,
-        filter_tau_s=0.01,
-    )
-
-    assert estimator.update(57.9, sample_time_s=0.0).severity == "LOW"
-    assert estimator.update(58.2, sample_time_s=1.0).severity == "LOW"
-    assert estimator.update(58.45, sample_time_s=2.0).severity == "OK"
-
-
-def test_battery_estimator_hysteresis_keeps_critical_until_release_voltage() -> None:
-    estimator = BatteryEstimator(
-        empty_voltage_v=55.0,
-        full_voltage_v=62.4,
-        low_voltage_v=58.0,
-        critical_voltage_v=56.0,
-        filter_tau_s=0.01,
-    )
-
-    assert estimator.update(55.8, sample_time_s=0.0).severity == "CRITICAL"
-    assert estimator.update(56.2, sample_time_s=1.0).severity == "CRITICAL"
-    assert estimator.update(56.5, sample_time_s=2.0).severity == "LOW"
-
-
-def test_battery_state_label_prioritizes_link_and_sensor_flags() -> None:
     assert (
         battery_state_label(
             ready=True,
-            fresh=True,
-            link_fresh=False,
+            fresh=False,
+            link_fresh=True,
             suspect=False,
-            severity="OK",
+            mission_guard_state="LOW_ENERGY_GO_HOME",
         )
-        == "LINK_STALE"
+        == "STALE"
     )
     assert (
         battery_state_label(
@@ -101,7 +104,7 @@ def test_battery_state_label_prioritizes_link_and_sensor_flags() -> None:
             fresh=True,
             link_fresh=True,
             suspect=True,
-            severity="CRITICAL",
+            mission_guard_state="LOW_ENERGY_GO_HOME",
         )
         == "SUSPECT"
     )
@@ -111,7 +114,7 @@ def test_battery_state_label_prioritizes_link_and_sensor_flags() -> None:
             fresh=True,
             link_fresh=True,
             suspect=False,
-            severity="CRITICAL",
+            mission_guard_state="LOW_ENERGY_GO_HOME",
         )
-        == "CRITICAL"
+        == "LOW_ENERGY_GO_HOME"
     )

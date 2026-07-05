@@ -12,6 +12,7 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/BatteryMissionGuard.msg"
   "msg/CmdVelFinal.msg"
   "msg/DriveTelemetry.msg"
   "msg/NoGoPoint.msg"

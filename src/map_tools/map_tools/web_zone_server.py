@@ -452,6 +452,10 @@ class WebZoneServerNode(Node):
         self._battery_pct: Optional[float] = None
         self._battery_voltage_v: Optional[float] = None
         self._battery_state: str = ""
+        self._battery_mission_state: str = ""
+        self._battery_return_home_recommended: Optional[bool] = None
+        self._battery_recovered_voltage_v: Optional[float] = None
+        self._battery_loaded_voltage_v: Optional[float] = None
         self._battery_present: Optional[bool] = None
         self._battery_updated_age_s: Optional[float] = None
         self._battery_ws_key: Optional[str] = None
@@ -1234,6 +1238,24 @@ class WebZoneServerNode(Node):
                 else None
             ),
             "battery_state": str(self._battery_state),
+            "battery_mission_state": str(self._battery_mission_state),
+            "battery_return_home_recommended": (
+                bool(self._battery_return_home_recommended)
+                if self._battery_return_home_recommended is not None
+                else None
+            ),
+            "battery_recovered_voltage_v": (
+                float(self._battery_recovered_voltage_v)
+                if self._battery_recovered_voltage_v is not None
+                and np.isfinite(float(self._battery_recovered_voltage_v))
+                else None
+            ),
+            "battery_loaded_voltage_v": (
+                float(self._battery_loaded_voltage_v)
+                if self._battery_loaded_voltage_v is not None
+                and np.isfinite(float(self._battery_loaded_voltage_v))
+                else None
+            ),
             "battery_present": bool(self._battery_present) if self._battery_present is not None else None,
             "battery_updated_age_s": (
                 float(self._battery_updated_age_s)
@@ -2250,6 +2272,14 @@ class WebZoneServerNode(Node):
             filtered_percentage = battery.get("filtered_percentage", battery.get("percentage"))
             filtered_voltage_v = battery.get("filtered_voltage_v", battery.get("battery_voltage_v"))
             battery_state = battery.get("state", "")
+            battery_mission_state = battery.get(
+                "mission_guard_state", battery.get("state", "")
+            )
+            battery_return_home_recommended = battery.get("return_home_recommended")
+            battery_recovered_voltage_v = battery.get("recovered_voltage_v")
+            battery_loaded_voltage_v = battery.get(
+                "loaded_voltage_slow_v", battery.get("filtered_voltage_v")
+            )
             battery_present = battery.get("ready", battery.get("present"))
             battery_updated_age_s = battery.get("link_age_s", battery.get("sample_age_s"))
             with self._lock:
@@ -2264,6 +2294,24 @@ class WebZoneServerNode(Node):
                 battery_voltage = self._safe_float(filtered_voltage_v, float("nan"))
                 self._battery_voltage_v = float(battery_voltage) if np.isfinite(battery_voltage) else None
                 self._battery_state = str(battery_state or "")
+                self._battery_mission_state = str(battery_mission_state or "")
+                self._battery_return_home_recommended = (
+                    bool(battery_return_home_recommended)
+                    if battery_return_home_recommended is not None
+                    else None
+                )
+                recovered_voltage = self._safe_float(
+                    battery_recovered_voltage_v, float("nan")
+                )
+                self._battery_recovered_voltage_v = (
+                    float(recovered_voltage) if np.isfinite(recovered_voltage) else None
+                )
+                loaded_voltage = self._safe_float(
+                    battery_loaded_voltage_v, float("nan")
+                )
+                self._battery_loaded_voltage_v = (
+                    float(loaded_voltage) if np.isfinite(loaded_voltage) else None
+                )
                 self._battery_present = (
                     bool(battery_present) if battery_present is not None else None
                 )
@@ -2276,6 +2324,10 @@ class WebZoneServerNode(Node):
                         "battery_pct": self._battery_pct,
                         "battery_voltage_v": self._battery_voltage_v,
                         "battery_state": self._battery_state,
+                        "battery_mission_state": self._battery_mission_state,
+                        "battery_return_home_recommended": self._battery_return_home_recommended,
+                        "battery_recovered_voltage_v": self._battery_recovered_voltage_v,
+                        "battery_loaded_voltage_v": self._battery_loaded_voltage_v,
                         "battery_present": self._battery_present,
                         "battery_updated_age_s": self._battery_updated_age_s,
                     },

@@ -180,6 +180,10 @@ class _FakeBatteryTelemetryNode(_FakeNode):
         self._battery_pct = None
         self._battery_voltage_v = None
         self._battery_state = ""
+        self._battery_mission_state = ""
+        self._battery_return_home_recommended = None
+        self._battery_recovered_voltage_v = None
+        self._battery_loaded_voltage_v = None
         self._battery_present = None
         self._battery_updated_age_s = None
         self._battery_ws_key = None
@@ -492,7 +496,8 @@ def test_controller_telemetry_updates_battery_fields_and_broadcasts():
     msg = SimpleNamespace(
         data=(
             '{"source":"auto","telemetry":{"ready":true},"requested_auto_command":{"drive_enabled":true},'
-            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","ready":true,"link_age_s":0.6}}'
+            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","mission_guard_state":"OK",'
+            '"return_home_recommended":false,"loaded_voltage_slow_v":61.87,"recovered_voltage_v":61.95,"ready":true,"link_age_s":0.6}}'
         )
     )
 
@@ -501,10 +506,15 @@ def test_controller_telemetry_updates_battery_fields_and_broadcasts():
     assert node._battery_pct == pytest.approx(92.0)
     assert node._battery_voltage_v == pytest.approx(61.87)
     assert node._battery_state == "OK"
+    assert node._battery_mission_state == "OK"
+    assert node._battery_return_home_recommended is False
+    assert node._battery_recovered_voltage_v == pytest.approx(61.95)
+    assert node._battery_loaded_voltage_v == pytest.approx(61.87)
     assert node._battery_present is True
     assert node._battery_updated_age_s == pytest.approx(0.6)
     assert node._broadcast_payloads[-1]["battery_voltage_v"] == pytest.approx(61.87)
     assert node._broadcast_payloads[-1]["battery_state"] == "OK"
+    assert node._broadcast_payloads[-1]["battery_mission_state"] == "OK"
 
 
 def test_battery_state_callback_does_not_desync_controller_battery_snapshot():
@@ -512,7 +522,8 @@ def test_battery_state_callback_does_not_desync_controller_battery_snapshot():
     msg = SimpleNamespace(
         data=(
             '{"source":"auto","telemetry":{"ready":true},"requested_auto_command":{"drive_enabled":true},'
-            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","ready":true,"link_age_s":0.6}}'
+            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","mission_guard_state":"OK",'
+            '"return_home_recommended":false,"loaded_voltage_slow_v":61.87,"recovered_voltage_v":61.95,"ready":true,"link_age_s":0.6}}'
         )
     )
 
