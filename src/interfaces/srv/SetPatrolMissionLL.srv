@@ -1,0 +1,24 @@
+float64[] loop_lats
+float64[] loop_lons
+float64[] loop_yaws_deg
+string[] loop_waypoint_action_jsons
+float64 home_lat
+float64 home_lon
+float64 home_yaw_deg
+float64[] return_lats
+float64[] return_lons
+float64[] return_yaws_deg
+string[] return_waypoint_action_jsons
+float64[] depart_lats
+float64[] depart_lons
+float64[] depart_yaws_deg
+string[] depart_waypoint_action_jsons
+uint32 depart_entry_loop_index
+float64 leg_spacing_m
+float64 chunk_span_m
+uint32 chunk_max_waypoints
+---
+bool ok
+string error
+uint32 loop_input_waypoint_count
+uint32 loop_expanded_waypoint_count

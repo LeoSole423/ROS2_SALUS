@@ -27,9 +27,13 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from interfaces.msg import BatteryMissionGuard, NavEvent, NavTelemetry
 from interfaces.srv import (
     BrakeNav,
+    CancelPatrolMission,
     CancelNavGoal,
     CancelRouteMission,
+    GetPatrolMissionState,
     GetRouteMissionState,
+    RequestReturnHome,
+    SetPatrolMissionLL,
     SetNavGoalLL,
     SetRouteMissionLL,
 )
@@ -41,6 +45,12 @@ BLOCKED_STATE_RETRYING = "BLOCKED_RETRYING"
 BLOCKED_STATE_NEEDS_OPERATOR = "BLOCKED_NEEDS_OPERATOR"
 WAYPOINT_ROLE_NORMAL = "normal"
 WAYPOINT_ROLE_HOME = "home"
+PATROL_PHASE_IDLE = "idle"
+PATROL_PHASE_DEPART_HOME = "depart_home"
+PATROL_PHASE_LOOP_MAIN = "loop_main"
+PATROL_PHASE_RETURN_PENDING = "return_pending"
+PATROL_PHASE_RETURN_CONNECTOR = "return_connector"
+PATROL_PHASE_PARKED_HOME = "parked_home"
 
 BLOCKING_FAILURE_CODES = {
     "NO_VALID_PATH",
@@ -126,6 +136,21 @@ class ReturnHomeExitSelection:
     route_index: int
     input_index: int
     waypoint: RouteWaypoint
+
+
+@dataclass(frozen=True)
+class PatrolMissionProfile:
+    loop_waypoints: List[RouteWaypoint]
+    loop_action_jsons: List[str]
+    home_waypoint: RouteWaypoint
+    return_waypoints: List[RouteWaypoint]
+    return_action_jsons: List[str]
+    depart_waypoints: List[RouteWaypoint]
+    depart_action_jsons: List[str]
+    depart_entry_loop_index: int
+    leg_spacing_m: float
+    chunk_span_m: float
+    chunk_max_waypoints: int
 
 
 def _normalize_yaw_deg(yaw_deg: float) -> float:
@@ -313,6 +338,38 @@ def _select_return_home_exit_waypoint(
             best_distance_m = float(distance_m)
             best_input_index = int(input_index)
     return best
+
+
+def _rotate_list(values: Sequence[Any], start_index: int) -> List[Any]:
+    items = list(values)
+    if not items:
+        return []
+    start = int(start_index) % len(items)
+    if start == 0:
+        return list(items)
+    return items[start:] + items[:start]
+
+
+def _map_prepared_input_indices(
+    prepared: PreparedRouteMission,
+    source_indices: Sequence[int],
+) -> PreparedRouteMission:
+    if prepared.input_indices is None:
+        return prepared
+    mapped = [
+        int(source_indices[index]) if 0 <= int(index) < len(source_indices) else int(index)
+        for index in prepared.input_indices
+    ]
+    return PreparedRouteMission(
+        waypoints=list(prepared.waypoints),
+        action_jsons=list(prepared.action_jsons),
+        waypoint_roles=list(prepared.waypoint_roles),
+        start_index=int(prepared.start_index),
+        skipped_waypoints=int(prepared.skipped_waypoints),
+        rotated=bool(prepared.rotated),
+        note=str(prepared.note),
+        input_indices=mapped,
+    )
 
 
 def _bearing_deg(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> float:
@@ -1238,6 +1295,10 @@ class RouteExecutorNode(Node):
         self.declare_parameter("set_route_service", "/route_executor/set_route_ll")
         self.declare_parameter("cancel_route_service", "/route_executor/cancel_route")
         self.declare_parameter("get_state_service", "/route_executor/get_state")
+        self.declare_parameter("set_patrol_service", "/route_executor/set_patrol_ll")
+        self.declare_parameter("cancel_patrol_service", "/route_executor/cancel_patrol")
+        self.declare_parameter("get_patrol_state_service", "/route_executor/get_patrol_state")
+        self.declare_parameter("request_return_home_service", "/route_executor/request_return_home")
         self.declare_parameter("mission_path_topic", "/route_executor/mission_path")
         self.declare_parameter("active_chunk_path_topic", "/route_executor/active_chunk_path")
         self.declare_parameter("path_frame", "map")
@@ -1286,6 +1347,14 @@ class RouteExecutorNode(Node):
         self.set_route_service = str(self.get_parameter("set_route_service").value)
         self.cancel_route_service = str(self.get_parameter("cancel_route_service").value)
         self.get_state_service = str(self.get_parameter("get_state_service").value)
+        self.set_patrol_service = str(self.get_parameter("set_patrol_service").value)
+        self.cancel_patrol_service = str(self.get_parameter("cancel_patrol_service").value)
+        self.get_patrol_state_service = str(
+            self.get_parameter("get_patrol_state_service").value
+        )
+        self.request_return_home_service = str(
+            self.get_parameter("request_return_home_service").value
+        )
         self.mission_path_topic = str(self.get_parameter("mission_path_topic").value)
         self.active_chunk_path_topic = str(self.get_parameter("active_chunk_path_topic").value)
         self.path_frame = str(self.get_parameter("path_frame").value).strip() or "map"
@@ -1410,6 +1479,11 @@ class RouteExecutorNode(Node):
         self._return_home_active = False
         self._return_home_exit_route_index = -1
         self._return_home_exit_input_index = -1
+        self._patrol_mission_profile: Optional[PatrolMissionProfile] = None
+        self._patrol_mission_id = ""
+        self._patrol_phase = PATROL_PHASE_IDLE
+        self._patrol_active = False
+        self._patrol_return_exit_loop_index = -1
         self._event_seq = 0
 
         self._service_group = MutuallyExclusiveCallbackGroup()
@@ -1482,6 +1556,30 @@ class RouteExecutorNode(Node):
             GetRouteMissionState,
             self.get_state_service,
             self._on_get_state,
+            callback_group=self._service_group,
+        )
+        self._set_patrol_srv = self.create_service(
+            SetPatrolMissionLL,
+            self.set_patrol_service,
+            self._on_set_patrol,
+            callback_group=self._service_group,
+        )
+        self._cancel_patrol_srv = self.create_service(
+            CancelPatrolMission,
+            self.cancel_patrol_service,
+            self._on_cancel_patrol,
+            callback_group=self._service_group,
+        )
+        self._get_patrol_state_srv = self.create_service(
+            GetPatrolMissionState,
+            self.get_patrol_state_service,
+            self._on_get_patrol_state,
+            callback_group=self._service_group,
+        )
+        self._request_return_home_srv = self.create_service(
+            RequestReturnHome,
+            self.request_return_home_service,
+            self._on_request_return_home,
             callback_group=self._service_group,
         )
         self._nav_telemetry_sub = self.create_subscription(
@@ -2077,6 +2175,12 @@ class RouteExecutorNode(Node):
 
     def _return_home_phase_locked(self) -> str:
         status_text = str(self._mission_status or "").lower()
+        if self._patrol_phase == PATROL_PHASE_RETURN_CONNECTOR:
+            return "active"
+        if self._patrol_phase == PATROL_PHASE_RETURN_PENDING:
+            return "waiting_exit"
+        if self._patrol_phase == PATROL_PHASE_PARKED_HOME:
+            return "completed"
         if self._return_home_active:
             return "active"
         if self._return_home_requested:
@@ -2088,6 +2192,271 @@ class RouteExecutorNode(Node):
         if "return home unavailable" in status_text:
             return "unavailable"
         return "idle"
+
+    def _patrol_return_reference_waypoint_locked(self) -> Optional[RouteWaypoint]:
+        profile = self._patrol_mission_profile
+        if profile is None:
+            return self._effective_home_waypoint_locked()
+        if profile.return_waypoints:
+            return profile.return_waypoints[0]
+        return profile.home_waypoint
+
+    def _patrol_needs_depart_from_home_locked(self) -> bool:
+        profile = self._patrol_mission_profile
+        if profile is None:
+            return False
+        if self._last_robot_pose is None:
+            return False
+        return (
+            _distance_m(
+                float(self._last_robot_pose[0]),
+                float(self._last_robot_pose[1]),
+                float(profile.home_waypoint.lat),
+                float(profile.home_waypoint.lon),
+            )
+            <= float(self.route_segment_start_tolerance_m)
+        )
+
+    def _set_patrol_state_locked(
+        self,
+        *,
+        profile: Optional[PatrolMissionProfile],
+        mission_id: str,
+        phase: str,
+        active: bool,
+        return_exit_loop_index: int = -1,
+    ) -> None:
+        self._patrol_mission_profile = profile
+        self._patrol_mission_id = str(mission_id)
+        self._patrol_phase = str(phase)
+        self._patrol_active = bool(active)
+        self._patrol_return_exit_loop_index = int(return_exit_loop_index)
+
+    def _clear_patrol_state_locked(self, phase: str = PATROL_PHASE_IDLE) -> None:
+        self._set_patrol_state_locked(
+            profile=None,
+            mission_id="",
+            phase=phase,
+            active=False,
+            return_exit_loop_index=-1,
+        )
+
+    def _prepare_route_with_source_indices(
+        self,
+        *,
+        route_input: Sequence[RouteWaypoint],
+        action_jsons: Sequence[str],
+        loop_enabled: bool,
+        source_indices: Optional[Sequence[int]] = None,
+    ) -> Tuple[Optional[PreparedRouteMission], bool, str]:
+        route_source_indices = list(source_indices or range(len(route_input)))
+        route_input, action_jsons, dropped_loop_closure = drop_duplicate_loop_closure_with_actions(
+            route_input,
+            action_jsons,
+            loop=loop_enabled,
+            closure_tolerance_m=self.route_waypoint_reached_tolerance_m,
+        )
+        if len(route_source_indices) > len(route_input):
+            route_source_indices = route_source_indices[: len(route_input)]
+        with self._lock:
+            robot_pose = self._last_robot_pose
+        prepared, prepare_error = prepare_route_waypoints(
+            route_input,
+            loop=loop_enabled,
+            robot_lat=None if robot_pose is None else float(robot_pose[0]),
+            robot_lon=None if robot_pose is None else float(robot_pose[1]),
+            waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
+            segment_start_tolerance_m=self.route_segment_start_tolerance_m,
+            action_jsons=action_jsons,
+            waypoint_roles=[WAYPOINT_ROLE_NORMAL for _ in route_input],
+        )
+        if prepared is None:
+            return None, dropped_loop_closure, prepare_error
+        prepared = _map_prepared_input_indices(prepared, route_source_indices)
+        return prepared, dropped_loop_closure, ""
+
+    def _activate_prepared_route(
+        self,
+        *,
+        prepared: PreparedRouteMission,
+        loop_enabled: bool,
+        leg_spacing_m: float,
+        chunk_span_m: float,
+        chunk_max_waypoints: int,
+        home_waypoint: Optional[RouteMissionHome],
+        mission_id: str,
+        preserve_energy_state: bool = False,
+    ) -> Tuple[bool, str, int, int]:
+        mission_note = str(prepared.note)
+        expanded, expanded_action_jsons, expanded_key_flags = expand_route_waypoints_with_actions(
+            prepared.waypoints,
+            prepared.action_jsons,
+            leg_spacing_m=leg_spacing_m,
+            loop=loop_enabled,
+        )
+
+        with self._lock:
+            self._route_input = list(prepared.waypoints)
+            self._route_input_source_indices = list(
+                prepared.input_indices
+                if prepared.input_indices is not None
+                else range(len(prepared.waypoints))
+            )
+            self._route_expanded = list(expanded)
+            self._route_action_jsons = list(expanded_action_jsons)
+            self._route_waypoint_roles = [WAYPOINT_ROLE_NORMAL for _ in expanded]
+            self._route_key_waypoint_flags = list(expanded_key_flags)
+            self._route_input_indices = expanded_input_indices(
+                expanded_key_flags,
+                prepared.input_indices,
+            )
+            self._home_waypoint = (
+                home_waypoint.waypoint
+                if home_waypoint is not None
+                else self._configured_home_waypoint()
+            )
+            self._home_input_index = int(home_waypoint.input_index) if home_waypoint is not None else -1
+            self._active_chunk = []
+            self._mission_id = str(mission_id)
+            self._chunk_id = 0
+            self._loop_iteration = 0
+            self._reached_checkpoint_count = 0
+            self._mission_active = True
+            self._mission_paused = False
+            self._mission_loop = bool(loop_enabled)
+            self._mission_note = mission_note
+            self._mission_status = self._status_with_note_locked("route starting")
+            self._leg_spacing_m = float(leg_spacing_m)
+            self._chunk_span_m = float(chunk_span_m)
+            self._chunk_max_waypoints = int(chunk_max_waypoints)
+            self._current_start_index = 0
+            self._current_target_index = 0
+            self._awaiting_chunk_result = False
+            self._action_active = False
+            self._action_waypoint_index = 0
+            self._action_type = ""
+            self._action_until = None
+            if not preserve_energy_state:
+                self._low_battery_active = False
+                self._return_home_requested = False
+                self._return_home_active = False
+                self._return_home_exit_route_index = -1
+                self._return_home_exit_input_index = -1
+            self._last_handled_nav_result_event_id = self._last_nav_result_event_id
+            self._clear_blocked_state_locked()
+
+        ok, err = self._send_chunk(start_index=0)
+        if ok:
+            self._publish_route_debug_path(self._mission_path_pub, expanded, label="mission")
+        return ok, err, int(len(prepared.waypoints)), int(len(expanded))
+
+    def _start_patrol_phase(self, phase: str) -> Tuple[bool, str, int, int]:
+        route_input, action_jsons, loop_enabled, source_indices, home_waypoint, note = (
+            self._build_patrol_route_phase(phase=phase)
+        )
+        if not route_input:
+            return False, note or "empty patrol route", 0, 0
+        prepared, dropped_loop_closure, prepare_error = self._prepare_route_with_source_indices(
+            route_input=route_input,
+            action_jsons=action_jsons,
+            loop_enabled=loop_enabled,
+            source_indices=source_indices,
+        )
+        if prepared is None:
+            return False, prepare_error, 0, 0
+        if note:
+            prepared = PreparedRouteMission(
+                waypoints=list(prepared.waypoints),
+                action_jsons=list(prepared.action_jsons),
+                waypoint_roles=list(prepared.waypoint_roles),
+                start_index=int(prepared.start_index),
+                skipped_waypoints=int(prepared.skipped_waypoints),
+                rotated=bool(prepared.rotated),
+                note=f"{prepared.note}; {note}".strip("; ") if prepared.note else note,
+                input_indices=list(prepared.input_indices) if prepared.input_indices is not None else None,
+            )
+        if dropped_loop_closure:
+            prepared = PreparedRouteMission(
+                waypoints=list(prepared.waypoints),
+                action_jsons=list(prepared.action_jsons),
+                waypoint_roles=list(prepared.waypoint_roles),
+                start_index=int(prepared.start_index),
+                skipped_waypoints=int(prepared.skipped_waypoints),
+                rotated=bool(prepared.rotated),
+                note=(
+                    f"{prepared.note}; dropped duplicate loop closure"
+                    if prepared.note
+                    else "dropped duplicate loop closure"
+                ),
+                input_indices=list(prepared.input_indices) if prepared.input_indices is not None else None,
+            )
+        with self._lock:
+            mission_id = self._patrol_mission_id or uuid.uuid4().hex[:12]
+            profile = self._patrol_mission_profile
+            if profile is None:
+                return False, "patrol mission unavailable", 0, 0
+            self._patrol_mission_id = mission_id
+            self._patrol_phase = str(phase)
+            self._patrol_active = phase != PATROL_PHASE_PARKED_HOME
+            home_ref = RouteMissionHome(profile.home_waypoint, -1)
+            if phase == PATROL_PHASE_RETURN_CONNECTOR:
+                self._return_home_active = True
+                self._return_home_requested = False
+            elif phase == PATROL_PHASE_LOOP_MAIN:
+                self._return_home_active = False
+            self._home_waypoint = profile.home_waypoint
+        return self._activate_prepared_route(
+            prepared=prepared,
+            loop_enabled=loop_enabled,
+            leg_spacing_m=float(profile.leg_spacing_m),
+            chunk_span_m=float(profile.chunk_span_m),
+            chunk_max_waypoints=int(profile.chunk_max_waypoints),
+            home_waypoint=home_ref,
+            mission_id=mission_id,
+            preserve_energy_state=(phase == PATROL_PHASE_RETURN_CONNECTOR),
+        )
+
+    def _build_patrol_route_phase(
+        self,
+        *,
+        phase: str,
+    ) -> Tuple[List[RouteWaypoint], List[str], bool, List[int], Optional[RouteMissionHome], str]:
+        profile = self._patrol_mission_profile
+        if profile is None:
+            return [], [], False, [], None, "patrol mission unavailable"
+        if phase == PATROL_PHASE_LOOP_MAIN:
+            route = list(profile.loop_waypoints)
+            actions = list(profile.loop_action_jsons)
+            source_indices = list(range(len(route)))
+            note = "patrol loop main"
+            if self._patrol_needs_depart_from_home_locked():
+                entry_index = (int(profile.depart_entry_loop_index) + 1) % len(route)
+                route = _rotate_list(route, entry_index)
+                actions = _rotate_list(actions, entry_index)
+                source_indices = _rotate_list(source_indices, entry_index)
+                note = f"patrol loop resumed after HOME via waypoint {entry_index + 1}"
+            return (
+                route,
+                actions,
+                True,
+                source_indices,
+                RouteMissionHome(profile.home_waypoint, -1),
+                note,
+            )
+        if phase == PATROL_PHASE_DEPART_HOME:
+            entry_index = int(profile.depart_entry_loop_index)
+            if not (0 <= entry_index < len(profile.loop_waypoints)):
+                return [], [], False, [], None, "invalid patrol depart entry loop index"
+            route = list(profile.depart_waypoints) + [profile.loop_waypoints[entry_index]]
+            actions = list(profile.depart_action_jsons) + [""]
+            source_indices = list(range(len(route)))
+            return route, actions, False, source_indices, RouteMissionHome(profile.home_waypoint, -1), "patrol depart from HOME"
+        if phase == PATROL_PHASE_RETURN_CONNECTOR:
+            route = list(profile.return_waypoints) + [profile.home_waypoint]
+            actions = list(profile.return_action_jsons) + [""]
+            source_indices = list(range(len(route)))
+            return route, actions, False, source_indices, RouteMissionHome(profile.home_waypoint, -1), "patrol return connector"
+        return [], [], False, [], None, f"unsupported patrol phase: {phase}"
 
     def _reset_mission_locked(self, status: str = "idle") -> None:
         self._route_input = []
@@ -2121,6 +2490,7 @@ class RouteExecutorNode(Node):
         self._return_home_active = False
         self._return_home_exit_route_index = -1
         self._return_home_exit_input_index = -1
+        self._clear_patrol_state_locked()
         self._last_handled_nav_result_event_id = self._last_nav_result_event_id
         self._clear_blocked_state_locked()
 
@@ -2213,15 +2583,23 @@ class RouteExecutorNode(Node):
             home_available = self._effective_home_waypoint_locked() is not None
             if self._mission_loop:
                 if home_available:
+                    reference_waypoint = (
+                        self._patrol_return_reference_waypoint_locked()
+                        if self._patrol_mission_profile is not None
+                        else self._effective_home_waypoint_locked()
+                    )
                     exit_selection = _select_return_home_exit_waypoint(
                         self._route_input,
                         self._route_input_source_indices,
-                        self._effective_home_waypoint_locked(),
+                        reference_waypoint,
                     )
                     if exit_selection is not None:
                         self._return_home_requested = True
                         self._return_home_exit_route_index = int(exit_selection.route_index)
                         self._return_home_exit_input_index = int(exit_selection.input_index)
+                        if self._patrol_mission_profile is not None:
+                            self._patrol_phase = PATROL_PHASE_RETURN_PENDING
+                            self._patrol_return_exit_loop_index = int(exit_selection.input_index)
                         should_request_home = True
                         self._mission_status = self._status_with_note_locked(
                             "return home waiting for exit waypoint"
@@ -2762,6 +3140,8 @@ class RouteExecutorNode(Node):
         should_clear_paths = False
         should_send_next = False
         should_send_home = False
+        should_start_patrol_loop = False
+        should_finish_patrol_home = False
         exit_waypoint_reached = False
         with self._lock:
             self._action_active = False
@@ -2784,18 +3164,43 @@ class RouteExecutorNode(Node):
                     "return home exit waypoint reached"
                 )
             elif reached_end and (not self._mission_loop):
-                self._complete_route_locked()
-                should_clear_paths = True
+                if self._patrol_active and self._patrol_phase == PATROL_PHASE_DEPART_HOME:
+                    should_start_patrol_loop = True
+                    self._mission_status = self._status_with_note_locked("patrol loop starting")
+                elif self._patrol_active and self._patrol_phase == PATROL_PHASE_RETURN_CONNECTOR:
+                    self._complete_route_locked()
+                    self._patrol_phase = PATROL_PHASE_PARKED_HOME
+                    self._patrol_active = False
+                    self._return_home_active = False
+                    should_finish_patrol_home = True
+                    should_clear_paths = True
+                else:
+                    self._complete_route_locked()
+                    should_clear_paths = True
             else:
                 should_send_next = True
 
         if should_clear_paths:
             self._publish_route_event(
                 DiagnosticStatus.OK,
-                "ROUTE_MISSION_COMPLETED",
-                "Route mission completed after waypoint action",
+                "RETURN_HOME_COMPLETED" if should_finish_patrol_home else "ROUTE_MISSION_COMPLETED",
+                "Return home completed" if should_finish_patrol_home else "Route mission completed after waypoint action",
                 details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
             )
+            self._publish_empty_route_paths()
+            return
+        if should_start_patrol_loop:
+            ok, err, _, _ = self._start_patrol_phase(PATROL_PHASE_LOOP_MAIN)
+            if ok:
+                return
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "PATROL_MISSION_FAILED",
+                "Patrol loop could not start after depart connector",
+                details={"error": str(err)},
+            )
+            with self._lock:
+                self._reset_mission_locked(f"patrol failed: {err}")
             self._publish_empty_route_paths()
             return
         if should_send_home:
@@ -2805,7 +3210,10 @@ class RouteExecutorNode(Node):
                 "Return home exit waypoint reached after waypoint action",
                 details={"home_exit_input_index": int(self._return_home_exit_input_index)},
             )
-            ok, err = self._dispatch_return_home()
+            if self._patrol_active:
+                ok, err, _, _ = self._start_patrol_phase(PATROL_PHASE_RETURN_CONNECTOR)
+            else:
+                ok, err = self._dispatch_return_home()
             if ok:
                 return
             self._publish_route_event(
@@ -2854,6 +3262,8 @@ class RouteExecutorNode(Node):
         checkpoint_details: Optional[Dict[str, Any]] = None
         mission_completed = False
         should_send_home = False
+        should_start_patrol_loop = False
+        should_finish_patrol_home = False
         exit_waypoint_reached = False
         reached_input_index = -1
         with self._lock:
@@ -2910,9 +3320,20 @@ class RouteExecutorNode(Node):
                         "return home exit waypoint reached"
                     )
                 elif reached_end and (not loop_enabled):
-                    self._complete_route_locked()
-                    should_clear_paths = True
-                    mission_completed = True
+                    if self._patrol_active and self._patrol_phase == PATROL_PHASE_DEPART_HOME:
+                        should_start_patrol_loop = True
+                        self._mission_status = self._status_with_note_locked("patrol loop starting")
+                    elif self._patrol_active and self._patrol_phase == PATROL_PHASE_RETURN_CONNECTOR:
+                        self._complete_route_locked()
+                        self._patrol_phase = PATROL_PHASE_PARKED_HOME
+                        self._patrol_active = False
+                        self._return_home_active = False
+                        should_finish_patrol_home = True
+                        should_clear_paths = True
+                    else:
+                        self._complete_route_locked()
+                        should_clear_paths = True
+                        mission_completed = True
                 elif self._return_home_requested and not self._return_home_active:
                     self._mission_status = self._status_with_note_locked(
                         "return home waiting for exit waypoint"
@@ -2927,13 +3348,34 @@ class RouteExecutorNode(Node):
             )
 
         if should_clear_paths:
-            if mission_completed:
+            if should_finish_patrol_home:
+                self._publish_route_event(
+                    DiagnosticStatus.OK,
+                    "RETURN_HOME_COMPLETED",
+                    "Return home completed",
+                    details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
+                )
+            elif mission_completed:
                 self._publish_route_event(
                     DiagnosticStatus.OK,
                     "ROUTE_MISSION_COMPLETED",
                     "Route mission completed",
                     details={"reached_checkpoint_count": int(self._reached_checkpoint_count)},
                 )
+            self._publish_empty_route_paths()
+            return
+        if should_start_patrol_loop:
+            ok, err, _, _ = self._start_patrol_phase(PATROL_PHASE_LOOP_MAIN)
+            if ok:
+                return
+            self._publish_route_event(
+                DiagnosticStatus.ERROR,
+                "PATROL_MISSION_FAILED",
+                "Patrol loop could not start after depart connector",
+                details={"error": str(err)},
+            )
+            with self._lock:
+                self._reset_mission_locked(f"patrol failed: {err}")
             self._publish_empty_route_paths()
             return
         if should_run_action:
@@ -2957,7 +3399,10 @@ class RouteExecutorNode(Node):
                 "Return home exit waypoint reached",
                 details={"home_exit_input_index": int(reached_input_index)},
             )
-            ok, err = self._dispatch_return_home()
+            if self._patrol_active:
+                ok, err, _, _ = self._start_patrol_phase(PATROL_PHASE_RETURN_CONNECTOR)
+            else:
+                ok, err = self._dispatch_return_home()
             if ok:
                 return
             self._publish_route_event(
@@ -3071,7 +3516,7 @@ class RouteExecutorNode(Node):
                 self._awaiting_chunk_result = False
                 status = int(msg.nav_result_status)
                 if status == int(GoalStatus.STATUS_SUCCEEDED):
-                    if self._return_home_active:
+                    if self._return_home_active and self._patrol_phase != PATROL_PHASE_RETURN_CONNECTOR:
                         self._complete_route_locked()
                         self._return_home_active = False
                         self._return_home_requested = False
@@ -3217,6 +3662,119 @@ class RouteExecutorNode(Node):
             leg_spacing_m,
             chunk_span_m,
             chunk_max_waypoints,
+            "",
+        )
+
+    def _validate_patrol_waypoints(
+        self,
+        *,
+        lats: Sequence[float],
+        lons: Sequence[float],
+        yaws_deg: Sequence[float],
+        action_jsons: Sequence[str],
+        label: str,
+        allow_empty: bool,
+    ) -> Tuple[Optional[List[RouteWaypoint]], Optional[List[str]], str]:
+        lat_values = [float(value) for value in lats]
+        lon_values = [float(value) for value in lons]
+        yaw_values = [float(value) for value in yaws_deg]
+        if len(lat_values) != len(lon_values):
+            return None, None, f"{label} lats and lons must have the same length"
+        if len(yaw_values) not in (0, len(lat_values)):
+            return None, None, f"{label} yaws_deg must be empty or match lats length"
+        if not lat_values and allow_empty:
+            return [], [], ""
+        if not lat_values:
+            return None, None, f"{label} must contain at least one waypoint"
+        normalized_actions, actions_error = _parse_route_action_jsons(
+            list(action_jsons),
+            len(lat_values),
+        )
+        if normalized_actions is None:
+            return None, None, actions_error
+        resolved = _resolve_input_waypoints(lat_values, lon_values, yaw_values, False)
+        return resolved, normalized_actions, ""
+
+    def _validate_set_patrol_request(
+        self, request: SetPatrolMissionLL.Request
+    ) -> Tuple[Optional[PatrolMissionProfile], str]:
+        loop_waypoints, loop_actions, loop_error = self._validate_patrol_waypoints(
+            lats=list(request.loop_lats),
+            lons=list(request.loop_lons),
+            yaws_deg=list(request.loop_yaws_deg),
+            action_jsons=list(getattr(request, "loop_waypoint_action_jsons", [])),
+            label="loop",
+            allow_empty=False,
+        )
+        if loop_waypoints is None or loop_actions is None:
+            return None, loop_error
+        if len(loop_waypoints) < 2:
+            return None, "loop must contain at least two waypoints"
+
+        return_waypoints, return_actions, return_error = self._validate_patrol_waypoints(
+            lats=list(request.return_lats),
+            lons=list(request.return_lons),
+            yaws_deg=list(request.return_yaws_deg),
+            action_jsons=list(getattr(request, "return_waypoint_action_jsons", [])),
+            label="return connector",
+            allow_empty=True,
+        )
+        if return_waypoints is None or return_actions is None:
+            return None, return_error
+
+        depart_waypoints, depart_actions, depart_error = self._validate_patrol_waypoints(
+            lats=list(request.depart_lats),
+            lons=list(request.depart_lons),
+            yaws_deg=list(request.depart_yaws_deg),
+            action_jsons=list(getattr(request, "depart_waypoint_action_jsons", [])),
+            label="depart connector",
+            allow_empty=True,
+        )
+        if depart_waypoints is None or depart_actions is None:
+            return None, depart_error
+
+        home_lat = float(request.home_lat)
+        home_lon = float(request.home_lon)
+        home_yaw_deg = float(request.home_yaw_deg)
+        if not (
+            np.isfinite(home_lat) and np.isfinite(home_lon) and np.isfinite(home_yaw_deg)
+        ):
+            return None, "home waypoint must contain finite lat/lon/yaw"
+
+        depart_entry_loop_index = int(request.depart_entry_loop_index)
+        if not (0 <= depart_entry_loop_index < len(loop_waypoints)):
+            return None, "depart_entry_loop_index must point to a loop waypoint"
+
+        leg_spacing_m = (
+            float(request.leg_spacing_m)
+            if np.isfinite(float(request.leg_spacing_m)) and float(request.leg_spacing_m) > 0.0
+            else float(self.default_leg_spacing_m)
+        )
+        chunk_span_m = (
+            float(request.chunk_span_m)
+            if np.isfinite(float(request.chunk_span_m)) and float(request.chunk_span_m) > 0.0
+            else float(self.default_chunk_span_m)
+        )
+        chunk_max_waypoints = int(request.chunk_max_waypoints) or int(self.default_chunk_max_waypoints)
+
+        return (
+            PatrolMissionProfile(
+                loop_waypoints=list(loop_waypoints),
+                loop_action_jsons=list(loop_actions),
+                home_waypoint=RouteWaypoint(
+                    lat=home_lat,
+                    lon=home_lon,
+                    yaw_deg=_normalize_yaw_deg(home_yaw_deg),
+                ),
+                return_waypoints=list(return_waypoints),
+                return_action_jsons=list(return_actions),
+                depart_waypoints=list(depart_waypoints),
+                depart_action_jsons=list(depart_actions),
+                depart_entry_loop_index=depart_entry_loop_index,
+                leg_spacing_m=max(float(self.min_leg_spacing_m), leg_spacing_m),
+                chunk_span_m=max(float(self.min_chunk_span_m), chunk_span_m),
+                chunk_max_waypoints=max(int(self.min_chunk_max_waypoints), chunk_max_waypoints),
+            ),
             "",
         )
 
@@ -3387,6 +3945,127 @@ class RouteExecutorNode(Node):
             self._publish_empty_route_paths()
         return response
 
+    def _on_set_patrol(
+        self, request: SetPatrolMissionLL.Request, response: SetPatrolMissionLL.Response
+    ) -> SetPatrolMissionLL.Response:
+        profile, error = self._validate_set_patrol_request(request)
+        if profile is None:
+            response.ok = False
+            response.error = error
+            response.loop_input_waypoint_count = 0
+            response.loop_expanded_waypoint_count = 0
+            return response
+
+        mission_id = uuid.uuid4().hex[:12]
+        with self._lock:
+            self._set_patrol_state_locked(
+                profile=profile,
+                mission_id=mission_id,
+                phase=PATROL_PHASE_IDLE,
+                active=True,
+                return_exit_loop_index=-1,
+            )
+            start_phase = (
+                PATROL_PHASE_DEPART_HOME
+                if self._patrol_needs_depart_from_home_locked()
+                else PATROL_PHASE_LOOP_MAIN
+            )
+
+        ok, err, input_count, expanded_count = self._start_patrol_phase(start_phase)
+        response.ok = bool(ok)
+        response.error = "" if ok else str(err)
+        response.loop_input_waypoint_count = int(input_count)
+        response.loop_expanded_waypoint_count = int(expanded_count)
+        if ok:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "PATROL_MISSION_STARTED",
+                "Patrol mission started",
+                details={
+                    "mission_id": mission_id,
+                    "phase": str(start_phase),
+                    "loop_waypoint_count": int(len(profile.loop_waypoints)),
+                    "return_connector_waypoint_count": int(len(profile.return_waypoints)),
+                    "depart_connector_waypoint_count": int(len(profile.depart_waypoints)),
+                    "depart_entry_loop_index": int(profile.depart_entry_loop_index),
+                },
+            )
+            return response
+
+        with self._lock:
+            self._reset_mission_locked(f"patrol failed: {err}")
+        self._publish_route_event(
+            DiagnosticStatus.ERROR,
+            "PATROL_MISSION_FAILED",
+            "Patrol mission failed to start",
+            details={"error": str(err), "phase": str(start_phase)},
+        )
+        self._publish_empty_route_paths()
+        return response
+
+    def _on_cancel_patrol(
+        self, _request: CancelPatrolMission.Request, response: CancelPatrolMission.Response
+    ) -> CancelPatrolMission.Response:
+        cancel_ok, cancel_err = self._cancel_nav_goal()
+        with self._lock:
+            self._reset_mission_locked("patrol cancelled")
+            self._patrol_phase = PATROL_PHASE_IDLE
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "PATROL_MISSION_CANCELLED",
+            "Patrol mission cancelled",
+            details={"cancel_error": str(cancel_err)},
+        )
+        self._publish_empty_route_paths()
+        response.ok = bool(cancel_ok or cancel_err == "cancel_goal timeout")
+        response.error = "" if response.ok else str(cancel_err)
+        return response
+
+    def _on_request_return_home(
+        self, _request: RequestReturnHome.Request, response: RequestReturnHome.Response
+    ) -> RequestReturnHome.Response:
+        with self._lock:
+            if self._patrol_mission_profile is None or not self._patrol_active:
+                response.ok = False
+                response.error = "no active patrol mission"
+                return response
+            if self._patrol_phase == PATROL_PHASE_RETURN_CONNECTOR:
+                response.ok = True
+                response.error = ""
+                return response
+            if self._patrol_phase != PATROL_PHASE_LOOP_MAIN:
+                response.ok = False
+                response.error = f"return home unavailable during phase {self._patrol_phase}"
+                return response
+            reference_waypoint = self._patrol_return_reference_waypoint_locked()
+            exit_selection = _select_return_home_exit_waypoint(
+                self._route_input,
+                self._route_input_source_indices,
+                reference_waypoint,
+            )
+            if exit_selection is None:
+                response.ok = False
+                response.error = "could not resolve patrol return exit waypoint"
+                return response
+            self._return_home_requested = True
+            self._return_home_active = False
+            self._return_home_exit_route_index = int(exit_selection.route_index)
+            self._return_home_exit_input_index = int(exit_selection.input_index)
+            self._patrol_phase = PATROL_PHASE_RETURN_PENDING
+            self._patrol_return_exit_loop_index = int(exit_selection.input_index)
+            self._mission_status = self._status_with_note_locked(
+                "return home waiting for exit waypoint"
+            )
+        self._publish_route_event(
+            DiagnosticStatus.WARN,
+            "RETURN_HOME_REQUESTED",
+            "Structured return home requested",
+            details={"home_exit_input_index": int(exit_selection.input_index)},
+        )
+        response.ok = True
+        response.error = ""
+        return response
+
     def _on_cancel_route(
         self, _request: CancelRouteMission.Request, response: CancelRouteMission.Response
     ) -> CancelRouteMission.Response:
@@ -3492,6 +4171,53 @@ class RouteExecutorNode(Node):
         self, _request: GetRouteMissionState.Request, response: GetRouteMissionState.Response
     ) -> GetRouteMissionState.Response:
         return self._fill_route_state_response(response)
+
+    def _on_get_patrol_state(
+        self, _request: GetPatrolMissionState.Request, response: GetPatrolMissionState.Response
+    ) -> GetPatrolMissionState.Response:
+        with self._lock:
+            profile = self._patrol_mission_profile
+            response.ok = True
+            response.error = ""
+            response.active = bool(self._patrol_active)
+            response.phase = str(self._patrol_phase)
+            response.low_battery_active = bool(self._low_battery_active)
+            response.return_home_requested = bool(self._return_home_requested)
+            response.return_home_active = bool(
+                self._return_home_active or self._patrol_phase == PATROL_PHASE_RETURN_CONNECTOR
+            )
+            response.return_exit_loop_index = int(self._patrol_return_exit_loop_index)
+            response.depart_entry_loop_index = (
+                int(profile.depart_entry_loop_index) if profile is not None else -1
+            )
+            response.home_available = bool(profile is not None)
+            response.mission_id = str(self._patrol_mission_id)
+            response.status = str(self._mission_status)
+            if profile is None:
+                return response
+            response.home_lat = float(profile.home_waypoint.lat)
+            response.home_lon = float(profile.home_waypoint.lon)
+            response.home_yaw_deg = float(profile.home_waypoint.yaw_deg)
+            response.loop_lats = [float(entry.lat) for entry in profile.loop_waypoints]
+            response.loop_lons = [float(entry.lon) for entry in profile.loop_waypoints]
+            response.loop_yaws_deg = [float(entry.yaw_deg) for entry in profile.loop_waypoints]
+            response.loop_action_jsons = [str(entry or "") for entry in profile.loop_action_jsons]
+            response.return_lats = [float(entry.lat) for entry in profile.return_waypoints]
+            response.return_lons = [float(entry.lon) for entry in profile.return_waypoints]
+            response.return_yaws_deg = [float(entry.yaw_deg) for entry in profile.return_waypoints]
+            response.return_action_jsons = [
+                str(entry or "") for entry in profile.return_action_jsons
+            ]
+            response.depart_lats = [float(entry.lat) for entry in profile.depart_waypoints]
+            response.depart_lons = [float(entry.lon) for entry in profile.depart_waypoints]
+            response.depart_yaws_deg = [float(entry.yaw_deg) for entry in profile.depart_waypoints]
+            response.depart_action_jsons = [
+                str(entry or "") for entry in profile.depart_action_jsons
+            ]
+            response.active_lats = [float(entry.lat) for entry in self._active_chunk]
+            response.active_lons = [float(entry.lon) for entry in self._active_chunk]
+            response.active_yaws_deg = [float(entry.yaw_deg) for entry in self._active_chunk]
+        return response
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:
