@@ -14,6 +14,7 @@ DEFAULT_LOADED_LOW_THRESHOLD_V = 56.0
 DEFAULT_RECOVERED_LOW_THRESHOLD_V = 57.0
 DEFAULT_LOADED_LOW_PERSIST_S = 90.0
 DEFAULT_RECOVERED_LOW_PERSIST_S = 20.0
+DEFAULT_GUARD_CLEAR_HYSTERESIS_V = 0.4
 
 OPERATOR_SOC_MODEL_NAME = "lead_acid_empirical_operator_v1"
 MISSION_GUARD_MODEL_NAME = "lead_acid_voltage_guard_v1"
@@ -123,6 +124,7 @@ class BatteryEstimator:
         recovered_low_threshold_v: float = DEFAULT_RECOVERED_LOW_THRESHOLD_V,
         loaded_low_persist_s: float = DEFAULT_LOADED_LOW_PERSIST_S,
         recovered_low_persist_s: float = DEFAULT_RECOVERED_LOW_PERSIST_S,
+        guard_clear_hysteresis_v: float = DEFAULT_GUARD_CLEAR_HYSTERESIS_V,
     ) -> None:
         self._soc_curve_points = _ensure_monotonic_curve(
             soc_curve_points or DEFAULT_OPERATOR_SOC_CURVE
@@ -135,6 +137,7 @@ class BatteryEstimator:
         self._recovered_low_threshold_v = float(recovered_low_threshold_v)
         self._loaded_low_persist_required_s = max(0.0, float(loaded_low_persist_s))
         self._recovered_low_persist_required_s = max(0.0, float(recovered_low_persist_s))
+        self._guard_clear_hysteresis_v = max(0.0, float(guard_clear_hysteresis_v))
 
         self._loaded_voltage_fast_v: Optional[float] = None
         self._loaded_voltage_slow_v: Optional[float] = None
@@ -237,6 +240,18 @@ class BatteryEstimator:
                 self._mission_guard_latched = True
             if self._recovered_low_elapsed_s >= self._recovered_low_persist_required_s:
                 self._mission_guard_latched = True
+        else:
+            loaded_clear_v = self._loaded_low_threshold_v + self._guard_clear_hysteresis_v
+            recovered_clear_v = (
+                self._recovered_low_threshold_v + self._guard_clear_hysteresis_v
+            )
+            if (
+                loaded_voltage_slow_v >= loaded_clear_v
+                and recovered_voltage_v >= recovered_clear_v
+            ):
+                self._mission_guard_latched = False
+                self._loaded_low_elapsed_s = 0.0
+                self._recovered_low_elapsed_s = 0.0
 
         self._loaded_voltage_fast_v = loaded_voltage_fast_v
         self._loaded_voltage_slow_v = loaded_voltage_slow_v

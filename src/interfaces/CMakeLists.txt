@@ -29,6 +29,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/BrakeNav.srv"
   "srv/SetManualMode.srv"
   "srv/SetManualCmd.srv"
+  "srv/SetSimBatteryPreset.srv"
+  "srv/SetSimBatteryState.srv"
   "srv/GetNavState.srv"
   "srv/GetNavSnapshot.srv"
   "srv/SetRouteMissionLL.srv"

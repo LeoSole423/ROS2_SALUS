@@ -79,6 +79,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert 'executable="nav_trace_recorder"' in launch_contents
     assert '"nav_through_poses_bt_xml": selected_through_poses_bt' in launch_contents
     assert "no_go_editor.launch.py" in launch_contents
+    assert 'executable="sim_battery_publisher"' not in launch_contents
     assert '"fromll_frame": "map"' in launch_contents
     assert '"map_frame": "map"' in launch_contents
     assert '"approx_fromll_fallback_enabled": True' in launch_contents
@@ -151,6 +152,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"enable_compass_initial_guess": enable_compass_initial_guess' in launch_contents
     assert '"odom_topic": "/odometry/global"' in launch_contents
     assert '"launch_nav_command_server": "false"' in launch_contents
+    assert '"battery_guard_topic": "/battery_mission_guard"' in launch_contents
     assert 'executable="rviz2"' not in launch_contents
 
 

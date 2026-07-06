@@ -7,6 +7,7 @@ from dataclasses import asdict
 
 import rclpy
 from interfaces.msg import BatteryMissionGuard, CmdVelFinal, DriveTelemetry
+from interfaces.srv import SetSimBatteryPreset, SetSimBatteryState
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
@@ -287,6 +288,21 @@ class ControllerServerNode(Node):
         self._battery_guard_pub = self.create_publisher(
             BatteryMissionGuard, self._battery_guard_topic, 10
         )
+        self._sim_battery_preset_srv = None
+        self._sim_battery_state_srv = None
+        if hasattr(self._client, "set_sim_battery_preset") and hasattr(
+            self._client, "set_sim_battery_state"
+        ):
+            self._sim_battery_preset_srv = self.create_service(
+                SetSimBatteryPreset,
+                "/sim_battery/set_preset",
+                self._on_set_sim_battery_preset,
+            )
+            self._sim_battery_state_srv = self.create_service(
+                SetSimBatteryState,
+                "/sim_battery/set_state",
+                self._on_set_sim_battery_state,
+            )
 
         self.create_timer(1.0 / self._control_hz, self._control_tick)
         self.create_timer(1.0 / self._telemetry_pub_hz, self._telemetry_tick)
@@ -296,6 +312,11 @@ class ControllerServerNode(Node):
             f"(backend={self._transport_backend}, serial={self._serial_port}@{self._serial_baud}, "
             "source=/cmd_vel_final)"
         )
+        if self._sim_battery_preset_srv is not None:
+            self.get_logger().info(
+                "sim battery services ready "
+                "(/sim_battery/set_preset, /sim_battery/set_state)"
+            )
 
     @staticmethod
     def _abs_float(value: object) -> float:
@@ -367,6 +388,68 @@ class ControllerServerNode(Node):
             f"steer_deg={math.degrees(cmd.applied_steer_rad):.2f} "
             f"curvature={cmd.applied_curvature_inv_m:.3f} brake_pct={cmd.brake_pct}"
         )
+
+    def _on_set_sim_battery_preset(
+        self,
+        request: SetSimBatteryPreset.Request,
+        response: SetSimBatteryPreset.Response,
+    ) -> SetSimBatteryPreset.Response:
+        try:
+            preset = self._client.set_sim_battery_preset(str(request.preset))
+        except Exception as exc:
+            response.ok = False
+            response.error = str(exc)
+            return response
+
+        response.ok = True
+        response.error = ""
+        response.applied_preset = str(preset.name)
+        response.recovered_voltage_v = float(preset.recovered_voltage_v)
+        response.loaded_voltage_v = float(preset.loaded_voltage_v)
+        response.traction_active = bool(preset.traction_active)
+        response.ready = bool(preset.ready)
+        response.fresh = bool(preset.fresh)
+        response.suspect = bool(preset.suspect)
+        self.get_logger().info(
+            "sim battery preset applied "
+            f"(preset={preset.name}, recovered={preset.recovered_voltage_v:.2f}V, "
+            f"loaded={preset.loaded_voltage_v:.2f}V, traction={int(preset.traction_active)}, "
+            f"ready={int(preset.ready)}, fresh={int(preset.fresh)}, suspect={int(preset.suspect)})"
+        )
+        return response
+
+    def _on_set_sim_battery_state(
+        self,
+        request: SetSimBatteryState.Request,
+        response: SetSimBatteryState.Response,
+    ) -> SetSimBatteryState.Response:
+        try:
+            state = self._client.set_sim_battery_state(
+                recovered_voltage_v=float(request.recovered_voltage_v),
+                loaded_voltage_v=float(request.loaded_voltage_v),
+                traction_active_override=bool(request.traction_active),
+                ready=bool(request.ready),
+                fresh=bool(request.fresh),
+                suspect=bool(request.suspect),
+            )
+        except Exception as exc:
+            response.ok = False
+            response.error = str(exc)
+            return response
+
+        response.ok = True
+        response.error = ""
+        response.recovered_voltage_v = float(state.recovered_voltage_v)
+        response.loaded_voltage_v = float(state.loaded_voltage_v)
+        response.traction_active = bool(state.traction_active_override)
+        self.get_logger().info(
+            "sim battery state applied "
+            f"(recovered={state.recovered_voltage_v:.2f}V, "
+            f"loaded={state.loaded_voltage_v:.2f}V, "
+            f"traction={int(bool(state.traction_active_override))}, "
+            f"ready={int(state.ready)}, fresh={int(state.fresh)}, suspect={int(state.suspect)})"
+        )
+        return response
 
     def _apply_to_controller(self, cmd: DesiredCommand) -> None:
         self._client.apply_command(cmd)

@@ -22,6 +22,10 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `/battery_state` (`sensor_msgs/msg/BatteryState`)
 - `/battery_mission_guard` (`interfaces/msg/BatteryMissionGuard`)
 
+### Servicios solo en simulación
+- `/sim_battery/set_preset` (`interfaces/srv/SetSimBatteryPreset`)
+- `/sim_battery/set_state` (`interfaces/srv/SetSimBatteryState`)
+
 ## Backends
 - `transport_backend:=uart`
   - uso real sobre `serial_port:=auto` por default
@@ -29,6 +33,7 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `transport_backend:=sim_gazebo`
   - usado por `sim_local_v2` y `sim_global_v2`
   - publica `/cmd_vel_gazebo` y sintetiza `DriveTelemetry` desde estado de simulación
+  - sintetiza también `BatteryTelemetry` para que la batería simulada use el mismo estimador que el robot real
 
 ## Parámetros principales
 - `serial_port`
@@ -90,6 +95,25 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
   - `mission_guard_model`
 - El protocolo UART de batería no cambia: la mejora de suavizado/SOC ocurre del lado ROS2.
 
+## Batería simulada
+- En `transport_backend=sim_gazebo`, la batería entra como `BatteryTelemetry` sintética, no como `BatteryState` fake externo.
+- Eso mantiene paridad para:
+  - `/battery_state`
+  - `/battery_mission_guard`
+  - `/controller/telemetry`
+- Presets soportados:
+  - `full`
+  - `under_load`
+  - `watching`
+  - `return_home_rest`
+  - `return_home_load`
+  - `stale`
+  - `suspect`
+  - `unavailable`
+- Tiempos esperados de guardia:
+  - `return_home_rest`: alrededor de `20 s`
+  - `return_home_load`: alrededor de `90 s`
+
 ## Launch
 ```bash
 ros2 launch controller_server controller_server.launch.py
@@ -110,6 +134,20 @@ Helper del workspace:
 ```bash
 ros2 topic pub --once /cmd_vel_final interfaces/msg/CmdVelFinal \
 "{twist: {linear: {x: 0.4, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.1}}, brake_pct: 0}"
+```
+
+Control de batería simulada desde el host:
+```bash
+./tools/sim_battery.sh preset full
+./tools/sim_battery.sh preset under_load
+./tools/sim_battery.sh preset watching
+./tools/sim_battery.sh preset return_home_rest
+./tools/sim_battery.sh preset return_home_load
+./tools/sim_battery.sh preset stale
+./tools/sim_battery.sh preset suspect
+./tools/sim_battery.sh preset unavailable
+./tools/sim_battery.sh set 57.0 56.2 --traction on
+./tools/sim_battery.sh set 60.0 59.8 --traction off
 ```
 
 ## Validación

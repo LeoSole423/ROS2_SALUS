@@ -77,6 +77,20 @@ def test_battery_estimator_triggers_after_recovered_low_voltage_window() -> None
     assert estimate.return_home_recommended is True
 
 
+def test_battery_estimator_clears_guard_after_voltage_recovers_with_hysteresis() -> None:
+    estimator = BatteryEstimator()
+    estimator.update(56.8, sample_time_s=0.0, traction_active=False)
+    tripped = estimator.update(56.8, sample_time_s=21.0, traction_active=False)
+    cleared = estimator.update(57.6, sample_time_s=60.0, traction_active=False)
+
+    assert tripped.return_home_recommended is True
+    assert tripped.mission_guard_state == "LOW_ENERGY_GO_HOME"
+    assert cleared.return_home_recommended is False
+    assert cleared.mission_guard_state == "OK"
+    assert cleared.loaded_low_persist_s == pytest.approx(0.0)
+    assert cleared.recovered_low_persist_s == pytest.approx(0.0)
+
+
 def test_battery_state_label_prioritizes_sensor_validity() -> None:
     assert (
         battery_state_label(

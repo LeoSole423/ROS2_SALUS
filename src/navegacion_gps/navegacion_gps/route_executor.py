@@ -2304,6 +2304,14 @@ class RouteExecutorNode(Node):
         if state in {"STALE", "UNAVAILABLE", "SUSPECT"}:
             return
         if not bool(getattr(msg, "return_home_recommended", False)):
+            self._clear_low_battery_recovery_state(
+                battery_pct=(
+                    max(0.0, min(100.0, operator_soc_pct))
+                    if np.isfinite(operator_soc_pct)
+                    else 0.0
+                ),
+                state=state,
+            )
             return
 
         loaded_low_persist_s = float(getattr(msg, "loaded_low_persist_s", 0.0) or 0.0)
@@ -2353,6 +2361,69 @@ class RouteExecutorNode(Node):
                 "recovered_low_threshold_v": f"{recovered_low_threshold_v:.2f}",
             },
         )
+
+    def _clear_low_battery_recovery_state(
+        self,
+        *,
+        battery_pct: float,
+        state: str,
+    ) -> None:
+        should_brake = False
+        should_cancel = False
+        should_publish = False
+        previous_phase = "idle"
+        with self._lock:
+            if not (
+                self._low_battery_active
+                or self._return_home_requested
+                or self._return_home_active
+            ):
+                return
+            previous_phase = self._return_home_phase_locked()
+            should_brake = bool(
+                self._mission_active
+                or self._return_home_requested
+                or self._return_home_active
+            )
+            should_cancel = bool(
+                self._mission_active
+                or self._awaiting_chunk_result
+                or self._return_home_requested
+                or self._return_home_active
+            )
+            self._mission_active = False
+            self._mission_paused = False
+            self._awaiting_chunk_result = False
+            self._active_chunk = []
+            self._action_active = False
+            self._action_waypoint_index = 0
+            self._action_type = ""
+            self._action_until = None
+            self._low_battery_active = False
+            self._return_home_requested = False
+            self._return_home_active = False
+            self._return_home_exit_route_index = -1
+            self._return_home_exit_input_index = -1
+            self._mission_status = self._status_with_note_locked("idle")
+            self._clear_blocked_state_locked()
+            should_publish = True
+
+        if should_cancel:
+            self._cancel_nav_goal()
+        if should_brake:
+            self._apply_brake()
+        if should_publish:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "BATTERY_GUARD_RECOVERED_CLEARED",
+                "Battery recovered; return-home state cleared and mission parked",
+                details={
+                    "battery_pct": f"{battery_pct:.1f}",
+                    "state": str(state),
+                    "previous_phase": str(previous_phase),
+                },
+            )
+            self._publish_empty_route_paths()
 
     def _stop_for_low_battery_non_loop(self, battery_pct: float) -> None:
         self._apply_brake()

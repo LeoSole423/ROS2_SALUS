@@ -1,4 +1,5 @@
 import math
+import time
 
 import pytest
 from nav_msgs.msg import Odometry
@@ -9,7 +10,9 @@ from controller_server.rpy_esp32_comms.controller import CommandState
 from controller_server.rpy_esp32_comms.telemetry import ControlSource
 from controller_server.sim_gazebo_backend import (
     OdomSample,
+    SIM_BATTERY_PRESETS,
     SimGazeboBackend,
+    build_battery_status_flags,
     build_status_flags,
     select_physical_steering_angle_rad,
     steering_angle_from_wheel_angles,
@@ -168,6 +171,20 @@ def test_build_status_flags_encodes_bits() -> None:
     assert ((flags >> 4) & 0x03) == int(ControlSource.PI)
 
 
+def test_build_battery_status_flags_encodes_bits() -> None:
+    flags = build_battery_status_flags(
+        ready=True,
+        fresh=True,
+        suspect=True,
+        calibrated=True,
+    )
+
+    assert flags & (1 << 0)
+    assert flags & (1 << 1)
+    assert flags & (1 << 2)
+    assert flags & (1 << 3)
+
+
 def test_create_transport_backend_builds_sim_backend() -> None:
     backend = create_transport_backend(
         node=_FakeNode(),
@@ -271,3 +288,104 @@ def test_sim_gazebo_backend_publishes_actuation_and_telemetry() -> None:
     assert telemetry.control_source == ControlSource.PI
     assert telemetry.speed_mps == pytest.approx(0.8)
     assert telemetry.steer_deg == pytest.approx(-math.degrees(0.2), abs=0.1)
+
+
+def test_sim_gazebo_backend_battery_preset_generates_loaded_voltage() -> None:
+    backend = SimGazeboBackend(
+        node=_FakeNode(),
+        tx_hz=50.0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        cmd_vel_topic="/cmd_vel_gazebo",
+        odom_topic="/odom_raw",
+        joint_states_topic="/joint_states",
+        front_left_steer_joint="front_left_steer_joint",
+        front_right_steer_joint="front_right_steer_joint",
+        wheelbase_m=0.94,
+        track_width_m=0.75,
+        max_steering_angle_rad=0.5235987756,
+        telemetry_timeout_s=0.5,
+        invert_actuation_steer_sign=True,
+        invert_measured_steer_sign=True,
+    )
+
+    preset = backend.set_sim_battery_preset("under_load")
+    battery = backend.get_latest_battery_telemetry()
+
+    assert preset == SIM_BATTERY_PRESETS["under_load"]
+    assert battery is not None
+    assert battery.ready is True
+    assert battery.fresh is True
+    assert battery.suspect is False
+    assert battery.calibrated is True
+    assert battery.battery_voltage_v == pytest.approx(59.3)
+    assert battery.adc_pin_voltage_v == pytest.approx(59.3 / 25.0)
+
+
+def test_sim_gazebo_backend_battery_state_uses_recovered_voltage_when_traction_disabled() -> None:
+    backend = SimGazeboBackend(
+        node=_FakeNode(),
+        tx_hz=50.0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        cmd_vel_topic="/cmd_vel_gazebo",
+        odom_topic="/odom_raw",
+        joint_states_topic="/joint_states",
+        front_left_steer_joint="front_left_steer_joint",
+        front_right_steer_joint="front_right_steer_joint",
+        wheelbase_m=0.94,
+        track_width_m=0.75,
+        max_steering_angle_rad=0.5235987756,
+        telemetry_timeout_s=0.5,
+        invert_actuation_steer_sign=True,
+        invert_measured_steer_sign=True,
+    )
+
+    backend.set_sim_battery_state(
+        recovered_voltage_v=57.0,
+        loaded_voltage_v=56.2,
+        traction_active_override=False,
+        ready=True,
+        fresh=False,
+        suspect=True,
+    )
+    battery = backend.get_latest_battery_telemetry()
+
+    assert battery is not None
+    assert battery.battery_voltage_v == pytest.approx(57.0)
+    assert battery.ready is True
+    assert battery.fresh is False
+    assert battery.suspect is True
+
+
+def test_sim_gazebo_backend_fresh_battery_refreshes_rx_timestamp() -> None:
+    backend = SimGazeboBackend(
+        node=_FakeNode(),
+        tx_hz=50.0,
+        max_speed_mps=4.0,
+        max_reverse_mps=1.3,
+        cmd_vel_topic="/cmd_vel_gazebo",
+        odom_topic="/odom_raw",
+        joint_states_topic="/joint_states",
+        front_left_steer_joint="front_left_steer_joint",
+        front_right_steer_joint="front_right_steer_joint",
+        wheelbase_m=0.94,
+        track_width_m=0.75,
+        max_steering_angle_rad=0.5235987756,
+        telemetry_timeout_s=0.5,
+        invert_actuation_steer_sign=True,
+        invert_measured_steer_sign=True,
+    )
+
+    backend.set_sim_battery_preset("full")
+    first = backend.get_latest_battery_telemetry()
+    time.sleep(0.02)
+    second = backend.get_latest_battery_telemetry()
+
+    assert first is not None
+    assert second is not None
+    assert first.fresh is True
+    assert second.fresh is True
+    assert first.sample_age_s == pytest.approx(0.0)
+    assert second.sample_age_s == pytest.approx(0.0)
+    assert second.rx_monotonic_s >= first.rx_monotonic_s

@@ -47,6 +47,10 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
   - `CameraStatus.srv`
 - Manual:
   - `SetManualCmd.srv`
+- Simulación:
+  - `SetSimBatteryPreset.srv`
+  - `SetSimBatteryState.srv`
+  - usados por `controller_server` en `transport_backend=sim_gazebo` para inyectar batería simulada por el mismo camino lógico que el robot real
 
 ## Consumidores principales
 - `navegacion_gps`

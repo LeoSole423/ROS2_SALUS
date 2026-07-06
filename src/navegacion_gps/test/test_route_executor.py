@@ -1314,6 +1314,32 @@ def test_battery_guard_disables_legacy_percentage_trigger_once_seen() -> None:
     assert node._low_battery_active is False
 
 
+def test_battery_guard_recovery_clears_return_home_and_parks_mission() -> None:
+    node = _fake_blocking_node()
+    node._mission_loop = True
+    node._low_battery_active = True
+    node._return_home_requested = True
+    node._return_home_exit_input_index = 1
+    node._mission_status = "return home waiting for exit waypoint"
+
+    guard = BatteryMissionGuard()
+    guard.ready = True
+    guard.fresh = True
+    guard.state = "OK"
+    guard.return_home_recommended = False
+    guard.operator_soc_pct = 99.0
+
+    RouteExecutorNode._on_battery_mission_guard(node, guard)
+
+    assert node._low_battery_active is False
+    assert node._return_home_requested is False
+    assert node._return_home_active is False
+    assert node._mission_active is False
+    assert node.cancel_calls == 1
+    assert node.brake_calls == 1
+    assert any(event[1] == "BATTERY_GUARD_RECOVERED_CLEARED" for event in node.events)
+
+
 def test_next_chunk_success_keeps_loop_running_until_exit_waypoint():
     node = _fake_blocking_node()
     node._mission_loop = True
