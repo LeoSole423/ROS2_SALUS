@@ -12,7 +12,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 from controller_server.rpy_esp32_comms.controller import CommandState
-from controller_server.rpy_esp32_comms.telemetry import ControlSource, Telemetry
+from controller_server.rpy_esp32_comms.telemetry import (
+    BatteryTelemetry,
+    ControlSource,
+    Telemetry,
+)
 from controller_server.rpy_esp32_comms.transport import CommsStats
 from controller_server.control_logic import DesiredCommand
 
@@ -21,6 +25,105 @@ DEFAULT_SIM_WHEELBASE_M = 0.94
 DEFAULT_SIM_TRACK_WIDTH_M = 0.75
 DEFAULT_ODOM_STEER_MIN_SPEED_MPS = 0.05
 DEFAULT_MAX_JOINT_ODOM_STEER_DELTA_RAD = math.radians(5.0)
+DEFAULT_SIM_BATTERY_ADC_DIVISOR = 25.0
+
+
+@dataclass(frozen=True, slots=True)
+class SimBatteryPreset:
+    name: str
+    recovered_voltage_v: float
+    loaded_voltage_v: float
+    traction_active: bool
+    ready: bool
+    fresh: bool
+    suspect: bool
+
+
+@dataclass(slots=True)
+class SimBatteryState:
+    recovered_voltage_v: float
+    loaded_voltage_v: float
+    traction_active_override: Optional[bool]
+    ready: bool
+    fresh: bool
+    suspect: bool
+    last_update_monotonic_s: float
+
+
+SIM_BATTERY_PRESETS = {
+    "full": SimBatteryPreset(
+        name="full",
+        recovered_voltage_v=60.0,
+        loaded_voltage_v=59.8,
+        traction_active=False,
+        ready=True,
+        fresh=True,
+        suspect=False,
+    ),
+    "under_load": SimBatteryPreset(
+        name="under_load",
+        recovered_voltage_v=60.0,
+        loaded_voltage_v=59.3,
+        traction_active=True,
+        ready=True,
+        fresh=True,
+        suspect=False,
+    ),
+    "watching": SimBatteryPreset(
+        name="watching",
+        recovered_voltage_v=57.3,
+        loaded_voltage_v=57.0,
+        traction_active=False,
+        ready=True,
+        fresh=True,
+        suspect=False,
+    ),
+    "return_home_rest": SimBatteryPreset(
+        name="return_home_rest",
+        recovered_voltage_v=56.8,
+        loaded_voltage_v=56.6,
+        traction_active=False,
+        ready=True,
+        fresh=True,
+        suspect=False,
+    ),
+    "return_home_load": SimBatteryPreset(
+        name="return_home_load",
+        recovered_voltage_v=56.8,
+        loaded_voltage_v=55.8,
+        traction_active=True,
+        ready=True,
+        fresh=True,
+        suspect=False,
+    ),
+    "stale": SimBatteryPreset(
+        name="stale",
+        recovered_voltage_v=60.0,
+        loaded_voltage_v=59.8,
+        traction_active=False,
+        ready=True,
+        fresh=False,
+        suspect=False,
+    ),
+    "suspect": SimBatteryPreset(
+        name="suspect",
+        recovered_voltage_v=60.0,
+        loaded_voltage_v=59.8,
+        traction_active=False,
+        ready=True,
+        fresh=True,
+        suspect=True,
+    ),
+    "unavailable": SimBatteryPreset(
+        name="unavailable",
+        recovered_voltage_v=60.0,
+        loaded_voltage_v=59.8,
+        traction_active=False,
+        ready=False,
+        fresh=False,
+        suspect=False,
+    ),
+}
 
 
 @dataclass(slots=True)
@@ -29,6 +132,25 @@ class OdomSample:
     linear_y_mps: float
     angular_z_rps: float
     rx_monotonic_s: float
+
+
+def build_battery_status_flags(
+    *,
+    ready: bool,
+    fresh: bool,
+    suspect: bool,
+    calibrated: bool = True,
+) -> int:
+    flags = 0
+    if bool(ready):
+        flags |= 1 << 0
+    if bool(fresh):
+        flags |= 1 << 1
+    if bool(suspect):
+        flags |= 1 << 2
+    if bool(calibrated):
+        flags |= 1 << 3
+    return flags
 
 
 def translate_command_state_to_gazebo_twist(
@@ -287,6 +409,16 @@ class SimGazeboBackend:
         self._latest_odom: Optional[OdomSample] = None
         self._latest_left_joint_angle_rad: Optional[float] = None
         self._latest_right_joint_angle_rad: Optional[float] = None
+        now_s = time.monotonic()
+        self._battery_state = SimBatteryState(
+            recovered_voltage_v=60.0,
+            loaded_voltage_v=59.8,
+            traction_active_override=None,
+            ready=True,
+            fresh=True,
+            suspect=False,
+            last_update_monotonic_s=now_s,
+        )
         self._stats = CommsStats()
         self._running = False
 
@@ -336,7 +468,102 @@ class SimGazeboBackend:
         )
 
     def get_latest_battery_telemetry(self):
-        return None
+        with self._state_lock:
+            battery_state = SimBatteryState(
+                recovered_voltage_v=float(self._battery_state.recovered_voltage_v),
+                loaded_voltage_v=float(self._battery_state.loaded_voltage_v),
+                traction_active_override=self._battery_state.traction_active_override,
+                ready=bool(self._battery_state.ready),
+                fresh=bool(self._battery_state.fresh),
+                suspect=bool(self._battery_state.suspect),
+                last_update_monotonic_s=float(self._battery_state.last_update_monotonic_s),
+            )
+            command_state = CommandState(**self._state.to_dict())
+
+        traction_active = self._resolve_battery_traction_active(
+            command_state=command_state,
+            override=battery_state.traction_active_override,
+        )
+        battery_voltage_v = (
+            float(battery_state.loaded_voltage_v)
+            if traction_active
+            else float(battery_state.recovered_voltage_v)
+        )
+        adc_pin_voltage_v = battery_voltage_v / DEFAULT_SIM_BATTERY_ADC_DIVISOR
+        now_s = time.monotonic()
+        if battery_state.fresh:
+            sample_age_s = 0.0
+            rx_monotonic_s = now_s
+        else:
+            sample_age_s = max(0.0, now_s - float(battery_state.last_update_monotonic_s))
+            rx_monotonic_s = float(battery_state.last_update_monotonic_s)
+        return BatteryTelemetry(
+            status_flags=build_battery_status_flags(
+                ready=battery_state.ready,
+                fresh=battery_state.fresh,
+                suspect=battery_state.suspect,
+            ),
+            battery_voltage_v=float(battery_voltage_v),
+            adc_pin_voltage_v=float(adc_pin_voltage_v),
+            sample_age_s=float(sample_age_s),
+            raw_battery_centi_volts=int(round(float(battery_voltage_v) * 100.0)),
+            raw_adc_pin_mv=int(round(float(adc_pin_voltage_v) * 1000.0)),
+            raw_sample_age_ds=int(round(float(sample_age_s) * 10.0)),
+            rx_monotonic_s=float(rx_monotonic_s),
+        )
+
+    def set_sim_battery_preset(self, preset_name: str) -> SimBatteryPreset:
+        normalized_name = str(preset_name).strip().lower()
+        preset = SIM_BATTERY_PRESETS.get(normalized_name)
+        if preset is None:
+            raise ValueError(
+                "Unknown sim battery preset "
+                f"'{preset_name}'. Available presets: {', '.join(sorted(SIM_BATTERY_PRESETS))}"
+            )
+        self.set_sim_battery_state(
+            recovered_voltage_v=preset.recovered_voltage_v,
+            loaded_voltage_v=preset.loaded_voltage_v,
+            traction_active_override=preset.traction_active,
+            ready=preset.ready,
+            fresh=preset.fresh,
+            suspect=preset.suspect,
+        )
+        return preset
+
+    def set_sim_battery_state(
+        self,
+        *,
+        recovered_voltage_v: float,
+        loaded_voltage_v: float,
+        traction_active_override: Optional[bool],
+        ready: bool,
+        fresh: bool,
+        suspect: bool,
+    ) -> SimBatteryState:
+        recovered_voltage = float(recovered_voltage_v)
+        loaded_voltage = float(loaded_voltage_v)
+        if not math.isfinite(recovered_voltage) or not math.isfinite(loaded_voltage):
+            raise ValueError("Sim battery voltages must be finite")
+        if recovered_voltage <= 0.0 or loaded_voltage <= 0.0:
+            raise ValueError("Sim battery voltages must be positive")
+        now_s = time.monotonic()
+        next_state = SimBatteryState(
+            recovered_voltage_v=recovered_voltage,
+            loaded_voltage_v=loaded_voltage,
+            traction_active_override=(
+                bool(traction_active_override)
+                if traction_active_override is not None
+                else None
+            ),
+            ready=bool(ready),
+            fresh=bool(fresh),
+            suspect=bool(suspect),
+            last_update_monotonic_s=now_s,
+        )
+        with self._state_lock:
+            self._battery_state = next_state
+            self._stats.rx_battery_frames_ok += 1
+        return next_state
 
     def get_command_state(self) -> dict:
         with self._state_lock:
@@ -391,3 +618,18 @@ class SimGazeboBackend:
         self._pub.publish(out)
         with self._state_lock:
             self._stats.tx_frames_ok += 1
+
+    @staticmethod
+    def _resolve_battery_traction_active(
+        *,
+        command_state: CommandState,
+        override: Optional[bool],
+    ) -> bool:
+        if override is not None:
+            return bool(override)
+        return bool(
+            command_state.drive_enabled
+            and (not command_state.estop)
+            and int(command_state.brake_pct) < 5
+            and abs(float(command_state.speed_mps)) > 0.35
+        )

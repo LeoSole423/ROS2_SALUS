@@ -35,6 +35,7 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
 
 `real_global_v2_wifi` es el perfil recomendado para operacion remota del robot por WiFi; `real_global_v2` queda como perfil base no-WiFi compatible.
 `real_global_v2` y `sim_global_v2` son las navegaciones base vigentes del paquete.
+En `sim_global_v2`, la batería operativa sale de `controller_server` con `transport_backend=sim_gazebo`, así la UI y `route_executor` usan el mismo estimador de batería que en el robot real.
 
 La V2 global agrega la capa `map -> odom` sobre la base local Ackermann, con `navsat_transform`, EKF global, datum configurable y goals LL en `map`.
 En los perfiles globales actuales, la corrección absoluta del EKF de `map` entra como `/gps/odometry_map` en frame `map` obtenido vía `fromLL`, y el heading global puede asistir al filtro mediante `/gps/course_heading`.
@@ -97,6 +98,7 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 
 ## Helpers del workspace
 - `./tools/launch_sim_global_v2.sh`
+- `./tools/sim_battery.sh`
 - `./tools/launch_real_global_v2.sh`
 - `./tools/launch_real_global_v2_wifi.sh`
 - `./tools/record_nav_debug_bag.sh`
@@ -110,3 +112,21 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 - Si necesitás wiring fino o tuning de V2, usá los documentos específicos de V2.
 - Si encontrás decisiones escritas en futuro o en tono de propuesta, tratarlas como documentación histórica, no como fuente de verdad del checkout actual.
 - En `real_global_v2`, el nodo `scan_wifi_debug` publica un `LaserScan` de debug para Wi‑Fi en `/scan_wifi_debug` sin reemplazar `/scan`; el objetivo es visualización remota liviana, no alimentar Nav2.
+
+## Batería en simulación
+- Lanzar:
+  - `ros2 launch navegacion_gps sim_global_v2.launch.py`
+- Abrir Cockpit o la web app en `ws://localhost:8766`.
+- Forzar estados:
+  - `./tools/sim_battery.sh preset full`
+  - `./tools/sim_battery.sh preset under_load`
+  - `./tools/sim_battery.sh preset watching`
+  - `./tools/sim_battery.sh preset return_home_rest`
+  - `./tools/sim_battery.sh preset return_home_load`
+- Lectura esperada en UI:
+  - `full` -> `Normal`
+  - `under_load` -> `Under Load`
+  - `watching` -> `Watching`
+  - `return_home_rest` -> `Return Home` tras ~`20 s`
+  - `stale` -> `Telemetry Lost`
+  - `suspect` -> `Sensor Check`

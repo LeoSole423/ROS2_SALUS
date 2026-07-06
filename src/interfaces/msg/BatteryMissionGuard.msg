@@ -1,0 +1,16 @@
+builtin_interfaces/Time stamp
+bool ready
+bool fresh
+bool traction_active
+bool return_home_recommended
+string state
+float32 raw_voltage_v
+float32 loaded_voltage_fast_v
+float32 loaded_voltage_slow_v
+float32 recovered_voltage_v
+float32 operator_soc_pct
+float32 loaded_low_threshold_v
+float32 recovered_low_threshold_v
+float32 loaded_low_persist_s
+float32 recovered_low_persist_s
+string model_name

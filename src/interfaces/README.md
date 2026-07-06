@@ -12,6 +12,9 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
   - `source` distingue comandos auto/manual/safety para aplicar limites de control correctos
 - `DriveTelemetry.msg`
   - telemetría de conducción publicada por `controller_server`
+- `BatteryMissionGuard.msg`
+  - guardia tipada de batería para lógica de misión
+  - separa la recomendación de `return_home` del `%` mostrado al operador
 - `NavTelemetry.msg`
   - snapshot resumido del estado de navegación
 - `NavEvent.msg`
@@ -44,6 +47,10 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
   - `CameraStatus.srv`
 - Manual:
   - `SetManualCmd.srv`
+- Simulación:
+  - `SetSimBatteryPreset.srv`
+  - `SetSimBatteryState.srv`
+  - usados por `controller_server` en `transport_backend=sim_gazebo` para inyectar batería simulada por el mismo camino lógico que el robot real
 
 ## Consumidores principales
 - `navegacion_gps`

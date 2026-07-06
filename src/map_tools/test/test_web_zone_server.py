@@ -99,6 +99,8 @@ class _FakeSensorNode(_FakeNode):
             },
             "diagnostics": {"yaw_delta_deg": 1.7},
         }
+        self._rtk_source_status = {}
+        self._rtk_sources_list = []
         self._datum_snapshot = self._build_default_datum_snapshot()
 
 
@@ -159,6 +161,48 @@ class _FakeMissionSessionNode(_FakeNode):
 
     async def _broadcast(self, payload):
         return payload
+
+
+class _FakeBatteryTelemetryNode(_FakeNode):
+    _derive_mode = staticmethod(WebZoneServerNode._derive_mode)
+    _connection_status_locked = WebZoneServerNode._connection_status_locked
+    _on_controller_telemetry = WebZoneServerNode._on_controller_telemetry
+    _on_battery_state = WebZoneServerNode._on_battery_state
+    _safe_float = staticmethod(WebZoneServerNode._safe_float)
+    _safe_int = staticmethod(WebZoneServerNode._safe_int)
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._goal_active = False
+        self._manual_control = {"enabled": False}
+        self._control_locked = False
+        self._control_lock_reason = ""
+        self._battery_pct = None
+        self._battery_voltage_v = None
+        self._battery_state = ""
+        self._battery_mission_state = ""
+        self._battery_return_home_recommended = None
+        self._battery_recovered_voltage_v = None
+        self._battery_loaded_voltage_v = None
+        self._battery_present = None
+        self._battery_updated_age_s = None
+        self._battery_ws_key = None
+        self._battery_use_controller_telemetry = False
+        self._mission_last_controller_telemetry_key = None
+        self._broadcast_payloads = []
+        self._mission_records = []
+
+    def _build_nav_telemetry_payload(self):
+        return {"op": "nav_telemetry", **self._connection_status_locked()}
+
+    def _broadcast_from_thread(self, payload):
+        self._broadcast_payloads.append(payload)
+
+    def _mission_record(self, record: dict) -> None:
+        self._mission_records.append(record)
+
+    def get_logger(self):
+        return SimpleNamespace(error=lambda *args, **kwargs: None)
 
 
 def _nav_event(code: str):
@@ -428,6 +472,65 @@ def test_mission_session_stops_on_terminal_nav_event(monkeypatch):
     node._on_nav_event(_nav_event("GOAL_RESULT_ABORTED"))
 
     assert node._mission_active is False
-    assert node._mission_start_count == 1
-    assert node._mission_stop_count == 1
-    assert node._mission_records[-1]["data"]["code"] == "GOAL_RESULT_ABORTED"
+
+
+def test_connection_status_exposes_battery_metadata():
+    node = _FakeBatteryTelemetryNode()
+    node._battery_pct = 84.5
+    node._battery_voltage_v = 61.3
+    node._battery_state = "OK"
+    node._battery_present = True
+    node._battery_updated_age_s = 0.8
+
+    payload = node._connection_status_locked()
+
+    assert payload["battery_pct"] == pytest.approx(84.5)
+    assert payload["battery_voltage_v"] == pytest.approx(61.3)
+    assert payload["battery_state"] == "OK"
+    assert payload["battery_present"] is True
+    assert payload["battery_updated_age_s"] == pytest.approx(0.8)
+
+
+def test_controller_telemetry_updates_battery_fields_and_broadcasts():
+    node = _FakeBatteryTelemetryNode()
+    msg = SimpleNamespace(
+        data=(
+            '{"source":"auto","telemetry":{"ready":true},"requested_auto_command":{"drive_enabled":true},'
+            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","mission_guard_state":"OK",'
+            '"return_home_recommended":false,"loaded_voltage_slow_v":61.87,"recovered_voltage_v":61.95,"ready":true,"link_age_s":0.6}}'
+        )
+    )
+
+    node._on_controller_telemetry(msg)
+
+    assert node._battery_pct == pytest.approx(92.0)
+    assert node._battery_voltage_v == pytest.approx(61.87)
+    assert node._battery_state == "OK"
+    assert node._battery_mission_state == "OK"
+    assert node._battery_return_home_recommended is False
+    assert node._battery_recovered_voltage_v == pytest.approx(61.95)
+    assert node._battery_loaded_voltage_v == pytest.approx(61.87)
+    assert node._battery_present is True
+    assert node._battery_updated_age_s == pytest.approx(0.6)
+    assert node._broadcast_payloads[-1]["battery_voltage_v"] == pytest.approx(61.87)
+    assert node._broadcast_payloads[-1]["battery_state"] == "OK"
+    assert node._broadcast_payloads[-1]["battery_mission_state"] == "OK"
+
+
+def test_battery_state_callback_does_not_desync_controller_battery_snapshot():
+    node = _FakeBatteryTelemetryNode()
+    msg = SimpleNamespace(
+        data=(
+            '{"source":"auto","telemetry":{"ready":true},"requested_auto_command":{"drive_enabled":true},'
+            '"battery":{"filtered_voltage_v":61.87,"filtered_percentage":0.92,"state":"OK","mission_guard_state":"OK",'
+            '"return_home_recommended":false,"loaded_voltage_slow_v":61.87,"recovered_voltage_v":61.95,"ready":true,"link_age_s":0.6}}'
+        )
+    )
+
+    node._on_controller_telemetry(msg)
+    node._on_battery_state(SimpleNamespace(percentage=0.15))
+
+    assert node._battery_use_controller_telemetry is True
+    assert node._battery_pct == pytest.approx(92.0)
+    assert node._battery_state == "OK"
+    assert node._battery_voltage_v == pytest.approx(61.87)

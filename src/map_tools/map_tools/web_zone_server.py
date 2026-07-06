@@ -450,6 +450,16 @@ class WebZoneServerNode(Node):
         self._sensor_bridge_error = ""
         self._sensor_bridge_last_poll_monotonic: Optional[float] = None
         self._battery_pct: Optional[float] = None
+        self._battery_voltage_v: Optional[float] = None
+        self._battery_state: str = ""
+        self._battery_mission_state: str = ""
+        self._battery_return_home_recommended: Optional[bool] = None
+        self._battery_recovered_voltage_v: Optional[float] = None
+        self._battery_loaded_voltage_v: Optional[float] = None
+        self._battery_present: Optional[bool] = None
+        self._battery_updated_age_s: Optional[float] = None
+        self._battery_ws_key: Optional[str] = None
+        self._battery_use_controller_telemetry = False
         self._datum_snapshot = self._build_default_datum_snapshot()
         self._datums_doc = build_datums_doc([], "")
         self._datums_error = ""
@@ -1222,6 +1232,36 @@ class WebZoneServerNode(Node):
             "connected": True,
             "mode": self._derive_mode(self._goal_active, bool(self._manual_control.get("enabled", False))),
             "battery_pct": battery_pct,
+            "battery_voltage_v": (
+                float(self._battery_voltage_v)
+                if self._battery_voltage_v is not None and np.isfinite(float(self._battery_voltage_v))
+                else None
+            ),
+            "battery_state": str(self._battery_state),
+            "battery_mission_state": str(self._battery_mission_state),
+            "battery_return_home_recommended": (
+                bool(self._battery_return_home_recommended)
+                if self._battery_return_home_recommended is not None
+                else None
+            ),
+            "battery_recovered_voltage_v": (
+                float(self._battery_recovered_voltage_v)
+                if self._battery_recovered_voltage_v is not None
+                and np.isfinite(float(self._battery_recovered_voltage_v))
+                else None
+            ),
+            "battery_loaded_voltage_v": (
+                float(self._battery_loaded_voltage_v)
+                if self._battery_loaded_voltage_v is not None
+                and np.isfinite(float(self._battery_loaded_voltage_v))
+                else None
+            ),
+            "battery_present": bool(self._battery_present) if self._battery_present is not None else None,
+            "battery_updated_age_s": (
+                float(self._battery_updated_age_s)
+                if self._battery_updated_age_s is not None and np.isfinite(float(self._battery_updated_age_s))
+                else None
+            ),
             "control_locked": bool(self._control_locked),
             "control_lock_reason": str(self._control_lock_reason),
             "locked": bool(self._control_locked),
@@ -1827,6 +1867,8 @@ class WebZoneServerNode(Node):
             percentage *= 100.0
         percentage = max(0.0, min(100.0, percentage))
         with self._lock:
+            if self._battery_use_controller_telemetry:
+                return
             self._battery_pct = float(percentage)
 
     def _on_nav_telemetry(self, msg: NavTelemetry) -> None:
@@ -2223,6 +2265,77 @@ class WebZoneServerNode(Node):
             telemetry = telemetry if isinstance(telemetry, dict) else {}
             command = payload.get("requested_auto_command")
             command = command if isinstance(command, dict) else {}
+            battery = payload.get("battery")
+            battery = battery if isinstance(battery, dict) else {}
+            next_battery_key = None
+            should_broadcast_battery = False
+            filtered_percentage = battery.get("filtered_percentage", battery.get("percentage"))
+            filtered_voltage_v = battery.get("filtered_voltage_v", battery.get("battery_voltage_v"))
+            battery_state = battery.get("state", "")
+            battery_mission_state = battery.get(
+                "mission_guard_state", battery.get("state", "")
+            )
+            battery_return_home_recommended = battery.get("return_home_recommended")
+            battery_recovered_voltage_v = battery.get("recovered_voltage_v")
+            battery_loaded_voltage_v = battery.get(
+                "loaded_voltage_slow_v", battery.get("filtered_voltage_v")
+            )
+            battery_present = battery.get("ready", battery.get("present"))
+            battery_updated_age_s = battery.get("link_age_s", battery.get("sample_age_s"))
+            with self._lock:
+                if battery:
+                    self._battery_use_controller_telemetry = True
+                if filtered_percentage is not None:
+                    battery_pct = self._safe_float(filtered_percentage, float("nan"))
+                    if np.isfinite(battery_pct):
+                        if battery_pct <= 1.0:
+                            battery_pct *= 100.0
+                        self._battery_pct = max(0.0, min(100.0, float(battery_pct)))
+                battery_voltage = self._safe_float(filtered_voltage_v, float("nan"))
+                self._battery_voltage_v = float(battery_voltage) if np.isfinite(battery_voltage) else None
+                self._battery_state = str(battery_state or "")
+                self._battery_mission_state = str(battery_mission_state or "")
+                self._battery_return_home_recommended = (
+                    bool(battery_return_home_recommended)
+                    if battery_return_home_recommended is not None
+                    else None
+                )
+                recovered_voltage = self._safe_float(
+                    battery_recovered_voltage_v, float("nan")
+                )
+                self._battery_recovered_voltage_v = (
+                    float(recovered_voltage) if np.isfinite(recovered_voltage) else None
+                )
+                loaded_voltage = self._safe_float(
+                    battery_loaded_voltage_v, float("nan")
+                )
+                self._battery_loaded_voltage_v = (
+                    float(loaded_voltage) if np.isfinite(loaded_voltage) else None
+                )
+                self._battery_present = (
+                    bool(battery_present) if battery_present is not None else None
+                )
+                battery_age = self._safe_float(battery_updated_age_s, float("nan"))
+                self._battery_updated_age_s = (
+                    float(battery_age) if np.isfinite(battery_age) else None
+                )
+                next_battery_key = json.dumps(
+                    {
+                        "battery_pct": self._battery_pct,
+                        "battery_voltage_v": self._battery_voltage_v,
+                        "battery_state": self._battery_state,
+                        "battery_mission_state": self._battery_mission_state,
+                        "battery_return_home_recommended": self._battery_return_home_recommended,
+                        "battery_recovered_voltage_v": self._battery_recovered_voltage_v,
+                        "battery_loaded_voltage_v": self._battery_loaded_voltage_v,
+                        "battery_present": self._battery_present,
+                        "battery_updated_age_s": self._battery_updated_age_s,
+                    },
+                    sort_keys=True,
+                )
+                if next_battery_key != self._battery_ws_key:
+                    self._battery_ws_key = next_battery_key
+                    should_broadcast_battery = True
             key_payload = {
                 "source": payload.get("source"),
                 "ready": telemetry.get("ready"),
@@ -2240,8 +2353,8 @@ class WebZoneServerNode(Node):
                 if key != self._mission_last_controller_telemetry_key:
                     self._mission_last_controller_telemetry_key = key
                     should_record = True
-            if not should_record:
-                return
+            if should_broadcast_battery:
+                self._broadcast_from_thread(self._build_nav_telemetry_payload())
             if payload:
                 data = {
                     "source": str(payload.get("source", "")),
@@ -2262,9 +2375,35 @@ class WebZoneServerNode(Node):
                         "steer_pct": self._safe_int(command.get("steer_pct", 0)),
                         "brake_pct": self._safe_int(command.get("brake_pct", 0)),
                     },
+                    "battery": {
+                        "raw_voltage_v": self._safe_float(
+                            battery.get("raw_voltage_v", battery.get("battery_voltage_v", 0.0)),
+                            0.0,
+                        ),
+                        "filtered_voltage_v": self._safe_float(
+                            battery.get("filtered_voltage_v", battery.get("battery_voltage_v", 0.0)),
+                            0.0,
+                        ),
+                        "raw_percentage": self._safe_float(
+                            battery.get("raw_percentage", battery.get("percentage", 0.0)),
+                            0.0,
+                        ),
+                        "filtered_percentage": self._safe_float(
+                            battery.get("filtered_percentage", battery.get("percentage", 0.0)),
+                            0.0,
+                        ),
+                        "state": str(battery.get("state", "")),
+                        "present": bool(battery.get("ready", False)),
+                        "updated_age_s": self._safe_float(
+                            battery.get("link_age_s", battery.get("sample_age_s", 0.0)),
+                            0.0,
+                        ),
+                    },
                 }
             else:
                 data = {"raw": raw}
+            if not should_record:
+                return
             self._mission_record({"t": time.time(), "topic": "/controller/telemetry", "data": data})
         except Exception as exc:
             self.get_logger().error(f"mission controller telemetry recording failed: {exc}")

@@ -24,7 +24,7 @@ from sensor_msgs.msg import BatteryState
 import tf2_geometry_msgs  # noqa: F401
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from interfaces.msg import NavEvent, NavTelemetry
+from interfaces.msg import BatteryMissionGuard, NavEvent, NavTelemetry
 from interfaces.srv import (
     BrakeNav,
     CancelNavGoal,
@@ -1266,6 +1266,7 @@ class RouteExecutorNode(Node):
         self.declare_parameter("nav_event_topic", "/nav_command_server/events")
         self.declare_parameter("nav_brake_service", "/nav_command_server/brake")
         self.declare_parameter("battery_state_topic", "/battery_state")
+        self.declare_parameter("battery_guard_topic", "/battery_mission_guard")
         self.declare_parameter("low_battery_threshold_pct", 25.0)
         self.declare_parameter("default_home_lat", float("nan"))
         self.declare_parameter("default_home_lon", float("nan"))
@@ -1341,6 +1342,7 @@ class RouteExecutorNode(Node):
         self.nav_event_topic = str(self.get_parameter("nav_event_topic").value)
         self.nav_brake_service = str(self.get_parameter("nav_brake_service").value)
         self.battery_state_topic = str(self.get_parameter("battery_state_topic").value)
+        self.battery_guard_topic = str(self.get_parameter("battery_guard_topic").value)
         self.low_battery_threshold_pct = max(
             0.0, min(100.0, float(self.get_parameter("low_battery_threshold_pct").value))
         )
@@ -1402,6 +1404,7 @@ class RouteExecutorNode(Node):
         self._action_type = ""
         self._action_until: Optional[float] = None
         self._battery_pct: Optional[float] = None
+        self._battery_guard_seen = False
         self._low_battery_active = False
         self._return_home_requested = False
         self._return_home_active = False
@@ -1499,6 +1502,13 @@ class RouteExecutorNode(Node):
             BatteryState,
             self.battery_state_topic,
             self._on_battery_state,
+            10,
+            callback_group=self._client_group,
+        )
+        self._battery_guard_sub = self.create_subscription(
+            BatteryMissionGuard,
+            self.battery_guard_topic,
+            self._on_battery_mission_guard,
             10,
             callback_group=self._client_group,
         )
@@ -2177,14 +2187,14 @@ class RouteExecutorNode(Node):
                 reason_text,
             )
 
-    def _on_battery_state(self, msg: BatteryState) -> None:
-        percentage = float(getattr(msg, "percentage", float("nan")))
-        if not np.isfinite(percentage):
-            return
-        if percentage <= 1.0:
-            percentage *= 100.0
-        percentage = max(0.0, min(100.0, percentage))
-
+    def _activate_low_battery_response(
+        self,
+        *,
+        battery_pct: float,
+        detected_event_code: str,
+        detected_message: str,
+        detected_details: Dict[str, str],
+    ) -> None:
         should_request_home = False
         should_stop_non_loop = False
         should_stop_missing_home = False
@@ -2192,10 +2202,7 @@ class RouteExecutorNode(Node):
         home_available = False
         exit_selection: Optional[ReturnHomeExitSelection] = None
         with self._lock:
-            self._battery_pct = float(percentage)
             if self._low_battery_active:
-                return
-            if percentage > float(self.low_battery_threshold_pct):
                 return
             self._low_battery_active = True
             if not self._mission_active or self._mission_paused:
@@ -2228,17 +2235,9 @@ class RouteExecutorNode(Node):
 
         self._publish_route_event(
             DiagnosticStatus.WARN,
-            "LOW_BATTERY_DETECTED",
-            "Low battery detected during mission",
-            details={
-                "battery_pct": f"{percentage:.1f}",
-                "threshold_pct": f"{self.low_battery_threshold_pct:.1f}",
-                "loop": int(self._mission_loop),
-                "home_available": int(home_available),
-                "return_home_exit_input_index": (
-                    int(exit_selection.input_index) if exit_selection is not None else -1
-                ),
-            },
+            detected_event_code,
+            detected_message,
+            details=dict(detected_details),
         )
         if should_request_home:
             self._publish_route_event(
@@ -2246,7 +2245,7 @@ class RouteExecutorNode(Node):
                 "RETURN_HOME_REQUESTED",
                 "Return home requested by low battery",
                 details={
-                    "battery_pct": f"{percentage:.1f}",
+                    "battery_pct": f"{battery_pct:.1f}",
                     "home_exit_input_index": int(exit_selection.input_index)
                     if exit_selection is not None
                     else -1,
@@ -2260,10 +2259,171 @@ class RouteExecutorNode(Node):
             )
             return
         if should_stop_non_loop:
-            self._stop_for_low_battery_non_loop(percentage)
+            self._stop_for_low_battery_non_loop(battery_pct)
             return
         if should_stop_missing_home:
-            self._stop_for_missing_home(percentage)
+            self._stop_for_missing_home(battery_pct)
+
+    def _on_battery_state(self, msg: BatteryState) -> None:
+        percentage = float(getattr(msg, "percentage", float("nan")))
+        if not np.isfinite(percentage):
+            return
+        if percentage <= 1.0:
+            percentage *= 100.0
+        percentage = max(0.0, min(100.0, percentage))
+        with self._lock:
+            self._battery_pct = float(percentage)
+            if self._battery_guard_seen:
+                return
+        if percentage > float(self.low_battery_threshold_pct):
+            return
+        self._activate_low_battery_response(
+            battery_pct=float(percentage),
+            detected_event_code="LOW_BATTERY_DETECTED",
+            detected_message="Low battery detected during mission",
+            detected_details={
+                "battery_pct": f"{percentage:.1f}",
+                "threshold_pct": f"{self.low_battery_threshold_pct:.1f}",
+                "loop": int(self._mission_loop),
+            },
+        )
+
+    def _on_battery_mission_guard(self, msg: BatteryMissionGuard) -> None:
+        operator_soc_pct = float(getattr(msg, "operator_soc_pct", float("nan")))
+        if np.isfinite(operator_soc_pct):
+            with self._lock:
+                self._battery_pct = max(0.0, min(100.0, operator_soc_pct))
+        with self._lock:
+            self._battery_guard_seen = True
+
+        state = str(getattr(msg, "state", "") or "")
+        if not bool(getattr(msg, "ready", False)):
+            return
+        if not bool(getattr(msg, "fresh", False)):
+            return
+        if state in {"STALE", "UNAVAILABLE", "SUSPECT"}:
+            return
+        if not bool(getattr(msg, "return_home_recommended", False)):
+            self._clear_low_battery_recovery_state(
+                battery_pct=(
+                    max(0.0, min(100.0, operator_soc_pct))
+                    if np.isfinite(operator_soc_pct)
+                    else 0.0
+                ),
+                state=state,
+            )
+            return
+
+        loaded_low_persist_s = float(getattr(msg, "loaded_low_persist_s", 0.0) or 0.0)
+        loaded_low_threshold_v = float(
+            getattr(msg, "loaded_low_threshold_v", 0.0) or 0.0
+        )
+        recovered_low_persist_s = float(
+            getattr(msg, "recovered_low_persist_s", 0.0) or 0.0
+        )
+        recovered_low_threshold_v = float(
+            getattr(msg, "recovered_low_threshold_v", 0.0) or 0.0
+        )
+        loaded_voltage_slow_v = float(
+            getattr(msg, "loaded_voltage_slow_v", 0.0) or 0.0
+        )
+        recovered_voltage_v = float(
+            getattr(msg, "recovered_voltage_v", 0.0) or 0.0
+        )
+
+        trigger_code = "BATTERY_GUARD_RECOVERED_LOW"
+        trigger_message = "Battery guard requested return home after low recovered voltage"
+        if bool(getattr(msg, "traction_active", False)) and (
+            loaded_low_persist_s >= recovered_low_persist_s
+        ):
+            trigger_code = "BATTERY_GUARD_LOADED_LOW_SUSTAINED"
+            trigger_message = (
+                "Battery guard requested return home after sustained low loaded voltage"
+            )
+
+        battery_pct = (
+            max(0.0, min(100.0, operator_soc_pct))
+            if np.isfinite(operator_soc_pct)
+            else 0.0
+        )
+        self._activate_low_battery_response(
+            battery_pct=battery_pct,
+            detected_event_code=trigger_code,
+            detected_message=trigger_message,
+            detected_details={
+                "battery_pct": f"{battery_pct:.1f}",
+                "state": state,
+                "loaded_voltage_slow_v": f"{loaded_voltage_slow_v:.2f}",
+                "recovered_voltage_v": f"{recovered_voltage_v:.2f}",
+                "loaded_low_persist_s": f"{loaded_low_persist_s:.1f}",
+                "recovered_low_persist_s": f"{recovered_low_persist_s:.1f}",
+                "loaded_low_threshold_v": f"{loaded_low_threshold_v:.2f}",
+                "recovered_low_threshold_v": f"{recovered_low_threshold_v:.2f}",
+            },
+        )
+
+    def _clear_low_battery_recovery_state(
+        self,
+        *,
+        battery_pct: float,
+        state: str,
+    ) -> None:
+        should_brake = False
+        should_cancel = False
+        should_publish = False
+        previous_phase = "idle"
+        with self._lock:
+            if not (
+                self._low_battery_active
+                or self._return_home_requested
+                or self._return_home_active
+            ):
+                return
+            previous_phase = self._return_home_phase_locked()
+            should_brake = bool(
+                self._mission_active
+                or self._return_home_requested
+                or self._return_home_active
+            )
+            should_cancel = bool(
+                self._mission_active
+                or self._awaiting_chunk_result
+                or self._return_home_requested
+                or self._return_home_active
+            )
+            self._mission_active = False
+            self._mission_paused = False
+            self._awaiting_chunk_result = False
+            self._active_chunk = []
+            self._action_active = False
+            self._action_waypoint_index = 0
+            self._action_type = ""
+            self._action_until = None
+            self._low_battery_active = False
+            self._return_home_requested = False
+            self._return_home_active = False
+            self._return_home_exit_route_index = -1
+            self._return_home_exit_input_index = -1
+            self._mission_status = self._status_with_note_locked("idle")
+            self._clear_blocked_state_locked()
+            should_publish = True
+
+        if should_cancel:
+            self._cancel_nav_goal()
+        if should_brake:
+            self._apply_brake()
+        if should_publish:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "BATTERY_GUARD_RECOVERED_CLEARED",
+                "Battery recovered; return-home state cleared and mission parked",
+                details={
+                    "battery_pct": f"{battery_pct:.1f}",
+                    "state": str(state),
+                    "previous_phase": str(previous_phase),
+                },
+            )
+            self._publish_empty_route_paths()
 
     def _stop_for_low_battery_non_loop(self, battery_pct: float) -> None:
         self._apply_brake()

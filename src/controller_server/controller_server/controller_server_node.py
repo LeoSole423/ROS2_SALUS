@@ -6,11 +6,17 @@ import time
 from dataclasses import asdict
 
 import rclpy
-from interfaces.msg import CmdVelFinal, DriveTelemetry
+from interfaces.msg import BatteryMissionGuard, CmdVelFinal, DriveTelemetry
+from interfaces.srv import SetSimBatteryPreset, SetSimBatteryState
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
+from .battery_estimator import (
+    BatteryEstimator,
+    battery_state_label,
+    parse_soc_curve_points,
+)
 from .control_logic import (
     DesiredCommand,
     command_from_cmd_vel,
@@ -23,40 +29,6 @@ from .transport_backends import create_transport_backend
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
-
-
-def _battery_percentage_from_voltage(
-    voltage_v: float,
-    empty_voltage_v: float,
-    full_voltage_v: float,
-) -> float:
-    span_v = max(1.0e-6, float(full_voltage_v) - float(empty_voltage_v))
-    return _clamp01((float(voltage_v) - float(empty_voltage_v)) / span_v)
-
-
-def _battery_state_label(
-    *,
-    ready: bool,
-    fresh: bool,
-    link_fresh: bool,
-    suspect: bool,
-    voltage_v: float,
-    low_voltage_v: float,
-    critical_voltage_v: float,
-) -> str:
-    if not ready:
-        return "UNAVAILABLE"
-    if not link_fresh:
-        return "LINK_STALE"
-    if not fresh:
-        return "STALE"
-    if suspect:
-        return "SUSPECT"
-    if float(voltage_v) <= float(critical_voltage_v):
-        return "CRITICAL"
-    if float(voltage_v) <= float(low_voltage_v):
-        return "LOW"
-    return "OK"
 
 
 class ControllerServerNode(Node):
@@ -84,11 +56,24 @@ class ControllerServerNode(Node):
         self.declare_parameter("estop_brake_pct", 100)
         self.declare_parameter("telemetry_stale_timeout_s", 0.5)
         self.declare_parameter("battery_state_topic", "/battery_state")
-        self.declare_parameter("battery_full_voltage", 62.4)
+        self.declare_parameter("battery_guard_topic", "/battery_mission_guard")
+        self.declare_parameter("battery_full_voltage", 60.0)
         self.declare_parameter("battery_empty_voltage", 55.0)
         self.declare_parameter("battery_low_voltage", 58.0)
         self.declare_parameter("battery_critical_voltage", 56.0)
         self.declare_parameter("battery_telemetry_stale_timeout_s", 3.0)
+        self.declare_parameter(
+            "battery_soc_curve_points",
+            [55.0, 0.0, 57.0, 0.8, 57.5, 0.9, 60.0, 1.0],
+        )
+        self.declare_parameter("battery_loaded_fast_tau_s", 4.0)
+        self.declare_parameter("battery_loaded_slow_tau_s", 45.0)
+        self.declare_parameter("battery_recovered_tau_s", 12.0)
+        self.declare_parameter("battery_soc_discharge_tau_s", 180.0)
+        self.declare_parameter("battery_guard_loaded_low_voltage", 56.0)
+        self.declare_parameter("battery_guard_recovered_low_voltage", 57.0)
+        self.declare_parameter("battery_guard_loaded_low_persist_s", 90.0)
+        self.declare_parameter("battery_guard_recovered_low_persist_s", 20.0)
         self.declare_parameter("transport_backend", "uart")
         self.declare_parameter("sim_cmd_vel_topic", "/cmd_vel_gazebo")
         self.declare_parameter("sim_odom_topic", "/odom_raw")
@@ -180,6 +165,7 @@ class ControllerServerNode(Node):
             0.05, float(self.get_parameter("telemetry_stale_timeout_s").value)
         )
         self._battery_state_topic = str(self.get_parameter("battery_state_topic").value)
+        self._battery_guard_topic = str(self.get_parameter("battery_guard_topic").value)
         self._battery_full_voltage = float(self.get_parameter("battery_full_voltage").value)
         self._battery_empty_voltage = float(self.get_parameter("battery_empty_voltage").value)
         self._battery_low_voltage = float(self.get_parameter("battery_low_voltage").value)
@@ -189,12 +175,41 @@ class ControllerServerNode(Node):
         self._battery_telemetry_stale_timeout_s = max(
             0.5, float(self.get_parameter("battery_telemetry_stale_timeout_s").value)
         )
+        battery_soc_curve_values = self.get_parameter("battery_soc_curve_points").value
+        try:
+            battery_soc_curve_points = parse_soc_curve_points(battery_soc_curve_values)
+        except ValueError as exc:
+            self.get_logger().warn(
+                f"Invalid battery_soc_curve_points; using defaults ({exc})"
+            )
+            battery_soc_curve_points = parse_soc_curve_points(None)
         if self._battery_full_voltage <= self._battery_empty_voltage:
             self.get_logger().warn(
                 "battery_full_voltage must be greater than battery_empty_voltage; "
                 "adjusting to keep a valid range"
             )
             self._battery_full_voltage = self._battery_empty_voltage + 1.0
+        self._battery_estimator = BatteryEstimator(
+            soc_curve_points=battery_soc_curve_points,
+            loaded_fast_tau_s=float(self.get_parameter("battery_loaded_fast_tau_s").value),
+            loaded_slow_tau_s=float(self.get_parameter("battery_loaded_slow_tau_s").value),
+            recovered_tau_s=float(self.get_parameter("battery_recovered_tau_s").value),
+            soc_fast_discharge_tau_s=float(
+                self.get_parameter("battery_soc_discharge_tau_s").value
+            ),
+            loaded_low_threshold_v=float(
+                self.get_parameter("battery_guard_loaded_low_voltage").value
+            ),
+            recovered_low_threshold_v=float(
+                self.get_parameter("battery_guard_recovered_low_voltage").value
+            ),
+            loaded_low_persist_s=float(
+                self.get_parameter("battery_guard_loaded_low_persist_s").value
+            ),
+            recovered_low_persist_s=float(
+                self.get_parameter("battery_guard_recovered_low_persist_s").value
+            ),
+        )
         self._transport_backend = str(self.get_parameter("transport_backend").value)
         self._sim_cmd_vel_topic = str(self.get_parameter("sim_cmd_vel_topic").value)
         self._sim_odom_topic = str(self.get_parameter("sim_odom_topic").value)
@@ -270,6 +285,24 @@ class ControllerServerNode(Node):
         self._battery_state_pub = self.create_publisher(
             BatteryState, self._battery_state_topic, 10
         )
+        self._battery_guard_pub = self.create_publisher(
+            BatteryMissionGuard, self._battery_guard_topic, 10
+        )
+        self._sim_battery_preset_srv = None
+        self._sim_battery_state_srv = None
+        if hasattr(self._client, "set_sim_battery_preset") and hasattr(
+            self._client, "set_sim_battery_state"
+        ):
+            self._sim_battery_preset_srv = self.create_service(
+                SetSimBatteryPreset,
+                "/sim_battery/set_preset",
+                self._on_set_sim_battery_preset,
+            )
+            self._sim_battery_state_srv = self.create_service(
+                SetSimBatteryState,
+                "/sim_battery/set_state",
+                self._on_set_sim_battery_state,
+            )
 
         self.create_timer(1.0 / self._control_hz, self._control_tick)
         self.create_timer(1.0 / self._telemetry_pub_hz, self._telemetry_tick)
@@ -278,6 +311,38 @@ class ControllerServerNode(Node):
             "controller_server ready "
             f"(backend={self._transport_backend}, serial={self._serial_port}@{self._serial_baud}, "
             "source=/cmd_vel_final)"
+        )
+        if self._sim_battery_preset_srv is not None:
+            self.get_logger().info(
+                "sim battery services ready "
+                "(/sim_battery/set_preset, /sim_battery/set_state)"
+            )
+
+    @staticmethod
+    def _abs_float(value: object) -> float:
+        try:
+            return abs(float(value))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _battery_traction_active(self, telemetry, command_state: dict) -> bool:
+        drive_enabled = bool(command_state.get("drive_enabled", False))
+        brake_applied_pct = (
+            int(telemetry.brake_applied_pct)
+            if telemetry is not None and getattr(telemetry, "brake_applied_pct", None) is not None
+            else int(command_state.get("brake_pct", 0) or 0)
+        )
+        requested_speed_abs = self._abs_float(command_state.get("speed_mps", 0.0))
+        measured_speed_abs = (
+            self._abs_float(telemetry.speed_mps)
+            if telemetry is not None and telemetry.speed_mps is not None
+            else 0.0
+        )
+        return bool(
+            drive_enabled
+            and brake_applied_pct < 5
+            and requested_speed_abs > 0.35
+            and requested_speed_abs > (measured_speed_abs + 0.15)
         )
 
     def _on_cmd_vel_final(self, msg: CmdVelFinal) -> None:
@@ -323,6 +388,68 @@ class ControllerServerNode(Node):
             f"steer_deg={math.degrees(cmd.applied_steer_rad):.2f} "
             f"curvature={cmd.applied_curvature_inv_m:.3f} brake_pct={cmd.brake_pct}"
         )
+
+    def _on_set_sim_battery_preset(
+        self,
+        request: SetSimBatteryPreset.Request,
+        response: SetSimBatteryPreset.Response,
+    ) -> SetSimBatteryPreset.Response:
+        try:
+            preset = self._client.set_sim_battery_preset(str(request.preset))
+        except Exception as exc:
+            response.ok = False
+            response.error = str(exc)
+            return response
+
+        response.ok = True
+        response.error = ""
+        response.applied_preset = str(preset.name)
+        response.recovered_voltage_v = float(preset.recovered_voltage_v)
+        response.loaded_voltage_v = float(preset.loaded_voltage_v)
+        response.traction_active = bool(preset.traction_active)
+        response.ready = bool(preset.ready)
+        response.fresh = bool(preset.fresh)
+        response.suspect = bool(preset.suspect)
+        self.get_logger().info(
+            "sim battery preset applied "
+            f"(preset={preset.name}, recovered={preset.recovered_voltage_v:.2f}V, "
+            f"loaded={preset.loaded_voltage_v:.2f}V, traction={int(preset.traction_active)}, "
+            f"ready={int(preset.ready)}, fresh={int(preset.fresh)}, suspect={int(preset.suspect)})"
+        )
+        return response
+
+    def _on_set_sim_battery_state(
+        self,
+        request: SetSimBatteryState.Request,
+        response: SetSimBatteryState.Response,
+    ) -> SetSimBatteryState.Response:
+        try:
+            state = self._client.set_sim_battery_state(
+                recovered_voltage_v=float(request.recovered_voltage_v),
+                loaded_voltage_v=float(request.loaded_voltage_v),
+                traction_active_override=bool(request.traction_active),
+                ready=bool(request.ready),
+                fresh=bool(request.fresh),
+                suspect=bool(request.suspect),
+            )
+        except Exception as exc:
+            response.ok = False
+            response.error = str(exc)
+            return response
+
+        response.ok = True
+        response.error = ""
+        response.recovered_voltage_v = float(state.recovered_voltage_v)
+        response.loaded_voltage_v = float(state.loaded_voltage_v)
+        response.traction_active = bool(state.traction_active_override)
+        self.get_logger().info(
+            "sim battery state applied "
+            f"(recovered={state.recovered_voltage_v:.2f}V, "
+            f"loaded={state.loaded_voltage_v:.2f}V, "
+            f"traction={int(bool(state.traction_active_override))}, "
+            f"ready={int(state.ready)}, fresh={int(state.fresh)}, suspect={int(state.suspect)})"
+        )
+        return response
 
     def _apply_to_controller(self, cmd: DesiredCommand) -> None:
         self._client.apply_command(cmd)
@@ -373,6 +500,8 @@ class ControllerServerNode(Node):
         stats = self._client.get_stats()
         command_state = self._client.get_command_state()
         battery_payload = None
+        battery_msg = None
+        battery_guard_msg = None
         if battery_telemetry is not None:
             battery_link_age_s = max(
                 0.0, time.monotonic() - float(battery_telemetry.rx_monotonic_s)
@@ -380,32 +509,122 @@ class ControllerServerNode(Node):
             battery_link_fresh = (
                 battery_link_age_s <= self._battery_telemetry_stale_timeout_s
             )
-            battery_percentage = _battery_percentage_from_voltage(
+            traction_active = self._battery_traction_active(telemetry, command_state)
+            battery_estimate = self._battery_estimator.update(
                 battery_telemetry.battery_voltage_v,
-                self._battery_empty_voltage,
-                self._battery_full_voltage,
+                sample_time_s=float(battery_telemetry.rx_monotonic_s),
+                traction_active=traction_active,
             )
-            battery_state_text = _battery_state_label(
+            battery_percentage = _clamp01(battery_estimate.filtered_percentage)
+            battery_state_text = battery_state_label(
                 ready=bool(battery_telemetry.ready),
                 fresh=bool(battery_telemetry.fresh),
                 link_fresh=battery_link_fresh,
                 suspect=bool(battery_telemetry.suspect),
-                voltage_v=battery_telemetry.battery_voltage_v,
-                low_voltage_v=self._battery_low_voltage,
-                critical_voltage_v=self._battery_critical_voltage,
+                mission_guard_state=battery_estimate.mission_guard_state,
             )
             battery_payload = battery_telemetry.as_dict()
             battery_payload.update(
                 {
+                    "raw_voltage_v": float(battery_estimate.raw_voltage_v),
+                    "filtered_voltage_v": float(battery_estimate.filtered_voltage_v),
+                    "loaded_voltage_fast_v": float(battery_estimate.loaded_voltage_fast_v),
+                    "loaded_voltage_slow_v": float(battery_estimate.loaded_voltage_slow_v),
+                    "recovered_voltage_v": float(battery_estimate.recovered_voltage_v),
+                    "soc_voltage_v": float(battery_estimate.soc_voltage_v),
                     "link_age_s": battery_link_age_s,
                     "link_fresh": bool(battery_link_fresh),
                     "percentage": battery_percentage,
+                    "raw_percentage": float(battery_estimate.raw_percentage),
+                    "filtered_percentage": float(battery_estimate.filtered_percentage),
+                    "operator_soc_pct": float(battery_estimate.operator_soc_pct),
+                    "traction_active": bool(battery_estimate.traction_active),
                     "state": battery_state_text,
                     "low_voltage_v": self._battery_low_voltage,
                     "critical_voltage_v": self._battery_critical_voltage,
                     "full_voltage_v": self._battery_full_voltage,
                     "empty_voltage_v": self._battery_empty_voltage,
+                    "return_home_recommended": bool(
+                        battery_estimate.return_home_recommended
+                    ),
+                    "mission_guard_state": str(battery_state_text),
+                    "loaded_low_threshold_v": float(
+                        self._battery_estimator.loaded_low_threshold_v
+                    ),
+                    "recovered_low_threshold_v": float(
+                        self._battery_estimator.recovered_low_threshold_v
+                    ),
+                    "loaded_low_persist_s": float(
+                        battery_estimate.loaded_low_persist_s
+                    ),
+                    "recovered_low_persist_s": float(
+                        battery_estimate.recovered_low_persist_s
+                    ),
+                    "operator_soc_model": str(
+                        battery_estimate.operator_model_name
+                    ),
+                    "mission_guard_model": str(
+                        battery_estimate.mission_guard_model_name
+                    ),
+                    "soc_model": str(battery_estimate.operator_model_name),
                 }
+            )
+
+            battery_msg = BatteryState()
+            battery_msg.header.stamp = self.get_clock().now().to_msg()
+            battery_msg.present = bool(battery_telemetry.ready)
+            battery_msg.voltage = float(battery_estimate.filtered_voltage_v)
+            battery_msg.percentage = battery_percentage
+            battery_msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_UNKNOWN
+            battery_msg.power_supply_health = (
+                BatteryState.POWER_SUPPLY_HEALTH_UNSPEC_FAILURE
+                if bool(battery_telemetry.suspect)
+                else BatteryState.POWER_SUPPLY_HEALTH_GOOD
+            )
+            battery_msg.power_supply_technology = (
+                BatteryState.POWER_SUPPLY_TECHNOLOGY_UNKNOWN
+            )
+
+            battery_guard_msg = BatteryMissionGuard()
+            battery_guard_msg.stamp = self.get_clock().now().to_msg()
+            battery_guard_msg.ready = bool(battery_telemetry.ready)
+            battery_guard_msg.fresh = bool(
+                battery_telemetry.fresh and battery_link_fresh
+            )
+            battery_guard_msg.traction_active = bool(
+                battery_estimate.traction_active
+            )
+            battery_guard_msg.return_home_recommended = bool(
+                battery_estimate.return_home_recommended
+            )
+            battery_guard_msg.state = str(battery_state_text)
+            battery_guard_msg.raw_voltage_v = float(battery_estimate.raw_voltage_v)
+            battery_guard_msg.loaded_voltage_fast_v = float(
+                battery_estimate.loaded_voltage_fast_v
+            )
+            battery_guard_msg.loaded_voltage_slow_v = float(
+                battery_estimate.loaded_voltage_slow_v
+            )
+            battery_guard_msg.recovered_voltage_v = float(
+                battery_estimate.recovered_voltage_v
+            )
+            battery_guard_msg.operator_soc_pct = float(
+                battery_estimate.operator_soc_pct
+            )
+            battery_guard_msg.loaded_low_threshold_v = float(
+                self._battery_estimator.loaded_low_threshold_v
+            )
+            battery_guard_msg.recovered_low_threshold_v = float(
+                self._battery_estimator.recovered_low_threshold_v
+            )
+            battery_guard_msg.loaded_low_persist_s = float(
+                battery_estimate.loaded_low_persist_s
+            )
+            battery_guard_msg.recovered_low_persist_s = float(
+                battery_estimate.recovered_low_persist_s
+            )
+            battery_guard_msg.model_name = str(
+                battery_estimate.mission_guard_model_name
             )
         payload = {
             "source": self._last_source,
@@ -467,26 +686,10 @@ class ControllerServerNode(Node):
         )
         self._drive_telemetry_pub.publish(drive_msg)
 
-        if battery_telemetry is not None:
-            battery_msg = BatteryState()
-            battery_msg.header.stamp = self.get_clock().now().to_msg()
-            battery_msg.present = bool(battery_telemetry.ready)
-            battery_msg.voltage = float(battery_telemetry.battery_voltage_v)
-            battery_msg.percentage = _battery_percentage_from_voltage(
-                battery_telemetry.battery_voltage_v,
-                self._battery_empty_voltage,
-                self._battery_full_voltage,
-            )
-            battery_msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_UNKNOWN
-            battery_msg.power_supply_health = (
-                BatteryState.POWER_SUPPLY_HEALTH_UNSPEC_FAILURE
-                if bool(battery_telemetry.suspect)
-                else BatteryState.POWER_SUPPLY_HEALTH_GOOD
-            )
-            battery_msg.power_supply_technology = (
-                BatteryState.POWER_SUPPLY_TECHNOLOGY_UNKNOWN
-            )
+        if battery_msg is not None:
             self._battery_state_pub.publish(battery_msg)
+        if battery_guard_msg is not None:
+            self._battery_guard_pub.publish(battery_guard_msg)
 
     def destroy_node(self) -> bool:
         self._client.stop()

@@ -76,7 +76,9 @@ Campos:
 Notas:
 
 - La calibración ADC/divisor vive del lado ESP32, para que ROS2 reciba un voltaje útil directamente.
-- ROS2 usa `battery_cv` como dato principal, y `adc_pin_mv` para diagnóstico/recalibración.
+- ROS2 usa `battery_cv` como dato principal, aplica un suavizado temporal EMA y calcula SOC con una curva no lineal de plomo.
+- `adc_pin_mv` se conserva para diagnóstico/recalibración.
+- El estado final publicado (`OK/LOW/CRITICAL/STALE/...`) se resuelve en ROS2 con histéresis; el wire format no cambia.
 - La trama `0x55` anterior no cambia y sigue siendo válida.
 
 ## 2.4 status_flags

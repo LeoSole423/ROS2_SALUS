@@ -1,0 +1,12 @@
+float32 recovered_voltage_v
+float32 loaded_voltage_v
+bool traction_active
+bool ready
+bool fresh
+bool suspect
+---
+bool ok
+string error
+float32 recovered_voltage_v
+float32 loaded_voltage_v
+bool traction_active

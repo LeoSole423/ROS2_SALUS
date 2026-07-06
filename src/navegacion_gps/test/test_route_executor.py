@@ -35,7 +35,7 @@ from navegacion_gps.route_executor import (
     skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
 )
-from interfaces.msg import NavEvent, NavTelemetry
+from interfaces.msg import BatteryMissionGuard, NavEvent, NavTelemetry
 
 
 def _converted_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
@@ -108,6 +108,7 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node.clear_costmaps_before_blocked_retry = True
     node.request_timeout_s = 0.01
     node._battery_pct = 100.0
+    node._battery_guard_seen = False
     node._low_battery_active = False
     node._return_home_requested = False
     node._return_home_active = False
@@ -1268,6 +1269,75 @@ def test_low_battery_requests_return_home_for_loop_mission():
     assert node._return_home_exit_input_index == 1
     assert node.cancel_calls == 0
     assert any(event[1] == "RETURN_HOME_REQUESTED" for event in node.events)
+
+
+def test_battery_guard_requests_return_home_for_loop_mission() -> None:
+    node = _fake_blocking_node()
+    node._mission_loop = True
+    node._route_input = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+    ]
+    node._route_input_source_indices = [0, 1]
+    msg = BatteryMissionGuard()
+    msg.ready = True
+    msg.fresh = True
+    msg.state = "LOW_ENERGY_GO_HOME"
+    msg.return_home_recommended = True
+    msg.operator_soc_pct = 24.0
+    msg.recovered_voltage_v = 56.8
+    msg.loaded_voltage_slow_v = 56.4
+    msg.recovered_low_persist_s = 21.0
+
+    RouteExecutorNode._on_battery_mission_guard(node, msg)
+
+    assert node._battery_guard_seen is True
+    assert node._mission_active is True
+    assert node._return_home_requested is True
+    assert any(event[1] == "BATTERY_GUARD_RECOVERED_LOW" for event in node.events)
+
+
+def test_battery_guard_disables_legacy_percentage_trigger_once_seen() -> None:
+    node = _fake_blocking_node()
+    guard = BatteryMissionGuard()
+    guard.ready = True
+    guard.fresh = False
+    guard.state = "STALE"
+
+    RouteExecutorNode._on_battery_mission_guard(node, guard)
+
+    msg = BatteryState()
+    msg.percentage = 0.2
+    RouteExecutorNode._on_battery_state(node, msg)
+
+    assert node._battery_guard_seen is True
+    assert node._low_battery_active is False
+
+
+def test_battery_guard_recovery_clears_return_home_and_parks_mission() -> None:
+    node = _fake_blocking_node()
+    node._mission_loop = True
+    node._low_battery_active = True
+    node._return_home_requested = True
+    node._return_home_exit_input_index = 1
+    node._mission_status = "return home waiting for exit waypoint"
+
+    guard = BatteryMissionGuard()
+    guard.ready = True
+    guard.fresh = True
+    guard.state = "OK"
+    guard.return_home_recommended = False
+    guard.operator_soc_pct = 99.0
+
+    RouteExecutorNode._on_battery_mission_guard(node, guard)
+
+    assert node._low_battery_active is False
+    assert node._return_home_requested is False
+    assert node._return_home_active is False
+    assert node._mission_active is False
+    assert node.cancel_calls == 1
+    assert node.brake_calls == 1
+    assert any(event[1] == "BATTERY_GUARD_RECOVERED_CLEARED" for event in node.events)
 
 
 def test_next_chunk_success_keeps_loop_running_until_exit_waypoint():

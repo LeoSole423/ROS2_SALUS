@@ -12,6 +12,7 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/BatteryMissionGuard.msg"
   "msg/CmdVelFinal.msg"
   "msg/DriveTelemetry.msg"
   "msg/NoGoPoint.msg"
@@ -28,6 +29,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/BrakeNav.srv"
   "srv/SetManualMode.srv"
   "srv/SetManualCmd.srv"
+  "srv/SetSimBatteryPreset.srv"
+  "srv/SetSimBatteryState.srv"
   "srv/GetNavState.srv"
   "srv/GetNavSnapshot.srv"
   "srv/SetRouteMissionLL.srv"
