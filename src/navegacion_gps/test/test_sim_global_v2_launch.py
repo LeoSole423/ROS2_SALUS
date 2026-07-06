@@ -515,10 +515,10 @@ def test_wifi_rpp_lookahead_is_smoother_and_sim_real_parity() -> None:
         assert "use_final_approach_orientation: false" in params_contents
         assert "keep_goal_orientation: true" in params_contents
         assert "desired_linear_vel: 1.6" in params_contents
-        assert "lookahead_dist: 2.6" in params_contents
-        assert "min_lookahead_dist: 1.8" in params_contents
-        assert "max_lookahead_dist: 3.6" in params_contents
-        assert "lookahead_time: 1.8" in params_contents
+        assert "lookahead_dist: 3.0" in params_contents
+        assert "min_lookahead_dist: 2.3" in params_contents
+        assert "max_lookahead_dist: 4.5" in params_contents
+        assert "lookahead_time: 2.2" in params_contents
 
 
 def test_global_v2_local_costmaps_split_lidar_marking_from_clearing() -> None:
