@@ -64,10 +64,72 @@ def normalize_waypoints(waypoints_raw: Any) -> Tuple[Optional[List[Dict[str, Any
     return out, ""
 
 
-def build_waypoints_yaml_doc(waypoints: List[Dict[str, Any]]) -> Dict[str, Any]:
+def normalize_patrol_profile(
+    profile_raw: Any,
+    waypoint_count: int,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    if profile_raw is None:
+        return None, ""
+    if not isinstance(profile_raw, dict):
+        return None, "patrol_profile must be an object"
+
+    def _int_index(value: Any, fallback: int = -1) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            return fallback
+        return parsed
+
+    def _indices_list(value: Any, field: str) -> Tuple[Optional[List[int]], str]:
+        if value is None:
+            return [], ""
+        if not isinstance(value, list):
+            return None, f"{field} must be a list"
+        out: List[int] = []
+        for item in value:
+            try:
+                index = int(item)
+            except Exception:
+                return None, f"{field} must contain integers"
+            if 0 <= index < waypoint_count and index not in out:
+                out.append(index)
+        return out, ""
+
+    home_waypoint_index = _int_index(profile_raw.get("home_waypoint_index", -1))
+    if home_waypoint_index >= waypoint_count:
+        home_waypoint_index = -1
+    loop_waypoint_indices, loop_err = _indices_list(profile_raw.get("loop_waypoint_indices"), "loop_waypoint_indices")
+    if loop_waypoint_indices is None:
+        return None, loop_err
+    return_waypoint_indices, return_err = _indices_list(profile_raw.get("return_waypoint_indices"), "return_waypoint_indices")
+    if return_waypoint_indices is None:
+        return None, return_err
+    depart_waypoint_indices, depart_err = _indices_list(profile_raw.get("depart_waypoint_indices"), "depart_waypoint_indices")
+    if depart_waypoint_indices is None:
+        return None, depart_err
+    depart_entry_waypoint_index = _int_index(profile_raw.get("depart_entry_waypoint_index", -1))
+    if depart_entry_waypoint_index >= waypoint_count:
+        depart_entry_waypoint_index = -1
+
     return {
+        "home_waypoint_index": home_waypoint_index,
+        "loop_waypoint_indices": loop_waypoint_indices,
+        "return_waypoint_indices": return_waypoint_indices,
+        "depart_waypoint_indices": depart_waypoint_indices,
+        "depart_entry_waypoint_index": depart_entry_waypoint_index,
+    }, ""
+
+
+def build_waypoints_yaml_doc(
+    waypoints: List[Dict[str, Any]],
+    patrol_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    doc: Dict[str, Any] = {
         "waypoints": [_build_waypoint_yaml_entry(wp) for wp in waypoints]
     }
+    if patrol_profile:
+        doc["patrol_profile"] = dict(patrol_profile)
+    return doc
 
 
 def _build_waypoint_yaml_entry(wp: Dict[str, Any]) -> Dict[str, Any]:
@@ -87,29 +149,40 @@ def _build_waypoint_yaml_entry(wp: Dict[str, Any]) -> Dict[str, Any]:
     return entry
 
 
-def parse_waypoints_yaml_text(yaml_text: str) -> Tuple[Optional[List[Dict[str, float]]], str]:
+def parse_waypoints_yaml_text(
+    yaml_text: str,
+) -> Tuple[Optional[List[Dict[str, float]]], Optional[Dict[str, Any]], str]:
     try:
         raw = yaml.safe_load(yaml_text)
     except Exception as exc:
-        return None, f"invalid yaml: {exc}"
+        return None, None, f"invalid yaml: {exc}"
     if not isinstance(raw, dict):
-        return None, "yaml root must be a map/object"
-    return normalize_waypoints(raw.get("waypoints"))
+        return None, None, "yaml root must be a map/object"
+    waypoints, err = normalize_waypoints(raw.get("waypoints"))
+    if waypoints is None:
+        return None, None, err
+    patrol_profile, patrol_err = normalize_patrol_profile(raw.get("patrol_profile"), len(waypoints))
+    if patrol_err:
+        return None, None, patrol_err
+    return waypoints, patrol_profile, ""
 
 
 def save_waypoints_yaml_file(
-    file_path: Path, waypoints: List[Dict[str, Any]]
+    file_path: Path, waypoints: List[Dict[str, Any]], patrol_profile: Optional[Dict[str, Any]] = None
 ) -> Tuple[bool, str, int]:
     normalized, err = normalize_waypoints(waypoints)
     if normalized is None:
         return False, err, 0
+    normalized_profile, profile_err = normalize_patrol_profile(patrol_profile, len(normalized))
+    if profile_err:
+        return False, profile_err, 0
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         return False, f"failed creating output dir: {exc}", 0
 
-    data = build_waypoints_yaml_doc(normalized)
+    data = build_waypoints_yaml_doc(normalized, normalized_profile)
     try:
         with file_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(data, handle, sort_keys=False)
@@ -121,17 +194,17 @@ def save_waypoints_yaml_file(
 
 def load_waypoints_yaml_file(
     file_path: Path,
-) -> Tuple[bool, str, List[Dict[str, Any]]]:
+) -> Tuple[bool, str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     if not file_path.exists():
-        return False, f"waypoints file not found: {file_path}", []
+        return False, f"waypoints file not found: {file_path}", [], None
 
     try:
         with file_path.open("r", encoding="utf-8") as handle:
             raw_text = handle.read()
     except Exception as exc:
-        return False, f"failed reading waypoints file: {exc}", []
+        return False, f"failed reading waypoints file: {exc}", [], None
 
-    waypoints, err = parse_waypoints_yaml_text(raw_text)
+    waypoints, patrol_profile, err = parse_waypoints_yaml_text(raw_text)
     if waypoints is None:
-        return False, err, []
-    return True, "", waypoints
+        return False, err, [], None
+    return True, "", waypoints, patrol_profile

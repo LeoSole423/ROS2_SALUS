@@ -13,13 +13,20 @@ from navegacion_gps.route_executor import (
     BLOCKED_STATE_NONE,
     BLOCKED_STATE_RETRYING,
     BLOCKED_STATE_WAITING,
+    PATROL_PHASE_DEPART_HOME,
+    PATROL_PHASE_LOOP_MAIN,
+    PATROL_PHASE_PARKED_HOME,
+    PATROL_PHASE_RETURN_CONNECTOR,
+    PatrolMissionProfile,
     RouteExecutorNode,
     WAYPOINT_ROLE_HOME,
     WAYPOINT_ROLE_NORMAL,
     RouteWaypoint,
+    _bearing_deg,
     _parse_route_action_jsons,
     _parse_waypoint_roles,
     _poses_to_debug_path,
+    _resolve_input_waypoints,
     _split_home_waypoint,
     _yaw_to_quaternion,
     build_chunk_waypoints,
@@ -116,6 +123,10 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node._return_home_exit_input_index = -1
     node._home_waypoint = RouteWaypoint(lat=0.0, lon=0.002, yaw_deg=0.0)
     node._home_input_index = 2
+    node._patrol_active = False
+    node._patrol_phase = PATROL_PHASE_LOOP_MAIN
+    node._patrol_mission_profile = None
+    node._patrol_mission_id = ""
     node.default_home_lat = float("nan")
     node.default_home_lon = float("nan")
     node.default_home_yaw_deg = 0.0
@@ -176,6 +187,56 @@ def _telemetry_result(status: int, *, event_id: int = 1, text: str = "") -> NavT
     msg.robot_lat = float("nan")
     msg.robot_lon = float("nan")
     return msg
+
+
+def _fake_patrol_phase_node() -> RouteExecutorNode:
+    node = _fake_blocking_node()
+    node._patrol_mission_profile = PatrolMissionProfile(
+        loop_waypoints=[
+            RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+            RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=10.0),
+            RouteWaypoint(lat=0.001, lon=0.001, yaw_deg=20.0),
+        ],
+        loop_action_jsons=["", "", ""],
+        home_waypoint=RouteWaypoint(lat=-0.001, lon=-0.001, yaw_deg=180.0),
+        return_waypoints=[
+            RouteWaypoint(lat=0.0005, lon=0.0005, yaw_deg=45.0),
+        ],
+        return_action_jsons=[""],
+        depart_waypoints=[
+            RouteWaypoint(lat=-0.0005, lon=-0.0005, yaw_deg=135.0),
+        ],
+        depart_action_jsons=[""],
+        depart_entry_loop_index=1,
+        leg_spacing_m=1.0,
+        chunk_span_m=100.0,
+        chunk_max_waypoints=10,
+    )
+    node._patrol_mission_id = "patrol-test"
+    node._patrol_active = True
+    node._patrol_phase = PATROL_PHASE_DEPART_HOME
+    node._return_home_active = False
+    node._return_home_requested = False
+    node._home_waypoint = node._patrol_mission_profile.home_waypoint
+    node._active_chunk = list(node._route_expanded)
+    node._mission_active = True
+    node._mission_paused = False
+    node._mission_loop = False
+    node._route_expanded = [
+        RouteWaypoint(lat=-0.0005, lon=-0.0005, yaw_deg=135.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=10.0),
+    ]
+    node._route_key_waypoint_flags = [True, True]
+    node._route_action_jsons = ["", ""]
+    node._route_input_indices = [0, 1]
+    node._current_start_index = 0
+    node._current_target_index = 1
+    node._awaiting_chunk_result = True
+    node._action_active = False
+    node._publish_empty_route_paths = lambda: setattr(node, "cleared_paths", True)
+    node._status_with_note_locked = lambda status: status
+    node._complete_route_locked = lambda: setattr(node, "completed_routes", getattr(node, "completed_routes", 0) + 1)
+    return node
 
 
 def test_debug_path_preserves_converted_waypoints_and_orientations():
@@ -284,6 +345,47 @@ def test_split_home_waypoint_excludes_home_from_patrol_route():
     assert home is not None
     assert home.input_index == 2
     assert home.waypoint.lon == pytest.approx(0.002)
+
+
+def test_resolve_input_waypoints_closes_patrol_loop_yaw_to_first_waypoint():
+    resolved = _resolve_input_waypoints(
+        [0.0, 0.0, 0.001],
+        [0.0, 0.001, 0.001],
+        [],
+        True,
+    )
+
+    assert len(resolved) == 3
+    assert resolved[-1].yaw_deg == pytest.approx(
+        _bearing_deg(0.001, 0.001, 0.0, 0.0),
+        abs=1.0e-6,
+    )
+
+
+def test_depart_patrol_phase_runs_once_then_starts_loop_main():
+    node = _fake_patrol_phase_node()
+    phase_starts = []
+    node._start_patrol_phase = (
+        lambda phase: phase_starts.append(phase) or (phase == PATROL_PHASE_LOOP_MAIN, "", 3, 3)
+    )
+
+    RouteExecutorNode._start_next_chunk_after_success(node)
+
+    assert phase_starts == [PATROL_PHASE_LOOP_MAIN]
+    assert node._patrol_phase == PATROL_PHASE_DEPART_HOME
+
+
+def test_return_connector_runs_once_and_finishes_at_home():
+    node = _fake_patrol_phase_node()
+    node._patrol_phase = PATROL_PHASE_RETURN_CONNECTOR
+    node._return_home_active = True
+
+    RouteExecutorNode._start_next_chunk_after_success(node)
+
+    assert getattr(node, "completed_routes", 0) == 1
+    assert node._patrol_phase == PATROL_PHASE_PARKED_HOME
+    assert node._patrol_active is False
+    assert node._return_home_active is False
 
 
 def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():

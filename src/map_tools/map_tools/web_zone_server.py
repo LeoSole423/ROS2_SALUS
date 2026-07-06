@@ -3289,21 +3289,31 @@ class WebZoneServerNode(Node):
             self.get_route_state()
         return bool(res.ok), str(res.error)
 
-    def save_waypoints_file(self, waypoints: List[Dict[str, float]]) -> Tuple[bool, str, int]:
-        ok, err, count = save_waypoints_yaml_file(self.waypoints_file, waypoints)
+    def save_waypoints_file(
+        self,
+        waypoints: List[Dict[str, float]],
+        patrol_profile: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, int]:
+        ok, err, count = save_waypoints_yaml_file(
+            self.waypoints_file,
+            waypoints,
+            patrol_profile,
+        )
         if not ok:
             self.get_logger().warning(f"save_waypoints_file failed: {err}")
             return False, err, 0
         self.get_logger().info(f"save_waypoints_file ok (count={count})")
         return True, "", int(count)
 
-    def load_waypoints_file(self) -> Tuple[bool, str, List[Dict[str, float]]]:
-        ok, err, waypoints = load_waypoints_yaml_file(self.waypoints_file)
+    def load_waypoints_file(
+        self,
+    ) -> Tuple[bool, str, List[Dict[str, float]], Optional[Dict[str, Any]]]:
+        ok, err, waypoints, patrol_profile = load_waypoints_yaml_file(self.waypoints_file)
         if not ok:
             self.get_logger().warning(f"load_waypoints_file failed: {err}")
-            return False, err, []
+            return False, err, [], None
         self.get_logger().info(f"load_waypoints_file ok (count={len(waypoints)})")
-        return True, "", waypoints
+        return True, "", waypoints, patrol_profile
 
     def _runtime_datum_payload(self) -> Dict[str, Any]:
         with self._lock:
@@ -4547,7 +4557,13 @@ class WebSocketApi:
                     client_req_id=client_req_id,
                 )
                 return
-            ok, err, count = await asyncio.to_thread(self.node.save_waypoints_file, waypoints)
+            patrol_profile_raw = msg.get("patrol_profile")
+            patrol_profile = patrol_profile_raw if isinstance(patrol_profile_raw, dict) else None
+            ok, err, count = await asyncio.to_thread(
+                self.node.save_waypoints_file,
+                waypoints,
+                patrol_profile,
+            )
             await self._send_ack(
                 ws,
                 "save_waypoints_file",
@@ -4559,7 +4575,7 @@ class WebSocketApi:
             return
 
         if op == "load_waypoints_file":
-            ok, err, waypoints = await asyncio.to_thread(self.node.load_waypoints_file)
+            ok, err, waypoints, patrol_profile = await asyncio.to_thread(self.node.load_waypoints_file)
             await self._send_ack(
                 ws,
                 "load_waypoints_file",
@@ -4569,6 +4585,7 @@ class WebSocketApi:
                 extra={
                     "waypoint_count": int(len(waypoints)),
                     "waypoints": list(waypoints) if ok else [],
+                    **({"patrol_profile": patrol_profile} if ok and patrol_profile else {}),
                 },
             )
             return

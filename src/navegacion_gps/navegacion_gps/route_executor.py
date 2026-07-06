@@ -3674,6 +3674,7 @@ class RouteExecutorNode(Node):
         action_jsons: Sequence[str],
         label: str,
         allow_empty: bool,
+        loop: bool,
     ) -> Tuple[Optional[List[RouteWaypoint]], Optional[List[str]], str]:
         lat_values = [float(value) for value in lats]
         lon_values = [float(value) for value in lons]
@@ -3692,7 +3693,7 @@ class RouteExecutorNode(Node):
         )
         if normalized_actions is None:
             return None, None, actions_error
-        resolved = _resolve_input_waypoints(lat_values, lon_values, yaw_values, False)
+        resolved = _resolve_input_waypoints(lat_values, lon_values, yaw_values, loop)
         return resolved, normalized_actions, ""
 
     def _validate_set_patrol_request(
@@ -3705,6 +3706,7 @@ class RouteExecutorNode(Node):
             action_jsons=list(getattr(request, "loop_waypoint_action_jsons", [])),
             label="loop",
             allow_empty=False,
+            loop=True,
         )
         if loop_waypoints is None or loop_actions is None:
             return None, loop_error
@@ -3718,6 +3720,7 @@ class RouteExecutorNode(Node):
             action_jsons=list(getattr(request, "return_waypoint_action_jsons", [])),
             label="return connector",
             allow_empty=True,
+            loop=False,
         )
         if return_waypoints is None or return_actions is None:
             return None, return_error
@@ -3729,6 +3732,7 @@ class RouteExecutorNode(Node):
             action_jsons=list(getattr(request, "depart_waypoint_action_jsons", [])),
             label="depart connector",
             allow_empty=True,
+            loop=False,
         )
         if depart_waypoints is None or depart_actions is None:
             return None, depart_error
