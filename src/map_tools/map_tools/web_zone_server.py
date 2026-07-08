@@ -42,14 +42,18 @@ from interfaces.srv import (
     CameraPtzState,
     CameraStatus,
     CancelNavGoal,
+    CancelPatrolMission,
     CancelRouteMission,
     GetDatum,
     GetNavSnapshot,
     GetNavState,
+    GetPatrolMissionState,
     GetRouteMissionState,
+    RequestReturnHome,
     GetZonesState,
     SetManualMode,
     SetNavGoalLL,
+    SetPatrolMissionLL,
     SetRouteMissionLL,
     SetZonesGeoJson,
 )
@@ -209,6 +213,10 @@ class WebZoneServerNode(Node):
         self.declare_parameter("route_set_service", "/route_executor/set_route_ll")
         self.declare_parameter("route_cancel_service", "/route_executor/cancel_route")
         self.declare_parameter("route_get_state_service", "/route_executor/get_state")
+        self.declare_parameter("patrol_set_service", "/route_executor/set_patrol_ll")
+        self.declare_parameter("patrol_cancel_service", "/route_executor/cancel_patrol")
+        self.declare_parameter("patrol_get_state_service", "/route_executor/get_patrol_state")
+        self.declare_parameter("patrol_return_home_service", "/route_executor/request_return_home")
         self.declare_parameter("route_state_poll_hz", 2.0)
         self.declare_parameter("teleop_cmd_topic", "/cmd_vel_teleop")
 
@@ -288,6 +296,14 @@ class WebZoneServerNode(Node):
         self.route_cancel_service = str(self.get_parameter("route_cancel_service").value)
         self.route_get_state_service = str(
             self.get_parameter("route_get_state_service").value
+        )
+        self.patrol_set_service = str(self.get_parameter("patrol_set_service").value)
+        self.patrol_cancel_service = str(self.get_parameter("patrol_cancel_service").value)
+        self.patrol_get_state_service = str(
+            self.get_parameter("patrol_get_state_service").value
+        )
+        self.patrol_return_home_service = str(
+            self.get_parameter("patrol_return_home_service").value
         )
         self.route_state_poll_hz = max(
             0.2, float(self.get_parameter("route_state_poll_hz").value)
@@ -420,6 +436,7 @@ class WebZoneServerNode(Node):
             "active_preset": "",
         }
         self._route_mission = self._build_default_route_mission_payload()
+        self._patrol_mission = self._build_default_patrol_mission_payload()
         self._recent_nav_events: deque[Dict[str, Any]] = deque(maxlen=30)
         self._active_alerts: List[Dict[str, Any]] = []
         self._rosbag_process: Optional[subprocess.Popen] = None
@@ -546,6 +563,18 @@ class WebZoneServerNode(Node):
         self._route_get_state_client = self.create_client(
             GetRouteMissionState, self.route_get_state_service
         )
+        self._patrol_set_client = self.create_client(
+            SetPatrolMissionLL, self.patrol_set_service
+        )
+        self._patrol_cancel_client = self.create_client(
+            CancelPatrolMission, self.patrol_cancel_service
+        )
+        self._patrol_get_state_client = self.create_client(
+            GetPatrolMissionState, self.patrol_get_state_service
+        )
+        self._patrol_return_home_client = self.create_client(
+            RequestReturnHome, self.patrol_return_home_service
+        )
         self._nav_snapshot_client = self.create_client(GetNavSnapshot, self.nav_snapshot_service)
         self._camera_pan_client = self.create_client(CameraPan, self.camera_pan_service)
         self._camera_zoom_toggle_client = self.create_client(
@@ -649,6 +678,7 @@ class WebZoneServerNode(Node):
                 "nav_result_text": str(self._nav_result_text),
                 "nav_result_event_id": int(self._nav_result_event_id),
                 "route_mission": dict(self._route_mission),
+                "patrol_mission": dict(self._patrol_mission),
                 "alerts": list(self._active_alerts),
                 "recent_events": list(self._recent_nav_events),
                 "rosbag": self._build_rosbag_status_payload_locked(),
@@ -671,6 +701,7 @@ class WebZoneServerNode(Node):
             nav_result_event_id = int(self._nav_result_event_id)
             robot_pose = dict(self._last_robot_pose) if self._last_robot_pose is not None else None
             route_mission = dict(self._route_mission)
+            patrol_mission = dict(self._patrol_mission)
             alerts = list(self._active_alerts)
             recent_events = list(self._recent_nav_events)
             connection_status = self._connection_status_locked()
@@ -685,6 +716,7 @@ class WebZoneServerNode(Node):
             "nav_result_event_id": nav_result_event_id,
             "robot_pose": robot_pose,
             "route_mission": route_mission,
+            "patrol_mission": patrol_mission,
             "alerts": alerts,
             "recent_events": recent_events,
             **connection_status,
@@ -830,6 +862,26 @@ class WebZoneServerNode(Node):
         }
 
     @staticmethod
+    def _build_default_patrol_mission_payload() -> Dict[str, Any]:
+        return {
+            "active": False,
+            "phase": "idle",
+            "low_battery_active": False,
+            "return_home_requested": False,
+            "return_home_active": False,
+            "return_exit_loop_index": -1,
+            "depart_entry_loop_index": -1,
+            "home_available": False,
+            "mission_id": "",
+            "status": "idle",
+            "home_waypoint": None,
+            "loop_waypoints": [],
+            "return_waypoints": [],
+            "depart_waypoints": [],
+            "active_chunk_waypoints": [],
+        }
+
+    @staticmethod
     def _route_waypoints_from_state(
         lats: Sequence[float],
         lons: Sequence[float],
@@ -927,6 +979,52 @@ class WebZoneServerNode(Node):
             }
         with self._lock:
             self._route_mission = payload
+
+    def _update_patrol_state(self, response: GetPatrolMissionState.Response) -> None:
+        payload = {
+            "active": bool(getattr(response, "active", False)),
+            "phase": str(getattr(response, "phase", "idle")),
+            "low_battery_active": bool(getattr(response, "low_battery_active", False)),
+            "return_home_requested": bool(getattr(response, "return_home_requested", False)),
+            "return_home_active": bool(getattr(response, "return_home_active", False)),
+            "return_exit_loop_index": int(getattr(response, "return_exit_loop_index", -1)),
+            "depart_entry_loop_index": int(getattr(response, "depart_entry_loop_index", -1)),
+            "home_available": bool(getattr(response, "home_available", False)),
+            "mission_id": str(getattr(response, "mission_id", "")),
+            "status": str(getattr(response, "status", "idle")),
+            "loop_waypoints": self._route_waypoints_from_state(
+                response.loop_lats,
+                response.loop_lons,
+                response.loop_yaws_deg,
+                getattr(response, "loop_action_jsons", []),
+            ),
+            "return_waypoints": self._route_waypoints_from_state(
+                response.return_lats,
+                response.return_lons,
+                response.return_yaws_deg,
+                getattr(response, "return_action_jsons", []),
+            ),
+            "depart_waypoints": self._route_waypoints_from_state(
+                response.depart_lats,
+                response.depart_lons,
+                response.depart_yaws_deg,
+                getattr(response, "depart_action_jsons", []),
+            ),
+            "active_chunk_waypoints": self._route_waypoints_from_state(
+                response.active_lats,
+                response.active_lons,
+                response.active_yaws_deg,
+            ),
+        }
+        if bool(getattr(response, "home_available", False)):
+            payload["home_waypoint"] = {
+                "lat": float(getattr(response, "home_lat", 0.0)),
+                "lon": float(getattr(response, "home_lon", 0.0)),
+                "yaw_deg": float(getattr(response, "home_yaw_deg", 0.0)),
+                "role": "home",
+            }
+        with self._lock:
+            self._patrol_mission = payload
 
     @staticmethod
     def _stamp_to_epoch_ms(stamp: Any) -> Optional[int]:
@@ -2840,6 +2938,16 @@ class WebZoneServerNode(Node):
         self._update_route_state(res)
         return True, ""
 
+    def get_patrol_state(self) -> Tuple[bool, str]:
+        req = GetPatrolMissionState.Request()
+        res = self._call_service(self._patrol_get_state_client, req, self.request_timeout_s)
+        if res is None:
+            return False, "patrol get_state timeout"
+        if not res.ok:
+            return False, str(res.error)
+        self._update_patrol_state(res)
+        return True, ""
+
     def _route_state_poll_tick(self) -> None:
         with self._lock:
             if self._route_state_poll_inflight:
@@ -2857,6 +2965,9 @@ class WebZoneServerNode(Node):
             ok, err = self.get_route_state()
             if not ok and err:
                 self.get_logger().debug(f"route state poll skipped: {err}")
+            ok_patrol, err_patrol = self.get_patrol_state()
+            if not ok_patrol and err_patrol:
+                self.get_logger().debug(f"patrol state poll skipped: {err_patrol}")
         finally:
             with self._lock:
                 self._route_state_poll_inflight = False
@@ -3079,21 +3190,130 @@ class WebZoneServerNode(Node):
             self.get_route_state()
         return bool(res.ok), str(res.error)
 
-    def save_waypoints_file(self, waypoints: List[Dict[str, float]]) -> Tuple[bool, str, int]:
-        ok, err, count = save_waypoints_yaml_file(self.waypoints_file, waypoints)
+    def set_patrol_mission(
+        self,
+        payload: Dict[str, Any],
+        leg_spacing_m: Optional[float] = None,
+        chunk_span_m: Optional[float] = None,
+        chunk_max_waypoints: Optional[int] = None,
+    ) -> Tuple[bool, str, int, int]:
+        loop_waypoints = list(payload.get("loop_waypoints", []))
+        home_waypoint = payload.get("home_waypoint")
+        if not loop_waypoints:
+            return False, "loop_waypoints must be a non-empty list", 0, 0
+        if not isinstance(home_waypoint, dict):
+            return False, "home_waypoint is required", 0, 0
+
+        req = SetPatrolMissionLL.Request()
+        loop_resolved_yaws = self._resolve_waypoint_yaws(loop_waypoints, True)
+        req.loop_lats = [float(wp["lat"]) for wp in loop_waypoints]
+        req.loop_lons = [float(wp["lon"]) for wp in loop_waypoints]
+        req.loop_yaws_deg = [float(yaw_deg) for yaw_deg in loop_resolved_yaws]
+        req.loop_waypoint_action_jsons = [
+            json.dumps(wp.get("actions", []), separators=(",", ":"), sort_keys=True)
+            if wp.get("actions")
+            else ""
+            for wp in loop_waypoints
+        ]
+        req.home_lat = float(home_waypoint["lat"])
+        req.home_lon = float(home_waypoint["lon"])
+        req.home_yaw_deg = float(
+            home_waypoint.get(
+                "yaw_deg",
+                self._resolve_waypoint_yaws([home_waypoint], False)[0],
+            )
+        )
+
+        for prefix, waypoints in (
+            ("return", list(payload.get("return_waypoints", []))),
+            ("depart", list(payload.get("depart_waypoints", []))),
+        ):
+            resolved_yaws = self._resolve_waypoint_yaws(waypoints, False) if waypoints else []
+            setattr(req, f"{prefix}_lats", [float(wp["lat"]) for wp in waypoints])
+            setattr(req, f"{prefix}_lons", [float(wp["lon"]) for wp in waypoints])
+            setattr(req, f"{prefix}_yaws_deg", [float(yaw_deg) for yaw_deg in resolved_yaws])
+            setattr(
+                req,
+                f"{prefix}_waypoint_action_jsons",
+                [
+                    json.dumps(wp.get("actions", []), separators=(",", ":"), sort_keys=True)
+                    if wp.get("actions")
+                    else ""
+                    for wp in waypoints
+                ],
+            )
+
+        req.depart_entry_loop_index = int(payload.get("depart_entry_loop_index", -1))
+        req.leg_spacing_m = (
+            float(leg_spacing_m)
+            if leg_spacing_m is not None and np.isfinite(float(leg_spacing_m))
+            else 0.0
+        )
+        req.chunk_span_m = (
+            float(chunk_span_m)
+            if chunk_span_m is not None and np.isfinite(float(chunk_span_m))
+            else 0.0
+        )
+        req.chunk_max_waypoints = max(0, int(chunk_max_waypoints or 0))
+
+        res = self._call_service(self._patrol_set_client, req, self.set_goal_timeout_s)
+        if res is None:
+            return False, "set_patrol_ll timeout", 0, 0
+        if bool(res.ok):
+            self.get_patrol_state()
+            self.get_route_state()
+        return (
+            bool(res.ok),
+            str(res.error),
+            int(getattr(res, "loop_input_waypoint_count", len(loop_waypoints))),
+            int(getattr(res, "loop_expanded_waypoint_count", 0)),
+        )
+
+    def cancel_patrol_mission(self) -> Tuple[bool, str]:
+        req = CancelPatrolMission.Request()
+        res = self._call_service(self._patrol_cancel_client, req, self.request_timeout_s)
+        if res is None:
+            return False, "cancel_patrol timeout"
+        if bool(res.ok):
+            self.get_patrol_state()
+            self.get_route_state()
+        return bool(res.ok), str(res.error)
+
+    def request_patrol_return_home(self) -> Tuple[bool, str]:
+        req = RequestReturnHome.Request()
+        res = self._call_service(self._patrol_return_home_client, req, self.request_timeout_s)
+        if res is None:
+            return False, "request_return_home timeout"
+        if bool(res.ok):
+            self.get_patrol_state()
+            self.get_route_state()
+        return bool(res.ok), str(res.error)
+
+    def save_waypoints_file(
+        self,
+        waypoints: List[Dict[str, float]],
+        patrol_profile: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, int]:
+        ok, err, count = save_waypoints_yaml_file(
+            self.waypoints_file,
+            waypoints,
+            patrol_profile,
+        )
         if not ok:
             self.get_logger().warning(f"save_waypoints_file failed: {err}")
             return False, err, 0
         self.get_logger().info(f"save_waypoints_file ok (count={count})")
         return True, "", int(count)
 
-    def load_waypoints_file(self) -> Tuple[bool, str, List[Dict[str, float]]]:
-        ok, err, waypoints = load_waypoints_yaml_file(self.waypoints_file)
+    def load_waypoints_file(
+        self,
+    ) -> Tuple[bool, str, List[Dict[str, float]], Optional[Dict[str, Any]]]:
+        ok, err, waypoints, patrol_profile = load_waypoints_yaml_file(self.waypoints_file)
         if not ok:
             self.get_logger().warning(f"load_waypoints_file failed: {err}")
-            return False, err, []
+            return False, err, [], None
         self.get_logger().info(f"load_waypoints_file ok (count={len(waypoints)})")
-        return True, "", waypoints
+        return True, "", waypoints, patrol_profile
 
     def _runtime_datum_payload(self) -> Dict[str, Any]:
         with self._lock:
@@ -3700,6 +3920,9 @@ class WebZoneServerNode(Node):
         ok_r, err_r = self.get_route_state()
         if not ok_r and err_r:
             self.get_logger().warning(f"route bootstrap failed: {err_r}")
+        ok_p, err_p = self.get_patrol_state()
+        if not ok_p and err_p:
+            self.get_logger().warning(f"patrol bootstrap failed: {err_p}")
         ok_c, err_c, _ = self.get_camera_ptz_state()
         if not ok_c and err_c:
             self.get_logger().warning(f"camera bootstrap failed: {err_c}")
@@ -3745,6 +3968,11 @@ class WebSocketApi:
                     f"route refresh on WS connect failed: {err_route}"
                 )
                 return
+            ok_patrol, err_patrol = await asyncio.to_thread(self.node.get_patrol_state)
+            if not ok_patrol and err_patrol:
+                self.node.get_logger().warning(
+                    f"patrol refresh on WS connect failed: {err_patrol}"
+                )
             await self.node._broadcast(self.node.snapshot_state())
         except Exception as exc:
             self.node.get_logger().warning(f"nav refresh on WS connect crashed: {exc}")
@@ -3830,6 +4058,66 @@ class WebSocketApi:
 
         return waypoints, loop, ""
 
+    def _parse_patrol_mission_from_message(
+        self, msg: Dict[str, Any]
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        payload = msg.get("patrol_mission", msg)
+        if not isinstance(payload, dict):
+            return None, "patrol_mission must be an object"
+
+        home_waypoint = payload.get("home_waypoint")
+        if not isinstance(home_waypoint, dict):
+            return None, "home_waypoint is required"
+
+        def parse_segment(name: str, allow_empty: bool) -> Tuple[Optional[List[Dict[str, Any]]], str]:
+            raw_waypoints = payload.get(f"{name}_waypoints", [])
+            if not isinstance(raw_waypoints, list):
+                return None, f"{name}_waypoints must be a list"
+            if not raw_waypoints and not allow_empty:
+                return None, f"{name}_waypoints must be a non-empty list"
+            parsed, _, err = self._parse_waypoints_from_message({"waypoints": raw_waypoints, "loop": False})
+            if parsed is None:
+                return None, err
+            for waypoint in parsed:
+                waypoint.pop("role", None)
+            return parsed, ""
+
+        loop_waypoints, loop_err = parse_segment("loop", False)
+        if loop_waypoints is None:
+            return None, loop_err
+        return_waypoints, return_err = parse_segment("return", True)
+        if return_waypoints is None:
+            return None, return_err
+        depart_waypoints, depart_err = parse_segment("depart", True)
+        if depart_waypoints is None:
+            return None, depart_err
+
+        home_segment, _, home_err = self._parse_waypoints_from_message(
+            {"waypoints": [home_waypoint], "loop": False}
+        )
+        if home_segment is None or len(home_segment) != 1:
+            return None, home_err or "invalid home_waypoint"
+        home_payload = dict(home_segment[0])
+        home_payload["role"] = "home"
+        home_payload.pop("actions", None)
+
+        depart_entry_loop_index = payload.get("depart_entry_loop_index", None)
+        try:
+            depart_entry_loop_index = int(depart_entry_loop_index)
+        except (TypeError, ValueError):
+            return None, "depart_entry_loop_index must be an integer"
+
+        return (
+            {
+                "loop_waypoints": list(loop_waypoints),
+                "home_waypoint": home_payload,
+                "return_waypoints": list(return_waypoints),
+                "depart_waypoints": list(depart_waypoints),
+                "depart_entry_loop_index": depart_entry_loop_index,
+            },
+            "",
+        )
+
     @staticmethod
     def _normalize_waypoint_actions(raw_actions: Any, waypoint_index: int) -> Tuple[List[Dict[str, Any]], str]:
         if raw_actions in (None, "", []):
@@ -3904,6 +4192,10 @@ class WebSocketApi:
         if op_name == "set_goal_ll":
             return True
         if op_name == "set_route_ll":
+            return True
+        if op_name == "set_patrol_ll":
+            return True
+        if op_name == "request_return_home":
             return True
         if op_name == "set_manual_cmd":
             return True
@@ -4083,6 +4375,11 @@ class WebSocketApi:
                 self.node.get_logger().warning(
                     f"get_state route refresh failed: {err_route}"
                 )
+            ok_patrol, err_patrol = await asyncio.to_thread(self.node.get_patrol_state)
+            if not ok_patrol and err_patrol:
+                self.node.get_logger().warning(
+                    f"get_state patrol refresh failed: {err_patrol}"
+                )
             payload = self.node.snapshot_state()
             if client_req_id is not None:
                 payload["client_req_id"] = client_req_id
@@ -4260,7 +4557,13 @@ class WebSocketApi:
                     client_req_id=client_req_id,
                 )
                 return
-            ok, err, count = await asyncio.to_thread(self.node.save_waypoints_file, waypoints)
+            patrol_profile_raw = msg.get("patrol_profile")
+            patrol_profile = patrol_profile_raw if isinstance(patrol_profile_raw, dict) else None
+            ok, err, count = await asyncio.to_thread(
+                self.node.save_waypoints_file,
+                waypoints,
+                patrol_profile,
+            )
             await self._send_ack(
                 ws,
                 "save_waypoints_file",
@@ -4272,7 +4575,7 @@ class WebSocketApi:
             return
 
         if op == "load_waypoints_file":
-            ok, err, waypoints = await asyncio.to_thread(self.node.load_waypoints_file)
+            ok, err, waypoints, patrol_profile = await asyncio.to_thread(self.node.load_waypoints_file)
             await self._send_ack(
                 ws,
                 "load_waypoints_file",
@@ -4282,6 +4585,7 @@ class WebSocketApi:
                 extra={
                     "waypoint_count": int(len(waypoints)),
                     "waypoints": list(waypoints) if ok else [],
+                    **({"patrol_profile": patrol_profile} if ok and patrol_profile else {}),
                 },
             )
             return
@@ -4502,6 +4806,52 @@ class WebSocketApi:
                 await self.node._broadcast(self.node.snapshot_state())
             return
 
+        if op == "set_patrol_ll":
+            patrol_payload, parse_err = self._parse_patrol_mission_from_message(msg)
+            if patrol_payload is None:
+                await self._send_ack(
+                    ws,
+                    "set_patrol_ll",
+                    False,
+                    parse_err,
+                    client_req_id=client_req_id,
+                )
+                return
+            leg_spacing_m, chunk_span_m, chunk_max_waypoints, options_err = (
+                self._parse_route_options(msg)
+            )
+            if options_err:
+                await self._send_ack(
+                    ws,
+                    "set_patrol_ll",
+                    False,
+                    options_err,
+                    client_req_id=client_req_id,
+                )
+                return
+            ok, err, input_count, expanded_count = await asyncio.to_thread(
+                self.node.set_patrol_mission,
+                patrol_payload,
+                leg_spacing_m,
+                chunk_span_m,
+                chunk_max_waypoints,
+            )
+            await self._send_ack(
+                ws,
+                "set_patrol_ll",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra={
+                    "loop_input_waypoint_count": int(input_count),
+                    "loop_expanded_waypoint_count": int(expanded_count),
+                    **self._control_lock_extra(),
+                },
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
         if op == "cancel_goal":
             ok, err = await asyncio.to_thread(self.node.cancel_nav_goal)
             await self._send_ack(
@@ -4513,6 +4863,29 @@ class WebSocketApi:
             ok, err = await asyncio.to_thread(self.node.cancel_route_mission)
             await self._send_ack(
                 ws, "cancel_route", ok, err, client_req_id=client_req_id
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "cancel_patrol":
+            ok, err = await asyncio.to_thread(self.node.cancel_patrol_mission)
+            await self._send_ack(
+                ws, "cancel_patrol", ok, err, client_req_id=client_req_id
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "request_return_home":
+            ok, err = await asyncio.to_thread(self.node.request_patrol_return_home)
+            await self._send_ack(
+                ws,
+                "request_return_home",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra=self._control_lock_extra(),
             )
             if ok:
                 await self.node._broadcast(self.node.snapshot_state())

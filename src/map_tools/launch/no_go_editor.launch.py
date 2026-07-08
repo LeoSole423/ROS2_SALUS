@@ -29,6 +29,10 @@ def generate_launch_description():
     route_set_service = LaunchConfiguration("route_set_service")
     route_cancel_service = LaunchConfiguration("route_cancel_service")
     route_get_state_service = LaunchConfiguration("route_get_state_service")
+    patrol_set_service = LaunchConfiguration("patrol_set_service")
+    patrol_cancel_service = LaunchConfiguration("patrol_cancel_service")
+    patrol_get_state_service = LaunchConfiguration("patrol_get_state_service")
+    patrol_return_home_service = LaunchConfiguration("patrol_return_home_service")
     teleop_cmd_topic = LaunchConfiguration("teleop_cmd_topic")
 
     nav_snapshot_service = LaunchConfiguration("nav_snapshot_service")
@@ -106,6 +110,19 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "route_get_state_service", default_value="/route_executor/get_state"
+            ),
+            DeclareLaunchArgument(
+                "patrol_set_service", default_value="/route_executor/set_patrol_ll"
+            ),
+            DeclareLaunchArgument(
+                "patrol_cancel_service", default_value="/route_executor/cancel_patrol"
+            ),
+            DeclareLaunchArgument(
+                "patrol_get_state_service", default_value="/route_executor/get_patrol_state"
+            ),
+            DeclareLaunchArgument(
+                "patrol_return_home_service",
+                default_value="/route_executor/request_return_home",
             ),
             DeclareLaunchArgument(
                 "nav_snapshot_service",
@@ -259,6 +276,10 @@ def generate_launch_description():
                         "route_set_service": route_set_service,
                         "route_cancel_service": route_cancel_service,
                         "route_get_state_service": route_get_state_service,
+                        "patrol_set_service": patrol_set_service,
+                        "patrol_cancel_service": patrol_cancel_service,
+                        "patrol_get_state_service": patrol_get_state_service,
+                        "patrol_return_home_service": patrol_return_home_service,
                         "teleop_cmd_topic": teleop_cmd_topic,
                         "nav_snapshot_service": nav_snapshot_service,
                         "nav_telemetry_topic": nav_telemetry_topic,

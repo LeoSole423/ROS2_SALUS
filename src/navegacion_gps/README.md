@@ -130,3 +130,27 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
   - `return_home_rest` -> `Return Home` tras ~`20 s`
   - `stale` -> `Telemetry Lost`
   - `suspect` -> `Sensor Check`
+
+## Patrol Mission estructurada en `sim_global_v2_wifi`
+- Lanzar:
+  - `./tools/launch_sim_global_v2_wifi.sh`
+- Conectar COCKPIT a `ws://localhost:8766`.
+- En la cola normal de waypoints:
+  - dibujar o cargar el loop principal
+  - seleccionar un waypoint y usar `SET HOME`
+  - con la cola lista, usar `USE LOOP`
+  - seleccionar el waypoint del loop donde debe reingresar la salida desde HOME y usar `SET ENTRY`
+  - seleccionar waypoints para el conector de retorno y usar `SET RETURN`
+  - seleccionar waypoints para el conector de salida desde HOME y usar `SET DEPART`
+- Ejecutar:
+  - `START PATROL`
+- Forzar retorno por batería o manualmente:
+  - botón `RETURN HOME` en COCKPIT
+  - o `./tools/sim_battery.sh preset return_home_rest`
+- Estado esperado:
+  - el backend publica `patrol_mission` y `route_mission` por `ws://localhost:8766`
+  - `route_executor` expone:
+    - `/route_executor/set_patrol_ll`
+    - `/route_executor/cancel_patrol`
+    - `/route_executor/get_patrol_state`
+    - `/route_executor/request_return_home`
