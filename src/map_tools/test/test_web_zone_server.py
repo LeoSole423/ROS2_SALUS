@@ -4,7 +4,51 @@ from types import SimpleNamespace
 from diagnostic_msgs.msg import DiagnosticStatus
 import pytest
 
-from map_tools.web_zone_server import ROSBAG_TOPIC_PROFILES, WebZoneServerNode
+from map_tools.web_zone_server import ROSBAG_TOPIC_PROFILES, WebSocketApi, WebZoneServerNode
+
+
+def test_normalize_waypoint_actions_accepts_navigation_profiles():
+    actions, error = WebSocketApi._normalize_waypoint_actions(
+        [{"type": "set_navigation_profile", "profile": "RURAL"}],
+        2,
+    )
+
+    assert error == ""
+    assert actions == [{"type": "set_navigation_profile", "profile": "rural"}]
+
+
+def test_normalize_waypoint_actions_rejects_unknown_navigation_profile():
+    actions, error = WebSocketApi._normalize_waypoint_actions(
+        [{"type": "set_navigation_profile", "profile": "forest"}],
+        2,
+    )
+
+    assert actions == []
+    assert "must be 'urban' or 'rural'" in error
+
+
+def test_patrol_parser_accepts_empty_optional_connectors():
+    api = object.__new__(WebSocketApi)
+    patrol, error = api._parse_patrol_mission_from_message(
+        {
+            "patrol_mission": {
+                "loop_waypoints": [
+                    {"lat": -31.0, "lon": -64.0},
+                    {"lat": -31.0, "lon": -64.001},
+                ],
+                "home_waypoint": {"lat": -31.001, "lon": -64.0},
+                "return_waypoints": [],
+                "depart_waypoints": [],
+                "depart_entry_loop_index": 0,
+            }
+        }
+    )
+
+    assert error == ""
+    assert patrol is not None
+    assert len(patrol["loop_waypoints"]) == 2
+    assert patrol["return_waypoints"] == []
+    assert patrol["depart_waypoints"] == []
 
 
 def _diag_level(value) -> int:

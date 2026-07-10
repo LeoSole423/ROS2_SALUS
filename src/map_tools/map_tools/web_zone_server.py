@@ -4073,7 +4073,9 @@ class WebSocketApi:
             raw_waypoints = payload.get(f"{name}_waypoints", [])
             if not isinstance(raw_waypoints, list):
                 return None, f"{name}_waypoints must be a list"
-            if not raw_waypoints and not allow_empty:
+            if not raw_waypoints:
+                if allow_empty:
+                    return [], ""
                 return None, f"{name}_waypoints must be a non-empty list"
             parsed, _, err = self._parse_waypoints_from_message({"waypoints": raw_waypoints, "loop": False})
             if parsed is None:
@@ -4129,18 +4131,27 @@ class WebSocketApi:
             if not isinstance(raw_action, dict):
                 return [], f"waypoint[{waypoint_index}].actions[{action_index}] must be an object"
             action_type = str(raw_action.get("type", "")).strip()
-            if action_type != "brake_hold":
-                return [], f"unsupported waypoint action type: {action_type or '<empty>'}"
-            duration_s = WebZoneServerNode._safe_float(raw_action.get("duration_s"), 0.0)
-            if duration_s <= 0.0 or duration_s > 600.0:
-                return [], f"waypoint[{waypoint_index}] brake_hold duration_s must be > 0 and <= 600"
-            brake_pct = max(0, min(100, WebZoneServerNode._safe_int(raw_action.get("brake_pct"), 100)))
             label = str(raw_action.get("label", "") or "").strip()
-            action: Dict[str, Any] = {
-                "type": "brake_hold",
-                "duration_s": float(duration_s),
-                "brake_pct": int(brake_pct),
-            }
+            if action_type == "brake_hold":
+                duration_s = WebZoneServerNode._safe_float(raw_action.get("duration_s"), 0.0)
+                if duration_s <= 0.0 or duration_s > 600.0:
+                    return [], f"waypoint[{waypoint_index}] brake_hold duration_s must be > 0 and <= 600"
+                action: Dict[str, Any] = {
+                    "type": "brake_hold",
+                    "duration_s": float(duration_s),
+                    "brake_pct": int(
+                        max(0, min(100, WebZoneServerNode._safe_int(raw_action.get("brake_pct"), 100)))
+                    ),
+                }
+            elif action_type == "set_navigation_profile":
+                profile = str(raw_action.get("profile", "") or "").strip().lower()
+                if profile not in {"urban", "rural"}:
+                    return [], (
+                        f"waypoint[{waypoint_index}] set_navigation_profile profile must be 'urban' or 'rural'"
+                    )
+                action = {"type": "set_navigation_profile", "profile": profile}
+            else:
+                return [], f"unsupported waypoint action type: {action_type or '<empty>'}"
             if label:
                 action["label"] = label[:80]
             actions.append(action)
