@@ -17,6 +17,8 @@ from navegacion_gps.route_executor import (
     PATROL_PHASE_LOOP_MAIN,
     PATROL_PHASE_PARKED_HOME,
     PATROL_PHASE_RETURN_CONNECTOR,
+    NAVIGATION_PROFILE_RURAL,
+    NAVIGATION_PROFILE_URBAN,
     PatrolMissionProfile,
     RouteExecutorNode,
     WAYPOINT_ROLE_HOME,
@@ -308,16 +310,94 @@ def test_expand_route_waypoints_handles_loop_closure_without_duplicating_start()
     assert expanded.count(base[0]) == 1
 
 
-def test_route_action_jsons_accept_brake_hold_only():
+def test_route_action_jsons_accept_brake_hold_and_navigation_profile():
     actions, err = _parse_route_action_jsons(
-        ['[{"type":"brake_hold","duration_s":5,"brake_pct":100}]', ""],
+        [
+            '[{"type":"brake_hold","duration_s":5,"brake_pct":100},'
+            '{"type":"set_navigation_profile","profile":"rural"}]',
+            "",
+        ],
         2,
     )
 
     assert err == ""
     assert actions is not None
-    assert actions[0] == '[{"brake_pct":100,"duration_s":5.0,"type":"brake_hold"}]'
+    assert actions[0] == (
+        '[{"brake_pct":100,"duration_s":5.0,"type":"brake_hold"},'
+        '{"profile":"rural","type":"set_navigation_profile"}]'
+    )
     assert actions[1] == ""
+
+
+def test_route_action_jsons_reject_unknown_navigation_profile():
+    actions, err = _parse_route_action_jsons(
+        ['[{"type":"set_navigation_profile","profile":"forest"}]'],
+        1,
+    )
+
+    assert actions is None
+    assert "must use one of" in err
+
+
+class _CompletedFuture:
+    def __init__(self, result) -> None:
+        self._result = result
+
+    def result(self):
+        return self._result
+
+
+class _ProfileParameterClient:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def wait_for_service(self, timeout_sec: float) -> bool:
+        return True
+
+    def call_async(self, request):
+        self.requests.append(request)
+        return _CompletedFuture(
+            type("Response", (), {"results": [type("Result", (), {"successful": True, "reason": ""})()] * 2})()
+        )
+
+
+def test_navigation_profile_updates_both_costmap_inflation_layers():
+    node = object.__new__(RouteExecutorNode)
+    node._lock = threading.RLock()
+    node._active_navigation_profile = NAVIGATION_PROFILE_URBAN
+    node.navigation_profile_timeout_s = 1.0
+    node._navigation_profiles = {
+        NAVIGATION_PROFILE_URBAN: {
+            "local_radius": 1.4,
+            "global_radius": 1.5,
+            "local_scaling": 1.3,
+            "global_scaling": 1.4,
+        },
+        NAVIGATION_PROFILE_RURAL: {
+            "local_radius": 0.8,
+            "global_radius": 0.8,
+            "local_scaling": 3.0,
+            "global_scaling": 3.0,
+        },
+    }
+    node._local_costmap_parameters = _ProfileParameterClient()
+    node._global_costmap_parameters = _ProfileParameterClient()
+    node._wait_for_future = lambda future, timeout_s: future.result()
+    node._clear_costmaps = lambda: (True, "")
+
+    ok, error = RouteExecutorNode._apply_navigation_profile(node, NAVIGATION_PROFILE_RURAL)
+
+    assert ok is True
+    assert error == ""
+    assert node._active_navigation_profile == NAVIGATION_PROFILE_RURAL
+    for client in (node._local_costmap_parameters, node._global_costmap_parameters):
+        parameters = client.requests[0].parameters
+        assert [item.name for item in parameters] == [
+            "inflation_layer.inflation_radius",
+            "inflation_layer.cost_scaling_factor",
+        ]
+    assert node._local_costmap_parameters.requests[0].parameters[0].value.double_value == pytest.approx(0.8)
+    assert node._global_costmap_parameters.requests[0].parameters[1].value.double_value == pytest.approx(3.0)
 
 
 def test_waypoint_roles_accept_single_home():

@@ -18,7 +18,9 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallb
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.time import Time
+from rcl_interfaces.srv import SetParameters
 from robot_localization.srv import FromLL
 from sensor_msgs.msg import BatteryState
 import tf2_geometry_msgs  # noqa: F401
@@ -51,6 +53,9 @@ PATROL_PHASE_LOOP_MAIN = "loop_main"
 PATROL_PHASE_RETURN_PENDING = "return_pending"
 PATROL_PHASE_RETURN_CONNECTOR = "return_connector"
 PATROL_PHASE_PARKED_HOME = "parked_home"
+NAVIGATION_PROFILE_URBAN = "urban"
+NAVIGATION_PROFILE_RURAL = "rural"
+NAVIGATION_PROFILES = {NAVIGATION_PROFILE_URBAN, NAVIGATION_PROFILE_RURAL}
 
 BLOCKING_FAILURE_CODES = {
     "NO_VALID_PATH",
@@ -85,6 +90,7 @@ class RouteAction:
     action_type: str
     duration_s: float = 0.0
     brake_pct: int = 100
+    profile: str = ""
     label: str = ""
 
 
@@ -177,6 +183,8 @@ def _serialize_route_actions(actions: Sequence[RouteAction]) -> str:
         if action.action_type == "brake_hold":
             item["duration_s"] = float(action.duration_s)
             item["brake_pct"] = int(action.brake_pct)
+        elif action.action_type == "set_navigation_profile":
+            item["profile"] = str(action.profile)
         if action.label:
             item["label"] = str(action.label)
         payload.append(item)
@@ -201,25 +209,40 @@ def _parse_route_action_json(action_json: str, index: int) -> Tuple[Optional[str
         if not isinstance(item, dict):
             return None, f"waypoint_action_jsons[{index}][{action_idx}] must be an object"
         action_type = str(item.get("type", "")).strip()
-        if action_type != "brake_hold":
-            return None, f"unsupported waypoint action type: {action_type or '<empty>'}"
-        try:
-            duration_s = float(item.get("duration_s", 0.0))
-            brake_pct = int(float(item.get("brake_pct", 100)))
-        except (TypeError, ValueError):
-            return None, f"invalid brake_hold action at waypoint {index}"
-        if (not np.isfinite(duration_s)) or duration_s <= 0.0 or duration_s > 600.0:
-            return None, f"brake_hold duration_s at waypoint {index} must be > 0 and <= 600"
-        brake_pct = max(0, min(100, brake_pct))
         label = str(item.get("label", "") or "").strip()
-        actions.append(
-            RouteAction(
-                action_type="brake_hold",
-                duration_s=float(duration_s),
-                brake_pct=int(brake_pct),
-                label=label[:80],
+        if action_type == "brake_hold":
+            try:
+                duration_s = float(item.get("duration_s", 0.0))
+                brake_pct = int(float(item.get("brake_pct", 100)))
+            except (TypeError, ValueError):
+                return None, f"invalid brake_hold action at waypoint {index}"
+            if (not np.isfinite(duration_s)) or duration_s <= 0.0 or duration_s > 600.0:
+                return None, f"brake_hold duration_s at waypoint {index} must be > 0 and <= 600"
+            actions.append(
+                RouteAction(
+                    action_type="brake_hold",
+                    duration_s=float(duration_s),
+                    brake_pct=max(0, min(100, brake_pct)),
+                    label=label[:80],
+                )
             )
-        )
+            continue
+        if action_type == "set_navigation_profile":
+            profile = str(item.get("profile", "") or "").strip().lower()
+            if profile not in NAVIGATION_PROFILES:
+                return None, (
+                    f"set_navigation_profile at waypoint {index} must use "
+                    f"one of {sorted(NAVIGATION_PROFILES)}"
+                )
+            actions.append(
+                RouteAction(
+                    action_type="set_navigation_profile",
+                    profile=profile,
+                    label=label[:80],
+                )
+            )
+            continue
+        return None, f"unsupported waypoint action type: {action_type or '<empty>'}"
     return _serialize_route_actions(actions), ""
 
 
@@ -252,6 +275,7 @@ def _actions_from_json(action_json: str) -> List[RouteAction]:
                 action_type=str(item.get("type", "")),
                 duration_s=float(item.get("duration_s", 0.0)),
                 brake_pct=int(item.get("brake_pct", 100)),
+                profile=str(item.get("profile", "") or ""),
                 label=str(item.get("label", "") or ""),
             )
         )
@@ -1340,6 +1364,17 @@ class RouteExecutorNode(Node):
             "clear_global_costmap_service",
             "/global_costmap/clear_entirely_global_costmap",
         )
+        self.declare_parameter("local_costmap_node", "/local_costmap/local_costmap")
+        self.declare_parameter("global_costmap_node", "/global_costmap/global_costmap")
+        self.declare_parameter("urban_local_inflation_radius", 1.4)
+        self.declare_parameter("urban_global_inflation_radius", 1.5)
+        self.declare_parameter("urban_local_cost_scaling_factor", 1.3)
+        self.declare_parameter("urban_global_cost_scaling_factor", 1.4)
+        self.declare_parameter("rural_local_inflation_radius", 0.8)
+        self.declare_parameter("rural_global_inflation_radius", 0.8)
+        self.declare_parameter("rural_local_cost_scaling_factor", 3.0)
+        self.declare_parameter("rural_global_cost_scaling_factor", 3.0)
+        self.declare_parameter("navigation_profile_timeout_s", 3.0)
 
         self.nav_set_goal_service = str(self.get_parameter("nav_set_goal_service").value)
         self.nav_cancel_goal_service = str(self.get_parameter("nav_cancel_goal_service").value)
@@ -1426,6 +1461,33 @@ class RouteExecutorNode(Node):
         self.clear_global_costmap_service = str(
             self.get_parameter("clear_global_costmap_service").value
         )
+        self.local_costmap_node = str(self.get_parameter("local_costmap_node").value)
+        self.global_costmap_node = str(self.get_parameter("global_costmap_node").value)
+        self.navigation_profile_timeout_s = max(
+            0.5, float(self.get_parameter("navigation_profile_timeout_s").value)
+        )
+        self._navigation_profiles = {
+            NAVIGATION_PROFILE_URBAN: {
+                "local_radius": float(self.get_parameter("urban_local_inflation_radius").value),
+                "global_radius": float(self.get_parameter("urban_global_inflation_radius").value),
+                "local_scaling": float(
+                    self.get_parameter("urban_local_cost_scaling_factor").value
+                ),
+                "global_scaling": float(
+                    self.get_parameter("urban_global_cost_scaling_factor").value
+                ),
+            },
+            NAVIGATION_PROFILE_RURAL: {
+                "local_radius": float(self.get_parameter("rural_local_inflation_radius").value),
+                "global_radius": float(self.get_parameter("rural_global_inflation_radius").value),
+                "local_scaling": float(
+                    self.get_parameter("rural_local_cost_scaling_factor").value
+                ),
+                "global_scaling": float(
+                    self.get_parameter("rural_global_cost_scaling_factor").value
+                ),
+            },
+        }
 
         self._lock = threading.Lock()
         self._route_input: List[RouteWaypoint] = []
@@ -1479,6 +1541,9 @@ class RouteExecutorNode(Node):
         self._return_home_active = False
         self._return_home_exit_route_index = -1
         self._return_home_exit_input_index = -1
+        # The launch configuration is urban by default. This value tracks only
+        # successful profile changes made while this executor is alive.
+        self._active_navigation_profile = NAVIGATION_PROFILE_URBAN
         self._patrol_mission_profile: Optional[PatrolMissionProfile] = None
         self._patrol_mission_id = ""
         self._patrol_phase = PATROL_PHASE_IDLE
@@ -1512,6 +1577,16 @@ class RouteExecutorNode(Node):
         self._clear_global_costmap_client = self.create_client(
             ClearEntireCostmap,
             self.clear_global_costmap_service,
+            callback_group=self._client_group,
+        )
+        self._local_costmap_parameters = self.create_client(
+            SetParameters,
+            f"{self.local_costmap_node.rstrip('/')}/set_parameters",
+            callback_group=self._client_group,
+        )
+        self._global_costmap_parameters = self.create_client(
+            SetParameters,
+            f"{self.global_costmap_node.rstrip('/')}/set_parameters",
             callback_group=self._client_group,
         )
         self._fromll_client = self.create_client(
@@ -1643,6 +1718,137 @@ class RouteExecutorNode(Node):
             return None
         future = client.call_async(request)
         return self._wait_for_future(future, timeout_s)
+
+    def _set_costmap_inflation_parameters(
+        self,
+        client: Any,
+        *,
+        radius: float,
+        scaling: float,
+        label: str,
+    ) -> Tuple[bool, str]:
+        if radius <= 0.0 or scaling <= 0.0:
+            return False, f"invalid {label} inflation values"
+        if not client.wait_for_service(timeout_sec=min(self.navigation_profile_timeout_s, 2.0)):
+            return False, f"{label} costmap parameter service unavailable"
+        try:
+            request = SetParameters.Request()
+            request.parameters = [
+                parameter.to_parameter_msg()
+                for parameter in (
+                    Parameter(
+                        name="inflation_layer.inflation_radius",
+                        value=float(radius),
+                    ),
+                    Parameter(
+                        name="inflation_layer.cost_scaling_factor",
+                        value=float(scaling),
+                    ),
+                )
+            ]
+            response = self._wait_for_future(
+                client.call_async(request), self.navigation_profile_timeout_s
+            )
+        except Exception as exc:
+            return False, f"{label} costmap parameter update failed: {exc}"
+        if response is None:
+            return False, f"{label} costmap parameter update timed out"
+        results = list(response.results)
+        failures = [
+            str(getattr(result, "reason", "parameter rejected"))
+            for result in results
+            if not bool(getattr(result, "successful", False))
+        ]
+        if failures:
+            return False, f"{label} costmap rejected profile: {'; '.join(failures)}"
+        return True, ""
+
+    def _clear_costmaps(self) -> Tuple[bool, str]:
+        errors: List[str] = []
+        for label, client in (
+            ("local", self._clear_local_costmap_client),
+            ("global", self._clear_global_costmap_client),
+        ):
+            try:
+                res = self._call_service(
+                    client,
+                    ClearEntireCostmap.Request(),
+                    min(self.request_timeout_s, self.navigation_profile_timeout_s),
+                )
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+                continue
+            if res is None:
+                errors.append(f"{label} clear timeout")
+        return (not errors), "; ".join(errors)
+
+    def _apply_navigation_profile(self, profile: str) -> Tuple[bool, str]:
+        target = str(profile or "").strip().lower()
+        if target not in NAVIGATION_PROFILES:
+            return False, f"unknown navigation profile: {profile}"
+        with self._lock:
+            current = str(self._active_navigation_profile)
+        if target == current:
+            return True, ""
+
+        values = self._navigation_profiles[target]
+        previous_values = self._navigation_profiles.get(
+            current,
+            self._navigation_profiles[NAVIGATION_PROFILE_URBAN],
+        )
+        local_ok, local_error = self._set_costmap_inflation_parameters(
+            self._local_costmap_parameters,
+            radius=float(values["local_radius"]),
+            scaling=float(values["local_scaling"]),
+            label="local",
+        )
+        if not local_ok:
+            return False, local_error
+        global_ok, global_error = self._set_costmap_inflation_parameters(
+            self._global_costmap_parameters,
+            radius=float(values["global_radius"]),
+            scaling=float(values["global_scaling"]),
+            label="global",
+        )
+        if not global_ok:
+            rollback_ok, rollback_error = self._set_costmap_inflation_parameters(
+                self._local_costmap_parameters,
+                radius=float(previous_values["local_radius"]),
+                scaling=float(previous_values["local_scaling"]),
+                label="local rollback",
+            )
+            clear_ok, clear_error = self._clear_costmaps()
+            details = [global_error]
+            if not rollback_ok:
+                details.append(rollback_error)
+            if not clear_ok:
+                details.append(clear_error)
+            return False, "; ".join(part for part in details if part)
+
+        clear_ok, clear_error = self._clear_costmaps()
+        with self._lock:
+            self._active_navigation_profile = target
+        if not clear_ok:
+            self.get_logger().warning(
+                f"Navigation profile {target} applied but costmap clear failed: {clear_error}"
+            )
+        return True, ""
+
+    def _restore_urban_navigation_profile(self) -> None:
+        with self._lock:
+            current = str(getattr(self, "_active_navigation_profile", NAVIGATION_PROFILE_URBAN))
+        if current == NAVIGATION_PROFILE_URBAN:
+            return
+        ok, error = self._apply_navigation_profile(NAVIGATION_PROFILE_URBAN)
+        if ok:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "NAVIGATION_PROFILE_RESTORED",
+                "Navigation profile restored to urban",
+                details={"profile": NAVIGATION_PROFILE_URBAN},
+            )
+        else:
+            self.get_logger().error(f"Failed restoring urban navigation profile: {error}")
 
     @staticmethod
     def _diag_level_value(value: Any) -> int:
@@ -3090,6 +3296,69 @@ class RouteExecutorNode(Node):
     ) -> None:
         actions = _actions_from_json(action_json)
         for action in actions:
+            if action.action_type == "set_navigation_profile":
+                with self._lock:
+                    if (
+                        not self._mission_active
+                        or self._mission_paused
+                        or int(self._current_target_index) != int(waypoint_index)
+                    ):
+                        self._action_active = False
+                        self._action_until = None
+                        return
+                    self._action_active = True
+                    self._action_waypoint_index = int(waypoint_index)
+                    self._action_type = str(action.action_type)
+                    self._action_until = None
+                    self._mission_status = self._status_with_note_locked(
+                        f"route action set_navigation_profile ({action.profile})"
+                    )
+                self._publish_route_event(
+                    DiagnosticStatus.OK,
+                    "ROUTE_WAYPOINT_ACTION_STARTED",
+                    "Route waypoint action started",
+                    details={
+                        "waypoint_index": int(waypoint_index),
+                        "action_type": action.action_type,
+                        "profile": action.profile,
+                    },
+                )
+                ok, error = self._apply_navigation_profile(action.profile)
+                if not ok:
+                    self._apply_brake()
+                    with self._lock:
+                        self._action_active = False
+                        self._action_until = None
+                        self._mission_active = False
+                        self._mission_paused = False
+                        self._awaiting_chunk_result = False
+                        self._active_chunk = []
+                        self._mission_status = self._status_with_note_locked(
+                            f"route failed: navigation profile {action.profile}: {error}"
+                        )
+                    self._publish_route_event(
+                        DiagnosticStatus.ERROR,
+                        "NAVIGATION_PROFILE_FAILED",
+                        "Navigation profile action failed",
+                        details={
+                            "waypoint_index": int(waypoint_index),
+                            "profile": action.profile,
+                            "error": str(error),
+                        },
+                    )
+                    self._restore_urban_navigation_profile()
+                    self._publish_empty_route_paths()
+                    return
+                self._publish_route_event(
+                    DiagnosticStatus.OK,
+                    "NAVIGATION_PROFILE_APPLIED",
+                    "Navigation profile applied",
+                    details={
+                        "waypoint_index": int(waypoint_index),
+                        "profile": action.profile,
+                    },
+                )
+                continue
             if action.action_type != "brake_hold":
                 continue
             duration_s = max(0.0, float(action.duration_s))
@@ -3181,6 +3450,7 @@ class RouteExecutorNode(Node):
                 should_send_next = True
 
         if should_clear_paths:
+            self._restore_urban_navigation_profile()
             self._publish_route_event(
                 DiagnosticStatus.OK,
                 "RETURN_HOME_COMPLETED" if should_finish_patrol_home else "ROUTE_MISSION_COMPLETED",
@@ -3201,6 +3471,7 @@ class RouteExecutorNode(Node):
             )
             with self._lock:
                 self._reset_mission_locked(f"patrol failed: {err}")
+            self._restore_urban_navigation_profile()
             self._publish_empty_route_paths()
             return
         if should_send_home:
@@ -3232,6 +3503,7 @@ class RouteExecutorNode(Node):
                 self._return_home_exit_route_index = -1
                 self._return_home_exit_input_index = -1
                 self._mission_status = self._status_with_note_locked(f"return home failed: {err}")
+            self._restore_urban_navigation_profile()
             self._publish_empty_route_paths()
             return
         if should_send_next:
@@ -3250,6 +3522,7 @@ class RouteExecutorNode(Node):
                 self._awaiting_chunk_result = False
                 self._active_chunk = []
                 self._mission_status = self._status_with_note_locked(f"route failed: {err}")
+            self._restore_urban_navigation_profile()
             self._publish_empty_route_paths()
 
     def _start_next_chunk_after_success(self) -> None:
@@ -3348,6 +3621,7 @@ class RouteExecutorNode(Node):
             )
 
         if should_clear_paths:
+            self._restore_urban_navigation_profile()
             if should_finish_patrol_home:
                 self._publish_route_event(
                     DiagnosticStatus.OK,
@@ -3376,6 +3650,7 @@ class RouteExecutorNode(Node):
             )
             with self._lock:
                 self._reset_mission_locked(f"patrol failed: {err}")
+            self._restore_urban_navigation_profile()
             self._publish_empty_route_paths()
             return
         if should_run_action:
@@ -3563,6 +3838,7 @@ class RouteExecutorNode(Node):
             self._publish_empty_active_chunk_path()
             return
         if should_complete_return_home:
+            self._restore_urban_navigation_profile()
             self._publish_route_event(
                 DiagnosticStatus.OK,
                 "RETURN_HOME_COMPLETED",
@@ -3583,6 +3859,7 @@ class RouteExecutorNode(Node):
             self._start_next_chunk_after_success()
             return
         if should_stop:
+            self._restore_urban_navigation_profile()
             event_code = (
                 "ROUTE_MISSION_CANCELLED"
                 if str(stop_reason).lower() == "cancelled"
@@ -4082,6 +4359,7 @@ class RouteExecutorNode(Node):
         )
         with self._lock:
             self._reset_mission_locked("route cancelled")
+        self._restore_urban_navigation_profile()
         self._publish_empty_route_paths()
         response.ok = bool(cancel_ok or cancel_err == "cancel_goal timeout")
         response.error = "" if response.ok else str(cancel_err)
