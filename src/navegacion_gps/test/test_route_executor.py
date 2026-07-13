@@ -1,5 +1,6 @@
 import threading
 import time
+from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
 import pytest
@@ -398,6 +399,50 @@ def test_navigation_profile_updates_both_costmap_inflation_layers():
         ]
     assert node._local_costmap_parameters.requests[0].parameters[0].value.double_value == pytest.approx(0.8)
     assert node._global_costmap_parameters.requests[0].parameters[1].value.double_value == pytest.approx(3.0)
+
+
+def test_operator_navigation_profile_service_validates_and_rejects_active_mission():
+    node = object.__new__(RouteExecutorNode)
+    node._lock = threading.RLock()
+    node._mission_active = False
+    node._mission_paused = False
+    node._patrol_active = False
+    node._active_navigation_profile = NAVIGATION_PROFILE_URBAN
+    node.events = []
+    node._apply_navigation_profile = lambda profile: (True, "")
+    node._publish_route_event = lambda *args, **kwargs: node.events.append((args, kwargs))
+
+    invalid = RouteExecutorNode._on_set_navigation_profile(
+        node,
+        SimpleNamespace(profile="forest"),
+        SimpleNamespace(),
+    )
+    assert invalid.ok is False
+    assert "urban' or 'rural" in invalid.error
+    assert invalid.active_profile == NAVIGATION_PROFILE_URBAN
+
+    node._mission_active = True
+    active = RouteExecutorNode._on_set_navigation_profile(
+        node,
+        SimpleNamespace(profile="rural"),
+        SimpleNamespace(),
+    )
+    assert active.ok is False
+    assert "mission is active" in active.error
+
+    node._mission_active = False
+    node._apply_navigation_profile = lambda profile: (
+        setattr(node, "_active_navigation_profile", profile) or True,
+        "",
+    )
+    applied = RouteExecutorNode._on_set_navigation_profile(
+        node,
+        SimpleNamespace(profile="rural"),
+        SimpleNamespace(),
+    )
+    assert applied.ok is True
+    assert applied.active_profile == NAVIGATION_PROFILE_RURAL
+    assert node.events
 
 
 def test_waypoint_roles_accept_single_home():

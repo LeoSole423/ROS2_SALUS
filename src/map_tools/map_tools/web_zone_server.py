@@ -52,6 +52,7 @@ from interfaces.srv import (
     RequestReturnHome,
     GetZonesState,
     SetManualMode,
+    SetNavigationProfile,
     SetNavGoalLL,
     SetPatrolMissionLL,
     SetRouteMissionLL,
@@ -213,6 +214,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("route_set_service", "/route_executor/set_route_ll")
         self.declare_parameter("route_cancel_service", "/route_executor/cancel_route")
         self.declare_parameter("route_get_state_service", "/route_executor/get_state")
+        self.declare_parameter("set_navigation_profile_service", "/route_executor/set_navigation_profile")
         self.declare_parameter("patrol_set_service", "/route_executor/set_patrol_ll")
         self.declare_parameter("patrol_cancel_service", "/route_executor/cancel_patrol")
         self.declare_parameter("patrol_get_state_service", "/route_executor/get_patrol_state")
@@ -296,6 +298,9 @@ class WebZoneServerNode(Node):
         self.route_cancel_service = str(self.get_parameter("route_cancel_service").value)
         self.route_get_state_service = str(
             self.get_parameter("route_get_state_service").value
+        )
+        self.set_navigation_profile_service = str(
+            self.get_parameter("set_navigation_profile_service").value
         )
         self.patrol_set_service = str(self.get_parameter("patrol_set_service").value)
         self.patrol_cancel_service = str(self.get_parameter("patrol_cancel_service").value)
@@ -562,6 +567,9 @@ class WebZoneServerNode(Node):
         )
         self._route_get_state_client = self.create_client(
             GetRouteMissionState, self.route_get_state_service
+        )
+        self._navigation_profile_client = self.create_client(
+            SetNavigationProfile, self.set_navigation_profile_service
         )
         self._patrol_set_client = self.create_client(
             SetPatrolMissionLL, self.patrol_set_service
@@ -3122,6 +3130,22 @@ class WebZoneServerNode(Node):
             self.get_logger().info("set_nav_goals ok")
         return bool(res.ok), str(res.error), len(waypoints), bool(loop)
 
+    def set_navigation_profile(self, profile: str) -> Tuple[bool, str, str]:
+        target = str(profile or "").strip().lower()
+        if target not in {"urban", "rural"}:
+            return False, "profile must be 'urban' or 'rural'", ""
+        req = SetNavigationProfile.Request()
+        req.profile = target
+        res = self._call_service(
+            self._navigation_profile_client,
+            req,
+            self.request_timeout_s,
+        )
+        if res is None:
+            return False, "set_navigation_profile timeout", ""
+        active_profile = str(getattr(res, "active_profile", "") or "")
+        return bool(res.ok), str(res.error), active_profile
+
     def set_route_mission(
         self,
         waypoints: List[Dict[str, Any]],
@@ -4206,6 +4230,8 @@ class WebSocketApi:
             return True
         if op_name == "set_patrol_ll":
             return True
+        if op_name == "set_navigation_profile":
+            return True
         if op_name == "request_return_home":
             return True
         if op_name == "set_manual_cmd":
@@ -4765,6 +4791,35 @@ class WebSocketApi:
                 extra={
                     "waypoint_count": int(waypoint_count),
                     "loop": bool(loop_used),
+                    **self._control_lock_extra(),
+                },
+            )
+            return
+
+        if op == "set_navigation_profile":
+            profile = str(msg.get("profile", "") or "").strip().lower()
+            if profile not in {"urban", "rural"}:
+                await self._send_ack(
+                    ws,
+                    "set_navigation_profile",
+                    False,
+                    "profile must be 'urban' or 'rural'",
+                    client_req_id=client_req_id,
+                    extra=self._control_lock_extra(),
+                )
+                return
+            ok, err, active_profile = await asyncio.to_thread(
+                self.node.set_navigation_profile,
+                profile,
+            )
+            await self._send_ack(
+                ws,
+                "set_navigation_profile",
+                ok,
+                err,
+                client_req_id=client_req_id,
+                extra={
+                    "active_profile": active_profile,
                     **self._control_lock_extra(),
                 },
             )

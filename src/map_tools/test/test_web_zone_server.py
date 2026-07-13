@@ -27,6 +27,38 @@ def test_normalize_waypoint_actions_rejects_unknown_navigation_profile():
     assert "must be 'urban' or 'rural'" in error
 
 
+def test_set_navigation_profile_forwards_valid_profile_to_ros_service():
+    node = object.__new__(WebZoneServerNode)
+    node._navigation_profile_client = object()
+    node.request_timeout_s = 1.0
+    captured = {}
+
+    def call_service(client, request, timeout_s):
+        captured["client"] = client
+        captured["profile"] = request.profile
+        captured["timeout_s"] = timeout_s
+        return SimpleNamespace(ok=True, error="", active_profile="rural")
+
+    node._call_service = call_service
+
+    ok, error, active_profile = WebZoneServerNode.set_navigation_profile(node, "RURAL")
+
+    assert ok is True
+    assert error == ""
+    assert active_profile == "rural"
+    assert captured["profile"] == "rural"
+
+
+def test_set_navigation_profile_rejects_invalid_value_before_ros_call():
+    node = object.__new__(WebZoneServerNode)
+
+    ok, error, active_profile = WebZoneServerNode.set_navigation_profile(node, "forest")
+
+    assert ok is False
+    assert "urban' or 'rural" in error
+    assert active_profile == ""
+
+
 def test_patrol_parser_accepts_empty_optional_connectors():
     api = object.__new__(WebSocketApi)
     patrol, error = api._parse_patrol_mission_from_message(

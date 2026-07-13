@@ -37,6 +37,7 @@ from interfaces.srv import (
     RequestReturnHome,
     SetPatrolMissionLL,
     SetNavGoalLL,
+    SetNavigationProfile,
     SetRouteMissionLL,
 )
 
@@ -1323,6 +1324,7 @@ class RouteExecutorNode(Node):
         self.declare_parameter("cancel_patrol_service", "/route_executor/cancel_patrol")
         self.declare_parameter("get_patrol_state_service", "/route_executor/get_patrol_state")
         self.declare_parameter("request_return_home_service", "/route_executor/request_return_home")
+        self.declare_parameter("set_navigation_profile_service", "/route_executor/set_navigation_profile")
         self.declare_parameter("mission_path_topic", "/route_executor/mission_path")
         self.declare_parameter("active_chunk_path_topic", "/route_executor/active_chunk_path")
         self.declare_parameter("path_frame", "map")
@@ -1389,6 +1391,9 @@ class RouteExecutorNode(Node):
         )
         self.request_return_home_service = str(
             self.get_parameter("request_return_home_service").value
+        )
+        self.set_navigation_profile_service = str(
+            self.get_parameter("set_navigation_profile_service").value
         )
         self.mission_path_topic = str(self.get_parameter("mission_path_topic").value)
         self.active_chunk_path_topic = str(self.get_parameter("active_chunk_path_topic").value)
@@ -1655,6 +1660,12 @@ class RouteExecutorNode(Node):
             RequestReturnHome,
             self.request_return_home_service,
             self._on_request_return_home,
+            callback_group=self._service_group,
+        )
+        self._set_navigation_profile_srv = self.create_service(
+            SetNavigationProfile,
+            self.set_navigation_profile_service,
+            self._on_set_navigation_profile,
             callback_group=self._service_group,
         )
         self._nav_telemetry_sub = self.create_subscription(
@@ -4058,6 +4069,40 @@ class RouteExecutorNode(Node):
             ),
             "",
         )
+
+    def _on_set_navigation_profile(
+        self,
+        request: SetNavigationProfile.Request,
+        response: SetNavigationProfile.Response,
+    ) -> SetNavigationProfile.Response:
+        target = str(request.profile or "").strip().lower()
+        with self._lock:
+            mission_active = bool(self._mission_active or self._mission_paused or self._patrol_active)
+            active_profile = str(self._active_navigation_profile)
+        if target not in NAVIGATION_PROFILES:
+            response.ok = False
+            response.error = "profile must be 'urban' or 'rural'"
+            response.active_profile = active_profile
+            return response
+        if mission_active:
+            response.ok = False
+            response.error = "navigation profile cannot be changed while a mission is active"
+            response.active_profile = active_profile
+            return response
+
+        ok, error = self._apply_navigation_profile(target)
+        with self._lock:
+            response.active_profile = str(self._active_navigation_profile)
+        response.ok = bool(ok)
+        response.error = "" if ok else str(error)
+        if ok:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "NAVIGATION_PROFILE_APPLIED",
+                "Navigation profile applied by operator",
+                details={"profile": target, "source": "operator"},
+            )
+        return response
 
     def _on_set_route(
         self, request: SetRouteMissionLL.Request, response: SetRouteMissionLL.Response
