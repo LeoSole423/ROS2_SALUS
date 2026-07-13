@@ -19,12 +19,14 @@ el suelo). Como el RS16 va montado con pitch, la nube se transforma al
 """
 
 import math
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from enum import IntEnum
 from typing import List, Optional
 
 import numpy as np
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
@@ -294,8 +296,11 @@ class ScanGroundFilterNode(Node):
             vehicle_wheel_base_m=self._p("vehicle_wheel_base_m"),
             range_max=self._p("range_max"),
         )
+        self._config = config
+        self._config_lock = threading.Lock()
         self.segmenter = ScanGroundSegmenter(config)
         self.range_max = float(config.range_max)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self.target_frame = self._p("target_frame")
         self.tf_buffer = Buffer()
@@ -316,6 +321,78 @@ class ScanGroundFilterNode(Node):
 
     def _p(self, name: str):
         return self.get_parameter(name).value
+
+    def _on_set_parameters(self, parameters) -> SetParametersResult:
+        """Actualiza en bloque los umbrales que cambian con el perfil de navegación."""
+        updates = {
+            str(parameter.name): parameter.value
+            for parameter in parameters
+            if str(parameter.name)
+            in {
+                "global_slope_max_angle_deg",
+                "local_slope_max_angle_deg",
+                "split_height_distance",
+            }
+        }
+        if not updates:
+            return SetParametersResult(successful=True, reason="")
+
+        try:
+            global_slope = float(
+                updates.get(
+                    "global_slope_max_angle_deg",
+                    self._config.global_slope_max_angle_deg,
+                )
+            )
+            local_slope = float(
+                updates.get(
+                    "local_slope_max_angle_deg",
+                    self._config.local_slope_max_angle_deg,
+                )
+            )
+            split_height = float(
+                updates.get(
+                    "split_height_distance",
+                    self._config.split_height_distance,
+                )
+            )
+        except (TypeError, ValueError):
+            return SetParametersResult(
+                successful=False,
+                reason="ground profile parameters must be numeric",
+            )
+
+        if not (0.0 < global_slope <= 35.0):
+            return SetParametersResult(
+                successful=False,
+                reason="global_slope_max_angle_deg must be > 0 and <= 35",
+            )
+        if not (0.0 < local_slope <= 35.0):
+            return SetParametersResult(
+                successful=False,
+                reason="local_slope_max_angle_deg must be > 0 and <= 35",
+            )
+        if not (0.0 < split_height <= 0.50):
+            return SetParametersResult(
+                successful=False,
+                reason="split_height_distance must be > 0 and <= 0.50",
+            )
+
+        with self._config_lock:
+            next_config = replace(
+                self._config,
+                global_slope_max_angle_deg=global_slope,
+                local_slope_max_angle_deg=local_slope,
+                split_height_distance=split_height,
+            )
+            self._config = next_config
+            self.segmenter = ScanGroundSegmenter(next_config)
+        self.get_logger().info(
+            "scan_ground_filter profile updated "
+            f"(global={global_slope:.1f}deg, local={local_slope:.1f}deg, "
+            f"split_height={split_height:.2f}m)"
+        )
+        return SetParametersResult(successful=True, reason="")
 
     def _lookup_matrix(self, source_frame: str, stamp) -> Optional[np.ndarray]:
         """4x4 target<-source. Cacheado: el TF lidar->base es estático."""
@@ -378,7 +455,9 @@ class ScanGroundFilterNode(Node):
         records_keep = records[keep]
         xyz_keep = xyz_t[keep]
 
-        no_ground_idx = self.segmenter.segment(xyz_keep)
+        with self._config_lock:
+            segmenter = self.segmenter
+        no_ground_idx = segmenter.segment(xyz_keep)
 
         out_records = records_keep[no_ground_idx].copy()
         # escribir las coordenadas transformadas (output queda en target_frame)

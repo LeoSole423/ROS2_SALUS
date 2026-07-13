@@ -349,8 +349,10 @@ class _CompletedFuture:
 
 
 class _ProfileParameterClient:
-    def __init__(self) -> None:
+    def __init__(self, successful: bool = True, reason: str = "") -> None:
         self.requests = []
+        self.successful = successful
+        self.reason = reason
 
     def wait_for_service(self, timeout_sec: float) -> bool:
         return True
@@ -358,7 +360,20 @@ class _ProfileParameterClient:
     def call_async(self, request):
         self.requests.append(request)
         return _CompletedFuture(
-            type("Response", (), {"results": [type("Result", (), {"successful": True, "reason": ""})()] * 2})()
+            type(
+                "Response",
+                (),
+                {
+                    "results": [
+                        type(
+                            "Result",
+                            (),
+                            {"successful": self.successful, "reason": self.reason},
+                        )()
+                    ]
+                    * len(request.parameters)
+                },
+            )()
         )
 
 
@@ -373,16 +388,23 @@ def test_navigation_profile_updates_both_costmap_inflation_layers():
             "global_radius": 1.5,
             "local_scaling": 1.3,
             "global_scaling": 1.4,
+            "ground_global_slope": 10.0,
+            "ground_local_slope": 13.0,
+            "ground_split_height": 0.20,
         },
         NAVIGATION_PROFILE_RURAL: {
             "local_radius": 0.8,
             "global_radius": 0.8,
             "local_scaling": 3.0,
             "global_scaling": 3.0,
+            "ground_global_slope": 15.0,
+            "ground_local_slope": 18.0,
+            "ground_split_height": 0.25,
         },
     }
     node._local_costmap_parameters = _ProfileParameterClient()
     node._global_costmap_parameters = _ProfileParameterClient()
+    node._scan_ground_filter_parameters = _ProfileParameterClient()
     node._wait_for_future = lambda future, timeout_s: future.result()
     node._clear_costmaps = lambda: (True, "")
 
@@ -399,6 +421,57 @@ def test_navigation_profile_updates_both_costmap_inflation_layers():
         ]
     assert node._local_costmap_parameters.requests[0].parameters[0].value.double_value == pytest.approx(0.8)
     assert node._global_costmap_parameters.requests[0].parameters[1].value.double_value == pytest.approx(3.0)
+    ground_parameters = node._scan_ground_filter_parameters.requests[0].parameters
+    assert [item.name for item in ground_parameters] == [
+        "global_slope_max_angle_deg",
+        "local_slope_max_angle_deg",
+        "split_height_distance",
+    ]
+    assert ground_parameters[0].value.double_value == pytest.approx(15.0)
+    assert ground_parameters[2].value.double_value == pytest.approx(0.25)
+
+
+def test_navigation_profile_rolls_back_ground_filter_when_costmap_rejects():
+    node = object.__new__(RouteExecutorNode)
+    node._lock = threading.RLock()
+    node._active_navigation_profile = NAVIGATION_PROFILE_URBAN
+    node.navigation_profile_timeout_s = 1.0
+    node._navigation_profiles = {
+        NAVIGATION_PROFILE_URBAN: {
+            "local_radius": 1.4,
+            "global_radius": 1.5,
+            "local_scaling": 1.3,
+            "global_scaling": 1.4,
+            "ground_global_slope": 10.0,
+            "ground_local_slope": 13.0,
+            "ground_split_height": 0.20,
+        },
+        NAVIGATION_PROFILE_RURAL: {
+            "local_radius": 0.8,
+            "global_radius": 0.8,
+            "local_scaling": 3.0,
+            "global_scaling": 3.0,
+            "ground_global_slope": 15.0,
+            "ground_local_slope": 18.0,
+            "ground_split_height": 0.25,
+        },
+    }
+    node._scan_ground_filter_parameters = _ProfileParameterClient()
+    node._local_costmap_parameters = _ProfileParameterClient()
+    node._global_costmap_parameters = _ProfileParameterClient(False, "rejected")
+    node._wait_for_future = lambda future, timeout_s: future.result()
+    node._clear_costmaps = lambda: pytest.fail("costmaps must not clear on failed profile")
+
+    ok, error = RouteExecutorNode._apply_navigation_profile(node, NAVIGATION_PROFILE_RURAL)
+
+    assert ok is False
+    assert "global costmap rejected profile" in error
+    assert node._active_navigation_profile == NAVIGATION_PROFILE_URBAN
+    assert len(node._scan_ground_filter_parameters.requests) == 2
+    rollback = node._scan_ground_filter_parameters.requests[1].parameters
+    assert rollback[0].value.double_value == pytest.approx(10.0)
+    assert rollback[1].value.double_value == pytest.approx(13.0)
+    assert rollback[2].value.double_value == pytest.approx(0.20)
 
 
 def test_operator_navigation_profile_service_validates_and_rejects_active_mission():
