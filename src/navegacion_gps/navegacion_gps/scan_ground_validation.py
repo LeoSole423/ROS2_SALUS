@@ -1,6 +1,6 @@
 """Medición de KPIs para validar el `scan_ground_filter` en la rampa.
 
-Replica la metodología de la Etapa A (ver `docs/plan_correccion_puntos_fantasma.md`):
+Replica la metodología de la Etapa A (ver `docs/investigaciones/plan-correccion-puntos-fantasma.md`):
 
 - **FP (falsos positivos)**: celdas ocupadas en el costmap local acumuladas a lo
   largo de la corrida + máximo por frame. En el escenario de rampa

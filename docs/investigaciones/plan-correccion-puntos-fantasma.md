@@ -1,8 +1,12 @@
-# Plan de corrección — puntos fantasma / frenados falsos del LiDAR
+# Investigación: plan de corrección — puntos fantasma / frenados falsos del LiDAR
+
+Estado: plan de investigación y validación; no es guía de operación  
+Alcance: puntos fantasma, frenados falsos y filtrado de suelo del LiDAR  
+Fuente de verdad: pruebas, bags y código citados en este documento
 
 Basado en los dos informes (PDF *"Eliminación y filtrado de puntos fantasmas..."*
 y *"Resumen Ejecutivo"*) cruzados con el estado real del repo
-(ver `docs/lidar_puntos_fantasma_datos_proyecto.md`).
+(ver `docs/investigaciones/lidar-puntos-fantasma-datos-proyecto.md`).
 
 **Contexto confirmado:**
 - El RS16 está montado **plano** (la extrínseca del URDF default es correcta;
@@ -288,7 +292,7 @@ mayor o menor que los 3° de salto supuestos) y el RANSAC con datos verdaderos.
 
 **B3. Validar en campo con el robot corriendo ROS2_SALUS** repitiendo los
 escenarios de B1, comparando KPI contra el baseline. Cerrar actualizando
-`docs/lidar_puntos_fantasma_datos_proyecto.md` con los valores finales.
+`docs/investigaciones/lidar-puntos-fantasma-datos-proyecto.md` con los valores finales.
 
 ---
 

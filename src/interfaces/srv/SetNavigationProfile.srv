@@ -1,0 +1,5 @@
+string profile
+---
+bool ok
+string error
+string active_profile

@@ -37,6 +37,7 @@ from interfaces.srv import (
     RequestReturnHome,
     SetPatrolMissionLL,
     SetNavGoalLL,
+    SetNavigationProfile,
     SetRouteMissionLL,
 )
 
@@ -1323,6 +1324,7 @@ class RouteExecutorNode(Node):
         self.declare_parameter("cancel_patrol_service", "/route_executor/cancel_patrol")
         self.declare_parameter("get_patrol_state_service", "/route_executor/get_patrol_state")
         self.declare_parameter("request_return_home_service", "/route_executor/request_return_home")
+        self.declare_parameter("set_navigation_profile_service", "/route_executor/set_navigation_profile")
         self.declare_parameter("mission_path_topic", "/route_executor/mission_path")
         self.declare_parameter("active_chunk_path_topic", "/route_executor/active_chunk_path")
         self.declare_parameter("path_frame", "map")
@@ -1366,6 +1368,7 @@ class RouteExecutorNode(Node):
         )
         self.declare_parameter("local_costmap_node", "/local_costmap/local_costmap")
         self.declare_parameter("global_costmap_node", "/global_costmap/global_costmap")
+        self.declare_parameter("scan_ground_filter_node", "/scan_ground_filter")
         self.declare_parameter("urban_local_inflation_radius", 1.4)
         self.declare_parameter("urban_global_inflation_radius", 1.5)
         self.declare_parameter("urban_local_cost_scaling_factor", 1.3)
@@ -1374,6 +1377,12 @@ class RouteExecutorNode(Node):
         self.declare_parameter("rural_global_inflation_radius", 0.8)
         self.declare_parameter("rural_local_cost_scaling_factor", 3.0)
         self.declare_parameter("rural_global_cost_scaling_factor", 3.0)
+        self.declare_parameter("urban_ground_global_slope_max_angle_deg", 10.0)
+        self.declare_parameter("urban_ground_local_slope_max_angle_deg", 13.0)
+        self.declare_parameter("urban_ground_split_height_distance", 0.20)
+        self.declare_parameter("rural_ground_global_slope_max_angle_deg", 15.0)
+        self.declare_parameter("rural_ground_local_slope_max_angle_deg", 18.0)
+        self.declare_parameter("rural_ground_split_height_distance", 0.25)
         self.declare_parameter("navigation_profile_timeout_s", 3.0)
 
         self.nav_set_goal_service = str(self.get_parameter("nav_set_goal_service").value)
@@ -1389,6 +1398,9 @@ class RouteExecutorNode(Node):
         )
         self.request_return_home_service = str(
             self.get_parameter("request_return_home_service").value
+        )
+        self.set_navigation_profile_service = str(
+            self.get_parameter("set_navigation_profile_service").value
         )
         self.mission_path_topic = str(self.get_parameter("mission_path_topic").value)
         self.active_chunk_path_topic = str(self.get_parameter("active_chunk_path_topic").value)
@@ -1463,6 +1475,9 @@ class RouteExecutorNode(Node):
         )
         self.local_costmap_node = str(self.get_parameter("local_costmap_node").value)
         self.global_costmap_node = str(self.get_parameter("global_costmap_node").value)
+        self.scan_ground_filter_node = str(
+            self.get_parameter("scan_ground_filter_node").value
+        )
         self.navigation_profile_timeout_s = max(
             0.5, float(self.get_parameter("navigation_profile_timeout_s").value)
         )
@@ -1476,6 +1491,15 @@ class RouteExecutorNode(Node):
                 "global_scaling": float(
                     self.get_parameter("urban_global_cost_scaling_factor").value
                 ),
+                "ground_global_slope": float(
+                    self.get_parameter("urban_ground_global_slope_max_angle_deg").value
+                ),
+                "ground_local_slope": float(
+                    self.get_parameter("urban_ground_local_slope_max_angle_deg").value
+                ),
+                "ground_split_height": float(
+                    self.get_parameter("urban_ground_split_height_distance").value
+                ),
             },
             NAVIGATION_PROFILE_RURAL: {
                 "local_radius": float(self.get_parameter("rural_local_inflation_radius").value),
@@ -1485,6 +1509,15 @@ class RouteExecutorNode(Node):
                 ),
                 "global_scaling": float(
                     self.get_parameter("rural_global_cost_scaling_factor").value
+                ),
+                "ground_global_slope": float(
+                    self.get_parameter("rural_ground_global_slope_max_angle_deg").value
+                ),
+                "ground_local_slope": float(
+                    self.get_parameter("rural_ground_local_slope_max_angle_deg").value
+                ),
+                "ground_split_height": float(
+                    self.get_parameter("rural_ground_split_height_distance").value
                 ),
             },
         }
@@ -1589,6 +1622,11 @@ class RouteExecutorNode(Node):
             f"{self.global_costmap_node.rstrip('/')}/set_parameters",
             callback_group=self._client_group,
         )
+        self._scan_ground_filter_parameters = self.create_client(
+            SetParameters,
+            f"{self.scan_ground_filter_node.rstrip('/')}/set_parameters",
+            callback_group=self._client_group,
+        )
         self._fromll_client = self.create_client(
             FromLL, self.fromll_service, callback_group=self._client_group
         )
@@ -1655,6 +1693,12 @@ class RouteExecutorNode(Node):
             RequestReturnHome,
             self.request_return_home_service,
             self._on_request_return_home,
+            callback_group=self._service_group,
+        )
+        self._set_navigation_profile_srv = self.create_service(
+            SetNavigationProfile,
+            self.set_navigation_profile_service,
+            self._on_set_navigation_profile,
             callback_group=self._service_group,
         )
         self._nav_telemetry_sub = self.create_subscription(
@@ -1763,6 +1807,56 @@ class RouteExecutorNode(Node):
             return False, f"{label} costmap rejected profile: {'; '.join(failures)}"
         return True, ""
 
+    def _set_scan_ground_filter_parameters(
+        self,
+        *,
+        global_slope: float,
+        local_slope: float,
+        split_height: float,
+        label: str,
+    ) -> Tuple[bool, str]:
+        if not (0.0 < global_slope <= 35.0 and 0.0 < local_slope <= 35.0):
+            return False, f"invalid {label} ground slope values"
+        if not (0.0 < split_height <= 0.50):
+            return False, f"invalid {label} ground split height"
+        client = self._scan_ground_filter_parameters
+        if not client.wait_for_service(timeout_sec=min(self.navigation_profile_timeout_s, 2.0)):
+            return False, "scan ground filter parameter service unavailable"
+        try:
+            request = SetParameters.Request()
+            request.parameters = [
+                parameter.to_parameter_msg()
+                for parameter in (
+                    Parameter(
+                        name="global_slope_max_angle_deg",
+                        value=float(global_slope),
+                    ),
+                    Parameter(
+                        name="local_slope_max_angle_deg",
+                        value=float(local_slope),
+                    ),
+                    Parameter(
+                        name="split_height_distance",
+                        value=float(split_height),
+                    ),
+                )
+            ]
+            response = self._wait_for_future(
+                client.call_async(request), self.navigation_profile_timeout_s
+            )
+        except Exception as exc:
+            return False, f"scan ground filter parameter update failed: {exc}"
+        if response is None:
+            return False, "scan ground filter parameter update timed out"
+        failures = [
+            str(getattr(result, "reason", "parameter rejected"))
+            for result in list(response.results)
+            if not bool(getattr(result, "successful", False))
+        ]
+        if failures:
+            return False, f"scan ground filter rejected profile: {'; '.join(failures)}"
+        return True, ""
+
     def _clear_costmaps(self) -> Tuple[bool, str]:
         errors: List[str] = []
         for label, client in (
@@ -1796,6 +1890,14 @@ class RouteExecutorNode(Node):
             current,
             self._navigation_profiles[NAVIGATION_PROFILE_URBAN],
         )
+        ground_ok, ground_error = self._set_scan_ground_filter_parameters(
+            global_slope=float(values["ground_global_slope"]),
+            local_slope=float(values["ground_local_slope"]),
+            split_height=float(values["ground_split_height"]),
+            label="target",
+        )
+        if not ground_ok:
+            return False, ground_error
         local_ok, local_error = self._set_costmap_inflation_parameters(
             self._local_costmap_parameters,
             radius=float(values["local_radius"]),
@@ -1803,7 +1905,16 @@ class RouteExecutorNode(Node):
             label="local",
         )
         if not local_ok:
-            return False, local_error
+            rollback_ok, rollback_error = self._set_scan_ground_filter_parameters(
+                global_slope=float(previous_values["ground_global_slope"]),
+                local_slope=float(previous_values["ground_local_slope"]),
+                split_height=float(previous_values["ground_split_height"]),
+                label="rollback",
+            )
+            details = [local_error]
+            if not rollback_ok:
+                details.append(rollback_error)
+            return False, "; ".join(part for part in details if part)
         global_ok, global_error = self._set_costmap_inflation_parameters(
             self._global_costmap_parameters,
             radius=float(values["global_radius"]),
@@ -1817,12 +1928,17 @@ class RouteExecutorNode(Node):
                 scaling=float(previous_values["local_scaling"]),
                 label="local rollback",
             )
-            clear_ok, clear_error = self._clear_costmaps()
+            ground_rollback_ok, ground_rollback_error = self._set_scan_ground_filter_parameters(
+                global_slope=float(previous_values["ground_global_slope"]),
+                local_slope=float(previous_values["ground_local_slope"]),
+                split_height=float(previous_values["ground_split_height"]),
+                label="rollback",
+            )
             details = [global_error]
             if not rollback_ok:
                 details.append(rollback_error)
-            if not clear_ok:
-                details.append(clear_error)
+            if not ground_rollback_ok:
+                details.append(ground_rollback_error)
             return False, "; ".join(part for part in details if part)
 
         clear_ok, clear_error = self._clear_costmaps()
@@ -4058,6 +4174,40 @@ class RouteExecutorNode(Node):
             ),
             "",
         )
+
+    def _on_set_navigation_profile(
+        self,
+        request: SetNavigationProfile.Request,
+        response: SetNavigationProfile.Response,
+    ) -> SetNavigationProfile.Response:
+        target = str(request.profile or "").strip().lower()
+        with self._lock:
+            mission_active = bool(self._mission_active or self._mission_paused or self._patrol_active)
+            active_profile = str(self._active_navigation_profile)
+        if target not in NAVIGATION_PROFILES:
+            response.ok = False
+            response.error = "profile must be 'urban' or 'rural'"
+            response.active_profile = active_profile
+            return response
+        if mission_active:
+            response.ok = False
+            response.error = "navigation profile cannot be changed while a mission is active"
+            response.active_profile = active_profile
+            return response
+
+        ok, error = self._apply_navigation_profile(target)
+        with self._lock:
+            response.active_profile = str(self._active_navigation_profile)
+        response.ok = bool(ok)
+        response.error = "" if ok else str(error)
+        if ok:
+            self._publish_route_event(
+                DiagnosticStatus.OK,
+                "NAVIGATION_PROFILE_APPLIED",
+                "Navigation profile applied by operator",
+                details={"profile": target, "source": "operator"},
+            )
+        return response
 
     def _on_set_route(
         self, request: SetRouteMissionLL.Request, response: SetRouteMissionLL.Response

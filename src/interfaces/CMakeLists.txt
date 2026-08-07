@@ -40,6 +40,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/CancelPatrolMission.srv"
   "srv/GetPatrolMissionState.srv"
   "srv/RequestReturnHome.srv"
+  "srv/SetNavigationProfile.srv"
   "srv/SetDatum.srv"
   "srv/GetDatum.srv"
   "srv/CameraPan.srv"

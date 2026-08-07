@@ -26,7 +26,7 @@ No implementar ahora el plan V2 completo tipo Autoware/PCL/Nav2 3D.
 El plan V2 queda documentado como direccion futura en:
 
 ```text
-docs/lidar-perception-v2-plan.md
+docs/investigaciones/lidar-percepcion-v2-plan.md
 ```
 
 Para la siguiente iteracion se trabajara sobre este plan inmediato.

@@ -1,9 +1,12 @@
 import math
+import threading
+from types import SimpleNamespace
 
 import numpy as np
 
 from navegacion_gps.scan_ground_filter import (
     ScanGroundFilterConfig,
+    ScanGroundFilterNode,
     ScanGroundSegmenter,
     _normalize_radian,
 )
@@ -102,6 +105,83 @@ def test_obstacle_just_above_split_height_is_non_ground():
     pts = np.vstack([ground, step])
     no_ground = seg.segment(pts)
     assert (len(pts) - 1) in no_ground.tolist()
+
+
+def test_rural_profile_accepts_sustained_15_degree_ground_slope():
+    points = _sloped_ground_ray(azimuth_deg=15.0, slope_deg=15.0)
+    urban = _segmenter(
+        global_slope_max_angle_deg=10.0,
+        local_slope_max_angle_deg=13.0,
+        split_height_distance=0.20,
+    )
+    rural = _segmenter(
+        global_slope_max_angle_deg=15.0,
+        local_slope_max_angle_deg=18.0,
+        split_height_distance=0.25,
+    )
+
+    assert urban.segment(points).size > 0
+    assert rural.segment(points).size == 0
+
+
+def test_rural_profile_filters_low_ground_undulation_but_keeps_tall_obstacle():
+    ground = _flat_ground_ray(azimuth_deg=10.0, z=0.0)
+    a = math.radians(10.0)
+    low_undulation = np.array([[6.0 * math.sin(a), 6.0 * math.cos(a), 0.24]])
+    tall_obstacle = np.array([[7.0 * math.sin(a), 7.0 * math.cos(a), 0.35]])
+    points = np.vstack([ground, low_undulation, tall_obstacle])
+    urban = _segmenter()
+    rural = _segmenter(
+        global_slope_max_angle_deg=15.0,
+        local_slope_max_angle_deg=18.0,
+        split_height_distance=0.25,
+    )
+
+    assert len(ground) in urban.segment(points).tolist()
+    rural_no_ground = rural.segment(points).tolist()
+    assert len(ground) not in rural_no_ground
+    assert len(points) - 1 in rural_no_ground
+
+
+def test_ground_profile_parameter_update_rebuilds_segmenter_atomically():
+    node = object.__new__(ScanGroundFilterNode)
+    node._config_lock = threading.Lock()
+    node._config = ScanGroundFilterConfig()
+    node.segmenter = ScanGroundSegmenter(node._config)
+    node.get_logger = lambda: SimpleNamespace(info=lambda *_args, **_kwargs: None)
+
+    result = ScanGroundFilterNode._on_set_parameters(
+        node,
+        [
+            SimpleNamespace(name="global_slope_max_angle_deg", value=15.0),
+            SimpleNamespace(name="local_slope_max_angle_deg", value=18.0),
+            SimpleNamespace(name="split_height_distance", value=0.25),
+        ],
+    )
+
+    assert result.successful is True
+    assert node.segmenter.config == ScanGroundFilterConfig(
+        global_slope_max_angle_deg=15.0,
+        local_slope_max_angle_deg=18.0,
+        split_height_distance=0.25,
+    )
+
+
+def test_ground_profile_parameter_update_rejects_invalid_values_without_mutation():
+    node = object.__new__(ScanGroundFilterNode)
+    node._config_lock = threading.Lock()
+    node._config = ScanGroundFilterConfig()
+    node.segmenter = ScanGroundSegmenter(node._config)
+    original_segmenter = node.segmenter
+
+    result = ScanGroundFilterNode._on_set_parameters(
+        node,
+        [SimpleNamespace(name="split_height_distance", value=0.75)],
+    )
+
+    assert result.successful is False
+    assert node._config == ScanGroundFilterConfig()
+    assert node.segmenter is original_segmenter
 
 
 def test_empty_cloud_returns_empty():

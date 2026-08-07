@@ -9,7 +9,7 @@ La percepcion LiDAR es un frente abierto. El cambio reciente de filtrado 3D mejo
 
 Plan inmediato recomendado: [docs/lidar-noise-reduction-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-noise-reduction-plan.md).
 
-Plan V2 futuro, no a implementar de momento: [docs/lidar-perception-v2-plan.md](/home/leo/codigo/ROS2_SALUS/docs/lidar-perception-v2-plan.md).
+Plan V2 futuro, no a implementar de momento: [docs/investigaciones/lidar-percepcion-v2-plan.md](/home/leosole/Desktop/AEye/ROS2_SALUS/docs/investigaciones/lidar-percepcion-v2-plan.md).
 
 Para volver al fallback legacy puro durante pruebas reales, usar:
 
