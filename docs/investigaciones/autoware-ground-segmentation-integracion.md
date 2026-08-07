@@ -1,4 +1,4 @@
-# Integración de Autoware `ground_segmentation` en SALUS (camino A)
+# Investigación: integración de Autoware `ground_segmentation` en SALUS (camino A)
 
 Estado: **POC en simulación** — no toca el deployment de producción.
 Fecha de inicio: 2026-06-13. Responsable: Franco.
@@ -6,7 +6,7 @@ Fecha de inicio: 2026-06-13. Responsable: Franco.
 ## 1. Objetivo y decisión
 
 Atacar el problema de **puntos fantasma del piso** (ver
-`docs/lidar_puntos_fantasma_datos_proyecto.md`) reemplazando la rama de
+`docs/investigaciones/lidar-puntos-fantasma-datos-proyecto.md`) reemplazando la rama de
 ground-removal artesanal de `lidar_obstacle_filter.py` por el filtro
 **`scan_ground_filter`** de Autoware (`autoware_ground_segmentation`), que es
 código probado en producción.
@@ -196,7 +196,7 @@ ros2 launch navegacion_gps sim_v2_base.launch.py enable_scan_ground_filter:=True
 
 Harness A/B para medir el efecto del filtro sobre `slope_lidar.world` (rampa 10°
 con obstáculos encima) con el URDF plano, replicando la metodología de Etapa A
-(`docs/plan_correccion_puntos_fantasma.md`).
+(`docs/investigaciones/plan-correccion-puntos-fantasma.md`).
 
 - Forwarding: `sim_local_v2.launch.py` ahora reenvía `world`, `custom_urdf`,
   `enable_scan_ground_filter` y `scan_ground_min_height` a `sim_v2_base`

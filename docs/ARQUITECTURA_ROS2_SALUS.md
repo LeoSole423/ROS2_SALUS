@@ -51,7 +51,7 @@ Documentos hermanos:
 > Nota: el vendor `src/autoware_deps/` (POC del filtro de suelo Autoware, v0.51.0)
 > **fue eliminado** (no se compilaba ni se usaba). Del filtro de suelo solo quedó el
 > algoritmo portado a Python en `navegacion_gps/scan_ground_filter.py`. Historia en
-> `docs/autoware_ground_segmentation_integracion.md`.
+> `docs/investigaciones/autoware-ground-segmentation-integracion.md`.
 
 ### 2.3 Otros paquetes presentes (fuera del alcance pedido)
 

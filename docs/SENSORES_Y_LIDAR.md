@@ -71,7 +71,7 @@ Driver propio que lee MAVLink directo y publica `/imu/data`, `/gps/fix`,
 - Montaje físico: ~0.65 m sobre `base_link`, x≈+0.92 m. Los perfiles global V2
   activos usan `cuatri_real_v2.urdf`, con pitch +10° del RS16, para que sim y
   real compartan la misma extrínseca de LiDAR. Ver
-  `docs/lidar_puntos_fantasma_datos_proyecto.md`.
+  `docs/investigaciones/lidar-puntos-fantasma-datos-proyecto.md`.
 
 ---
 
@@ -117,7 +117,7 @@ recorta retornos rasantes a costa de perder obstáculos bajos (falsos negativos)
 (+ `/obstacles_cloud` debug). Se activa con `enable_lidar_obstacle_filter:=True`.
 ROI/umbrales configurables por launch (`lidar_filter_*`). Estado: experimental,
 validado en sim en la rama de fantasmas. Ver
-`docs/lidar_puntos_fantasma_datos_proyecto.md` y `docs/plan_correccion_puntos_fantasma.md`.
+`docs/investigaciones/lidar-puntos-fantasma-datos-proyecto.md` y `docs/investigaciones/plan-correccion-puntos-fantasma.md`.
 
 ### 3.5 Healthcheck LiDAR
 
@@ -175,7 +175,7 @@ FN 0/2 a nivel `/scan_3d/no_ground`.
 2. Revisar en robot que `/scan_3d/no_ground`, `/scan` y `/scan_clean` mantengan
    obstáculos bajos reales sin reintroducir piso en rampas o cabeceo.
 
-Doc completo: `docs/autoware_ground_segmentation_integracion.md`
+Doc completo: `docs/investigaciones/autoware-ground-segmentation-integracion.md`
 (§8 wiring, §9 validación).
 
 ---

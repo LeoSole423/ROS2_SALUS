@@ -1,4 +1,4 @@
-# Plan V2 De Percepcion LiDAR 3D
+# Investigación: plan V2 de percepción LiDAR 3D
 
 Estado: futuro / no implementar de momento
 Alcance: arquitectura definitiva futura para una percepcion LiDAR 3D robusta con RS16 en navegacion Global V2

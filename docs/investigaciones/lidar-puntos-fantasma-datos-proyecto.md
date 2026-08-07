@@ -1,4 +1,8 @@
-# Puntos fantasma en LiDAR inclinable — datos reales del proyecto SALUS
+# Investigación: puntos fantasma en LiDAR inclinable — datos del proyecto SALUS
+
+Estado: investigación técnica de referencia; no es guía de operación  
+Alcance: análisis del problema de puntos fantasma del LiDAR RS16  
+Fuente de verdad: código, configuración y pruebas citadas en este documento
 
 Companion del informe *"Eliminación y filtrado de puntos fantasmas en un LiDAR con
 soporte inclinable en ROS2"* (ChatGPT, PDF en Descargas). Este documento completa
@@ -168,7 +172,7 @@ Global costmap: ObstacleLayer, `observation_persistence: 1.0`, `obstacle_max_ran
 
 1. **Verificar la extrínseca LiDAR–base_link** (URDF default plano vs montaje
    físico inclinado 10°) y corregir el TF. Ver plan detallado en
-   `docs/plan_correccion_puntos_fantasma.md`.
+   `docs/investigaciones/plan-correccion-puntos-fantasma.md`.
 2. **Activar la rama 3D**: `enable_lidar_obstacle_filter:=True` en
    `real_global_v2.launch.py` y validar con bag. La infraestructura ya está; está
    apagada por default. Con eso `min_height: 0.50` del p2l podría volver a bajar
