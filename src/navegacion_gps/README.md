@@ -20,6 +20,8 @@ Fuente de verdad: `launch/`, `config/`, `setup.py` y tests del paquete
 - Benchmarks y observabilidad:
   - [docs/nav-benchmarks.md](/home/leo/codigo/ROS2_SALUS/docs/nav-benchmarks.md)
   - [docs/navigation-traces.md](/home/leo/codigo/ROS2_SALUS/docs/navigation-traces.md)
+- Cobertura por waypoints:
+  - [Simulación tipo cortadora](../../docs/coverage-waypoint-simulation.md)
 - Heading auxiliar:
   - [docs/compass-heading-gate.md](/home/leo/codigo/ROS2_SALUS/docs/compass-heading-gate.md)
 - Diseño y transición:
@@ -56,6 +58,7 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 ## Nodos propios más relevantes
 - `zones_manager`
 - `nav_command_server`
+- `route_executor`
 - `nav_snapshot_server`
 - `nav_observability`
 - `nav_trace_recorder` (solo simulacion por default)
@@ -65,6 +68,11 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 - `gps_course_heading`
 - `compass_heading_gate`
 - `sim_compass_hdg`
+- `scan_ground_filter`
+- `scan_noise_filter`
+- `path_clearance_validator`
+
+El plugin package hermano `navegacion_gps_bt` agrega condiciones/decoradores C++ usados por los Behavior Trees de Nav2.
 
 ## Componentes LEGACY
 - Perfiles mainline viejos:
@@ -104,6 +112,7 @@ Estos perfiles viejos pueden servir para consultar implementaciones puntuales, p
 - `./tools/record_nav_debug_bag.sh`
 - `./tools/run_nav_benchmark.sh`
 - `./tools/compare_nav_benchmarks.sh`
+- `./tools/run_coverage_waypoints.sh`
 - `./tools/show_latest_nav_trace.sh`
 - `./tools/regenerate_nav_trace_report.sh`
 

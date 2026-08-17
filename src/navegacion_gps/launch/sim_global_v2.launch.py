@@ -610,7 +610,13 @@ def generate_launch_description():
                         "max_abs_angular_z": 0.4,
                         "wheelbase_m": 0.94,
                         "steering_limit_rad": 0.5235987756,
-                        "operational_steering_limit_rad": 0.3141592654,
+                        # 25 grados: radio efectivo 2.02 m. El planner de este
+                        # perfil traza a 2.9 m, y la diferencia es el margen de
+                        # correccion del controlador. Con los 18 grados
+                        # anteriores (2.89 m) el seguimiento del omega quedaba
+                        # exactamente sobre el tope de direccion, sin margen.
+                        # El fisico sigue siendo 30 grados.
+                        "operational_steering_limit_rad": 0.4363323130,
                         "manual_operational_steering_limit_rad": 0.5235987756,
                         "vx_deadband_mps": ParameterValue(
                             vx_deadband_mps, value_type=float
@@ -695,6 +701,17 @@ def generate_launch_description():
                         "battery_guard_topic": "/battery_mission_guard",
                         "low_battery_threshold_pct": 25.0,
                         "set_route_service": "/route_executor/set_route_ll",
+                        # Tiene que coincidir con el minimum_turning_radius del
+                        # Smac de este perfil: es el piso que el plan de
+                        # cobertura no puede pedir mas chico.
+                        "coverage_planner_min_turning_radius_m": 2.9,
+                        "coverage_allow_headland_conflicts": True,
+                        # El lote se recorre pasada por pasada, de la del
+                        # vehiculo hacia el borde opuesto. Con las pasadas a
+                        # 1.64 m y radio minimo 4 m cada cabecera sale omega:
+                        # mide 27.4 m y sobresale 10.4 m del lote, que es lo
+                        # que compra el recorrido sin saltos.
+                        "coverage_allow_row_skipping": False,
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",
                         "set_patrol_service": "/route_executor/set_patrol_ll",
@@ -866,6 +883,18 @@ def generate_launch_description():
                     "fixed_datum_source": "sim_global_v2_fixed",
                     "datums_file": datums_file,
                     "nav_snapshot_scan_topic": nav_snapshot_scan_topic,
+                    # Solo simulacion: Cockpit puede dibujar el lote separado del
+                    # spawn y Nav2 realiza el acercamiento hasta la primera pasada.
+                    # El perfil real conserva el preflight estricto de 5 m.
+                    "coverage_start_max_distance_m": "50.0",
+                    # Medido contra el Smac de este perfil (minimum_turning_radius
+                    # 4.0 m) barriendo rumbos de pasada: partir la cabecera en dos
+                    # metas obliga a un tramo de radio minimo exacto, que la
+                    # busqueda no puede cerrar y resuelve con una vuelta completa
+                    # de 25 m. El giro entero como una sola meta reproduce el
+                    # nominal, tanto en U simple (14.4 -> 14.0/18.0 m) como en
+                    # omega (27.4 -> 27.9/29.1 m).
+                    "coverage_use_headland_guides": "false",
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

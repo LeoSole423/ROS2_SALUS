@@ -5,6 +5,9 @@ Alcance: índice y clasificación de la documentación del monorepo
 Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 
 ## Cómo leer este repo
+- Consultar [la auditoría exhaustiva del backend](BACKEND_LINE_AUDIT.md) para la lectura línea por línea, invariantes y hallazgos transversales. La cobertura cerrada se verifica con [el manifiesto de 541 archivos](BACKEND_LINE_MANIFEST.tsv) y [el inventario binario asociado](BACKEND_BINARY_INVENTORY.tsv).
+- Usar [docs/CODEBASE_REFERENCE.md](CODEBASE_REFERENCE.md) como inventario integral del código, contratos y features actuales.
+- Para cobertura verificable archivo por archivo, usar [código propio](CODE_CATALOG_OWN.md), [runtime y herramientas](CODE_CATALOG_RUNTIME_TOOLS.md), [vendor RoboSense](CODE_CATALOG_VENDOR.md) y [Cockpit](../cockpit/CODE_CATALOG.md).
 - Empezar por [README.md](/home/leo/codigo/ROS2_SALUS/README.md) para contexto general.
 - Usar [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md) para decidir qué perfil ejecutar.
 - Usar [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md) como regla de mantenimiento para mantener sincronizados simulacion y robot real.
@@ -19,6 +22,14 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 
 ## Documentación vigente
 - Raíz del monorepo:
+  - [docs/CODEBASE_REFERENCE.md](CODEBASE_REFERENCE.md)
+  - [docs/BACKEND_LINE_AUDIT.md](BACKEND_LINE_AUDIT.md)
+  - [docs/BACKEND_LINE_MANIFEST.tsv](BACKEND_LINE_MANIFEST.tsv)
+  - [docs/BACKEND_BINARY_INVENTORY.tsv](BACKEND_BINARY_INVENTORY.tsv)
+  - [docs/CODE_CATALOG_OWN.md](CODE_CATALOG_OWN.md)
+  - [docs/CODE_CATALOG_RUNTIME_TOOLS.md](CODE_CATALOG_RUNTIME_TOOLS.md)
+  - [docs/CODE_CATALOG_VENDOR.md](CODE_CATALOG_VENDOR.md)
+  - [cockpit/CODE_CATALOG.md](../cockpit/CODE_CATALOG.md)
   - [README.md](/home/leo/codigo/ROS2_SALUS/README.md)
   - [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
   - [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)
@@ -36,7 +47,9 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
   - [src/controller_server/README.md](/home/leo/codigo/ROS2_SALUS/src/controller_server/README.md)
   - [src/map_tools/README.md](/home/leo/codigo/ROS2_SALUS/src/map_tools/README.md)
   - [src/navegacion_gps/README.md](/home/leo/codigo/ROS2_SALUS/src/navegacion_gps/README.md)
+  - [src/navegacion_gps_bt/README.md](../src/navegacion_gps_bt/README.md)
   - [src/sensores/README.md](/home/leo/codigo/ROS2_SALUS/src/sensores/README.md)
+  - [src/vision_pipeline/README.md](../src/vision_pipeline/README.md)
 
 ## Documentación de navegación vigente
 - Navegación global V2:

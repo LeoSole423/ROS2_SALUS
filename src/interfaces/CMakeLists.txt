@@ -33,6 +33,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetSimBatteryState.srv"
   "srv/GetNavState.srv"
   "srv/GetNavSnapshot.srv"
+  "srv/GenerateCoveragePlanLL.srv"
   "srv/SetRouteMissionLL.srv"
   "srv/CancelRouteMission.srv"
   "srv/GetRouteMissionState.srv"

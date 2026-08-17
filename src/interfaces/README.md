@@ -33,6 +33,18 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
   - `SetManualMode.srv`
   - `GetNavState.srv`
   - `GetNavSnapshot.srv`
+- Rutas y patrulla:
+  - `GenerateCoveragePlanLL.srv`
+    - genera una vista previa de cobertura y separa la polilínea muestreada de los únicos waypoints `key` aptos para ejecutar
+    - `topology_safe` exige cero cruces/contactos/solapes no adyacentes y cero giros omega
+  - `SetRouteMissionLL.srv`
+  - `CancelRouteMission.srv`
+  - `GetRouteMissionState.srv`
+  - `SetPatrolMissionLL.srv`
+  - `CancelPatrolMission.srv`
+  - `GetPatrolMissionState.srv`
+  - `RequestReturnHome.srv`
+  - `SetNavigationProfile.srv`
 - Zonas y keepout:
   - `SetZonesGeoJson.srv`
   - `GetZonesState.srv`
@@ -45,6 +57,10 @@ Fuente de verdad: `msg/`, `srv/` y paquetes consumidores
 - Cámara:
   - `CameraPan.srv`
   - `CameraStatus.srv`
+  - `CameraPtz.srv`
+  - `CameraPtzState.srv`
+  - `CameraPreset.srv`
+  - `CameraSavePreset.srv`
 - Manual:
   - `SetManualCmd.srv`
 - Simulación:

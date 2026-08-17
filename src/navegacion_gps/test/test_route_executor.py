@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from types import SimpleNamespace
@@ -46,6 +47,7 @@ from navegacion_gps.route_executor import (
     should_suppress_chunk_success_brake,
 )
 from interfaces.msg import BatteryMissionGuard, NavEvent, NavTelemetry
+from interfaces.srv import GenerateCoveragePlanLL, SetRouteMissionLL
 
 
 def _converted_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
@@ -55,6 +57,292 @@ def _converted_pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
     pose.pose.position.y = float(y)
     pose.pose.orientation = _yaw_to_quaternion(yaw_deg)
     return pose
+
+
+def _fake_coverage_node() -> RouteExecutorNode:
+    node = object.__new__(RouteExecutorNode)
+    node.coverage_max_rows = 100
+    node.coverage_max_key_waypoints = 200
+    node.coverage_max_sampled_waypoints = 2000
+    node.coverage_max_field_dimension_m = 500.0
+    node.coverage_max_turning_radius_m = 100.0
+    node.coverage_planner_min_turning_radius_m = 4.0
+    node.coverage_allow_headland_conflicts = True
+    node.coverage_allow_row_skipping = False
+    node.coverage_min_waypoint_spacing_m = 0.5
+    node.coverage_topology_audit_spacing_m = 0.5
+    node.min_leg_spacing_m = 5.0
+    node.min_chunk_span_m = 20.0
+    node.min_chunk_max_waypoints = 2
+    return node
+
+
+def _coverage_request(**overrides) -> GenerateCoveragePlanLL.Request:
+    values = {
+        "start_lat": -31.485,
+        "start_lon": -64.241,
+        "start_yaw_deg": 0.0,
+        "start_is_field_corner": True,
+        "field_length_m": 20.0,
+        "field_width_m": 2.0,
+        "cutter_width_m": 2.0,
+        "overlap_ratio": 0.15,
+        "min_turning_radius_m": 4.0,
+        "waypoint_spacing_m": 2.0,
+        "side": "left",
+    }
+    values.update(overrides)
+    request = GenerateCoveragePlanLL.Request()
+    for key, value in values.items():
+        setattr(request, key, value)
+    return request
+
+
+def test_generate_coverage_plan_returns_preview_and_key_waypoints() -> None:
+    node = _fake_coverage_node()
+    response = GenerateCoveragePlanLL.Response()
+
+    result = node._on_generate_coverage_plan(_coverage_request(), response)
+
+    assert result.ok is True
+    assert result.error == ""
+    assert result.row_count == 1
+    assert len(result.sampled_lats) == 10
+    assert len(result.sampled_lats) == len(result.sampled_key_flags)
+    assert sum(result.sampled_key_flags) == 2
+    assert len(result.key_lats) == 2
+    assert result.route_lats == pytest.approx(result.key_lats)
+    assert result.route_lons == pytest.approx(result.key_lons)
+    assert list(result.route_key_flags) == [True, True]
+    assert result.omega_turn_count == 0
+    assert result.topology_conflict_count == 0
+    assert result.topology_safe is True
+    assert result.topology_audit_spacing_m == pytest.approx(0.5)
+    assert result.planner_min_turning_radius_m == pytest.approx(4.0)
+    assert result.topology_scope == "field_interior"
+    assert result.centerline_length_m == pytest.approx(18.0)
+    assert result.route_start_lat == pytest.approx(result.sampled_lats[0])
+    assert result.route_start_lon == pytest.approx(result.sampled_lons[0])
+    assert result.recommended_leg_spacing_m == pytest.approx(21.0)
+
+
+def test_generate_coverage_plan_insets_field_corner_in_both_axes() -> None:
+    node = _fake_coverage_node()
+    request = _coverage_request()
+
+    result = node._on_generate_coverage_plan(
+        request,
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    north_m = (result.route_start_lat - request.start_lat) * 111_320.0
+    east_m = (
+        (result.route_start_lon - request.start_lon)
+        * 111_320.0
+        * abs(math.cos(math.radians(request.start_lat)))
+    )
+    assert north_m == pytest.approx(1.0, abs=1.0e-6)
+    assert east_m == pytest.approx(1.0, abs=1.0e-6)
+    assert result.centerline_length_m == pytest.approx(18.0)
+
+
+def test_generate_coverage_plan_rejects_radius_below_planner_minimum(
+    monkeypatch,
+) -> None:
+    node = _fake_coverage_node()
+    build_called = False
+
+    def fail_if_called(**_kwargs):
+        nonlocal build_called
+        build_called = True
+        raise AssertionError("generator must not run")
+
+    monkeypatch.setattr(
+        "navegacion_gps.route_executor.build_lawnmower_waypoints",
+        fail_if_called,
+    )
+
+    result = node._on_generate_coverage_plan(
+        _coverage_request(min_turning_radius_m=3.9),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert result.ok is False
+    assert "planner minimum 4" in result.error
+    assert build_called is False
+
+
+def test_generate_coverage_plan_audits_coarse_preview_at_fixed_spacing(
+    monkeypatch,
+) -> None:
+    node = _fake_coverage_node()
+    from navegacion_gps import route_executor as route_executor_module
+
+    real_builder = route_executor_module.build_lawnmower_waypoints
+    spacings = []
+
+    def capture_spacing(**kwargs):
+        spacings.append(float(kwargs["waypoint_spacing_m"]))
+        return real_builder(**kwargs)
+
+    monkeypatch.setattr(route_executor_module, "build_lawnmower_waypoints", capture_spacing)
+
+    result = node._on_generate_coverage_plan(
+        _coverage_request(waypoint_spacing_m=2.0),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert result.ok is True
+    assert spacings == pytest.approx([2.0, 0.5])
+    assert result.topology_audit_spacing_m == pytest.approx(0.5)
+
+
+def test_generate_coverage_plan_allows_omega_turns_outside_simulated_field() -> None:
+    node = _fake_coverage_node()
+
+    result = node._on_generate_coverage_plan(
+        _coverage_request(field_width_m=8.0),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert result.ok is True
+    assert result.omega_turn_count > 0
+    assert result.field_topology_conflict_count == 0
+    assert result.topology_safe is True
+    assert len(result.route_lats) == (2 * result.row_count) + (result.row_count - 1)
+    assert sum(bool(flag) for flag in result.route_key_flags) == 2 * result.row_count
+    assert sum(not bool(flag) for flag in result.route_key_flags) == result.row_count - 1
+    assert result.route_key_flags[0] is True
+    assert result.route_key_flags[-1] is True
+
+
+def test_generate_coverage_plan_keeps_global_policy_for_real_profile() -> None:
+    node = _fake_coverage_node()
+    node.coverage_allow_headland_conflicts = False
+
+    result = node._on_generate_coverage_plan(
+        _coverage_request(field_width_m=8.0),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert result.ok is True
+    assert result.omega_turn_count > 0
+    assert result.topology_scope == "global"
+    assert result.topology_safe is False
+
+
+def test_generate_coverage_plan_rejects_excessive_rows_before_build(monkeypatch) -> None:
+    node = _fake_coverage_node()
+    build_called = False
+
+    def fail_if_called(**_kwargs):
+        nonlocal build_called
+        build_called = True
+        raise AssertionError("generator must not run")
+
+    monkeypatch.setattr(
+        "navegacion_gps.route_executor.build_lawnmower_waypoints",
+        fail_if_called,
+    )
+    response = node._on_generate_coverage_plan(
+        _coverage_request(
+            field_width_m=8.0,
+            overlap_ratio=0.99,
+        ),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert response.ok is False
+    assert "row_count" in response.error
+    assert "exceeds limit 100" in response.error
+    assert build_called is False
+
+
+def test_generate_coverage_plan_rejects_large_preview_before_build(monkeypatch) -> None:
+    node = _fake_coverage_node()
+    node.coverage_max_sampled_waypoints = 100
+    build_called = False
+
+    def fail_if_called(**_kwargs):
+        nonlocal build_called
+        build_called = True
+        raise AssertionError("generator must not run")
+
+    monkeypatch.setattr(
+        "navegacion_gps.route_executor.build_lawnmower_waypoints",
+        fail_if_called,
+    )
+    response = node._on_generate_coverage_plan(
+        _coverage_request(field_length_m=200.0, waypoint_spacing_m=0.5),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert response.ok is False
+    assert "sampled waypoint upper bound" in response.error
+    assert build_called is False
+
+
+def test_generate_coverage_plan_accepts_a_field_the_audit_used_to_reject() -> None:
+    """Regresion CAMPO: un cuadrado de 37.8 m chocaba con el tope de puntos.
+
+    La auditoria partia cada pasada cada 0.5 m, asi que el conteo crecia con el
+    largo del lote: 23 pasadas de 35.8 m daban 2581 puntos contra un tope de 2000
+    y el preview quedaba bloqueado. Las pasadas son rectas y entran enteras, con
+    lo que el conteo de auditoria pasa a depender de las cabeceras y no del largo.
+    """
+
+    node = _fake_coverage_node()
+    # Perfil de simulacion: el planner traza a 2.9 m.
+    node.coverage_planner_min_turning_radius_m = 2.9
+
+    response = node._on_generate_coverage_plan(
+        _coverage_request(
+            field_length_m=37.8,
+            field_width_m=37.8,
+            cutter_width_m=2.0,
+            overlap_ratio=0.15,
+            min_turning_radius_m=2.9,
+            waypoint_spacing_m=2.0,
+        ),
+        GenerateCoveragePlanLL.Response(),
+    )
+
+    assert response.ok is True, response.error
+    assert response.row_count == 23
+    assert response.topology_safe is True
+    # 23 pasadas x 2 metas: la ruta ejecutable no cambia de tamano.
+    assert sum(bool(flag) for flag in response.route_key_flags) == 46
+
+
+def test_generate_coverage_plan_bound_grows_with_the_headlands_not_the_row_length() -> None:
+    node = _fake_coverage_node()
+    node.coverage_max_sampled_waypoints = 2000
+
+    short = node._validate_generate_coverage_request(
+        _coverage_request(field_length_m=40.0, field_width_m=20.0, waypoint_spacing_m=2.0)
+    )[0]
+    long_rows = node._validate_generate_coverage_request(
+        _coverage_request(field_length_m=200.0, field_width_m=20.0, waypoint_spacing_m=2.0)
+    )[0]
+
+    assert short is not None and long_rows is not None
+    # Cinco veces mas largo de pasada, mismas cabeceras: el conteo de auditoria
+    # crece solo por los puntos de las pasadas, uno por extremo.
+    assert int(long_rows["sampled_upper_bound"]) > int(short["sampled_upper_bound"])
+    assert int(long_rows["sampled_upper_bound"]) < 5 * int(short["sampled_upper_bound"])
+
+
+def test_set_route_rejects_more_than_configured_waypoint_limit() -> None:
+    node = object.__new__(RouteExecutorNode)
+    node.max_route_input_waypoints = 200
+    request = SetRouteMissionLL.Request()
+    request.lats = [-31.0] * 201
+    request.lons = [-64.0] * 201
+
+    result = node._validate_set_route_request(request)
+
+    assert result[0] is None
+    assert result[-1] == "waypoint count exceeds limit 200"
 
 
 class _FakeLogger:
@@ -609,6 +897,58 @@ def test_expand_route_waypoints_with_actions_marks_only_original_waypoints():
     assert any(flag is False for flag in key_flags[1:-1])
 
 
+def test_expand_route_waypoints_preserves_non_key_headland_guide():
+    base = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0001, lon=0.0001, yaw_deg=90.0),
+        RouteWaypoint(lat=0.00001, lon=0.0, yaw_deg=180.0),
+    ]
+
+    expanded, actions, key_flags = expand_route_waypoints_with_actions(
+        base,
+        ["", "", ""],
+        leg_spacing_m=100.0,
+        loop=False,
+        base_key_flags=[True, False, True],
+    )
+
+    assert expanded == base
+    assert actions == ["", "", ""]
+    assert key_flags == [True, False, True]
+
+
+def test_chunk_from_headland_guide_continues_to_next_row_key():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0001, lon=0.0002, yaw_deg=90.0),
+        RouteWaypoint(lat=0.00001, lon=0.0001, yaw_deg=180.0),
+        RouteWaypoint(lat=0.00001, lon=0.0, yaw_deg=180.0),
+    ]
+
+    first_row, first_target = build_chunk_waypoints(
+        route,
+        start_index=0,
+        loop=False,
+        chunk_span_m=1.0,
+        chunk_max_waypoints=2,
+        key_stop_indices={0, 1, 3, 4},
+    )
+    headland, headland_target = build_chunk_waypoints(
+        route,
+        start_index=2,
+        loop=False,
+        chunk_span_m=1.0,
+        chunk_max_waypoints=2,
+        key_stop_indices={0, 1, 3, 4},
+    )
+
+    assert first_row == route[:2]
+    assert first_target == 1
+    assert headland == route[2:4]
+    assert headland_target == 3
+
+
 def test_brake_hold_action_requests_single_sustained_brake():
     node = _fake_blocking_node()
     action_json = '[{"brake_pct":80,"duration_s":0.01,"type":"brake_hold"}]'
@@ -966,6 +1306,77 @@ def test_prepare_route_waypoints_joins_nearest_segment_for_non_loop_routes():
     assert prepared.note == "joined nearest segment 1->2"
     assert prepared.waypoints == [route[1], route[2]]
     assert prepared.input_indices == [1, 2]
+
+
+def test_prepare_route_waypoints_can_refuse_to_join_a_mid_route_segment():
+    """Regresion CAMPO: un lote corrido del vehiculo arrancaba por el medio.
+
+    El enganche al tramo mas cercano descarta las metas anteriores, que es lo que
+    se quiere al retomar una ruta a medio hacer. En cobertura no: los lazos de
+    cabecera pasan a pocos metros del vehiculo y la mision arrancaba en la pasada
+    3 sin cubrir las dos primeras. Con ``allow_segment_join=False`` la ruta se
+    entrega completa.
+    """
+
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.002, yaw_deg=0.0),
+    ]
+
+    joined, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=3.0,
+    )
+    assert error == ""
+    assert joined is not None
+    assert joined.waypoints == [route[1], route[2]]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0005,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=3.0,
+        allow_segment_join=False,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.start_index == 0
+    assert prepared.skipped_waypoints == 0
+    assert prepared.note == ""
+    assert prepared.waypoints == route
+    assert prepared.input_indices == [0, 1, 2]
+
+
+def test_prepare_route_waypoints_still_drops_the_waypoint_under_the_robot():
+    """Apagar el enganche no obliga a ir a una meta que ya se piso."""
+
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+        segment_start_tolerance_m=3.0,
+        allow_segment_join=False,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.start_index == 1
+    assert prepared.waypoints == [route[1]]
 
 
 def test_prepare_route_waypoints_does_not_join_far_segment_for_non_loop_routes():

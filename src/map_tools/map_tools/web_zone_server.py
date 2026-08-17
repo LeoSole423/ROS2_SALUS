@@ -44,6 +44,7 @@ from interfaces.srv import (
     CancelNavGoal,
     CancelPatrolMission,
     CancelRouteMission,
+    GenerateCoveragePlanLL,
     GetDatum,
     GetNavSnapshot,
     GetNavState,
@@ -199,6 +200,7 @@ class WebZoneServerNode(Node):
         self.declare_parameter("snapshot_request_timeout_s", 5.0)
         self.declare_parameter("set_zones_timeout_s", 12.0)
         self.declare_parameter("set_goal_timeout_s", 12.0)
+        self.declare_parameter("coverage_plan_timeout_s", 5.0)
         self.declare_parameter("waypoints_file", "")
         self.declare_parameter("datums_file", "")
 
@@ -212,6 +214,10 @@ class WebZoneServerNode(Node):
         self.declare_parameter("nav_set_manual_mode_service", "/nav_command_server/set_manual_mode")
         self.declare_parameter("nav_get_state_service", "/nav_command_server/get_state")
         self.declare_parameter("route_set_service", "/route_executor/set_route_ll")
+        self.declare_parameter(
+            "coverage_plan_service",
+            "/route_executor/generate_coverage_plan_ll",
+        )
         self.declare_parameter("route_cancel_service", "/route_executor/cancel_route")
         self.declare_parameter("route_get_state_service", "/route_executor/get_state")
         self.declare_parameter("set_navigation_profile_service", "/route_executor/set_navigation_profile")
@@ -220,6 +226,13 @@ class WebZoneServerNode(Node):
         self.declare_parameter("patrol_get_state_service", "/route_executor/get_patrol_state")
         self.declare_parameter("patrol_return_home_service", "/route_executor/request_return_home")
         self.declare_parameter("route_state_poll_hz", 2.0)
+        self.declare_parameter("coverage_reference_max_age_s", 5.0)
+        self.declare_parameter("coverage_start_max_distance_m", 5.0)
+        self.declare_parameter("coverage_start_max_heading_error_deg", 30.0)
+        # Opt-in de simulacion: en real se conservan solamente los extremos de
+        # pasada. Cuando esta activo, cada cabecera se envia como
+        # guia-exterior + inicio-de-la-fila-siguiente dentro del mismo chunk.
+        self.declare_parameter("coverage_use_headland_guides", False)
         self.declare_parameter("teleop_cmd_topic", "/cmd_vel_teleop")
 
         self.declare_parameter("nav_snapshot_service", "/nav_snapshot_server/get_nav_snapshot")
@@ -272,6 +285,10 @@ class WebZoneServerNode(Node):
         self.set_goal_timeout_s = max(
             self.request_timeout_s, float(self.get_parameter("set_goal_timeout_s").value)
         )
+        self.coverage_plan_timeout_s = max(
+            0.5,
+            float(self.get_parameter("coverage_plan_timeout_s").value),
+        )
         configured_waypoints_file = str(self.get_parameter("waypoints_file").value)
         self.waypoints_file = self._resolve_waypoints_file(configured_waypoints_file)
         configured_datums_file = str(self.get_parameter("datums_file").value)
@@ -295,6 +312,9 @@ class WebZoneServerNode(Node):
         )
         self.nav_get_state_service = str(self.get_parameter("nav_get_state_service").value)
         self.route_set_service = str(self.get_parameter("route_set_service").value)
+        self.coverage_plan_service = str(
+            self.get_parameter("coverage_plan_service").value
+        )
         self.route_cancel_service = str(self.get_parameter("route_cancel_service").value)
         self.route_get_state_service = str(
             self.get_parameter("route_get_state_service").value
@@ -312,6 +332,28 @@ class WebZoneServerNode(Node):
         )
         self.route_state_poll_hz = max(
             0.2, float(self.get_parameter("route_state_poll_hz").value)
+        )
+        self.coverage_reference_max_age_s = max(
+            0.5,
+            float(self.get_parameter("coverage_reference_max_age_s").value),
+        )
+        self.coverage_start_max_distance_m = max(
+            0.1,
+            float(self.get_parameter("coverage_start_max_distance_m").value),
+        )
+        self.coverage_start_max_heading_error_deg = min(
+            180.0,
+            max(
+                1.0,
+                float(
+                    self.get_parameter(
+                        "coverage_start_max_heading_error_deg"
+                    ).value
+                ),
+            ),
+        )
+        self.coverage_use_headland_guides = bool(
+            self.get_parameter("coverage_use_headland_guides").value
         )
         self.teleop_cmd_topic = str(self.get_parameter("teleop_cmd_topic").value)
 
@@ -387,6 +429,8 @@ class WebZoneServerNode(Node):
 
         self._last_robot_pose: Optional[Dict[str, float]] = None
         self._last_robot_heading_deg: Optional[float] = None
+        self._last_robot_pose_monotonic: Optional[float] = None
+        self._last_robot_heading_monotonic: Optional[float] = None
         self._last_imu_heading_deg: Optional[float] = None
         self._last_gps_broadcast_monotonic: Optional[float] = None
         self._gps_status_payload = self._build_gps_status_payload(
@@ -562,6 +606,10 @@ class WebZoneServerNode(Node):
         self.create_subscription(String, "/gps/rtk_source/status_json", self._rtk_source_status_cb, 2)
         self._nav_get_state_client = self.create_client(GetNavState, self.nav_get_state_service)
         self._route_set_client = self.create_client(SetRouteMissionLL, self.route_set_service)
+        self._coverage_plan_client = self.create_client(
+            GenerateCoveragePlanLL,
+            self.coverage_plan_service,
+        )
         self._route_cancel_client = self.create_client(
             CancelRouteMission, self.route_cancel_service
         )
@@ -1874,6 +1922,7 @@ class WebZoneServerNode(Node):
         )
         with self._lock:
             self._last_robot_pose = pose
+            self._last_robot_pose_monotonic = now
             last_sent = self._last_gps_broadcast_monotonic
 
         min_interval = 1.0 / max(0.1, float(self.gps_broadcast_hz))
@@ -1952,6 +2001,7 @@ class WebZoneServerNode(Node):
             return
         with self._lock:
             self._last_robot_heading_deg = float(heading_deg)
+            self._last_robot_heading_monotonic = time.monotonic()
             if self._last_robot_pose is not None:
                 self._last_robot_pose["heading_deg"] = float(heading_deg)
 
@@ -3146,6 +3196,509 @@ class WebZoneServerNode(Node):
         active_profile = str(getattr(res, "active_profile", "") or "")
         return bool(res.ok), str(res.error), active_profile
 
+    def current_coverage_reference(self) -> Tuple[Optional[Dict[str, float]], str]:
+        now = time.monotonic()
+        with self._lock:
+            pose = (
+                dict(self._last_robot_pose)
+                if self._last_robot_pose is not None
+                else None
+            )
+            pose_updated = self._last_robot_pose_monotonic
+            heading_updated = self._last_robot_heading_monotonic
+        if pose is None:
+            return None, "current robot GPS pose is unavailable"
+        if "heading_deg" not in pose:
+            return None, "current robot map heading is unavailable"
+        if pose_updated is None or (now - float(pose_updated)) > float(
+            self.coverage_reference_max_age_s
+        ):
+            return None, "current robot GPS pose is stale"
+        if heading_updated is None or (now - float(heading_updated)) > float(
+            self.coverage_reference_max_age_s
+        ):
+            return None, "current robot map heading is stale"
+        reference = {
+            "lat": float(pose["lat"]),
+            "lon": float(pose["lon"]),
+            "yaw_deg": float(pose["heading_deg"]),
+        }
+        if not all(np.isfinite(value) for value in reference.values()):
+            return None, "current robot reference contains non-finite values"
+        return reference, ""
+
+    def generate_coverage_plan(
+        self,
+        parameters: Dict[str, Any],
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        req = GenerateCoveragePlanLL.Request()
+        req.start_lat = float(parameters["start_lat"])
+        req.start_lon = float(parameters["start_lon"])
+        req.start_yaw_deg = float(parameters["start_yaw_deg"])
+        # Con referencia explicita el operador marco la esquina fisica del lote y
+        # el proveedor aplica el inset del implemento. Sin referencia la unica
+        # informacion es donde esta el vehiculo, y ahi la esquina es la lectura
+        # equivocada: el inset deja la primera pasada media pasada adelante y
+        # media pasada al costado, un corrimiento puramente lateral que con radio
+        # minimo no se puede tomar de frente y obliga a un rulo de aproximacion
+        # antes de empezar a trabajar. Tomando la pose como centro de la primera
+        # pasada el vehiculo arranca ya alineado.
+        req.start_is_field_corner = bool(
+            parameters.get("start_is_field_corner", True)
+        )
+        req.field_length_m = float(parameters["field_length_m"])
+        req.field_width_m = float(parameters["field_width_m"])
+        req.cutter_width_m = float(parameters["cutter_width_m"])
+        req.overlap_ratio = float(parameters["overlap_ratio"])
+        req.min_turning_radius_m = float(parameters["min_turning_radius_m"])
+        req.waypoint_spacing_m = float(parameters["waypoint_spacing_m"])
+        req.side = str(parameters["side"])
+
+        res = self._call_service(
+            self._coverage_plan_client,
+            req,
+            self.coverage_plan_timeout_s,
+        )
+        if res is None:
+            return False, "generate_coverage_plan_ll timeout", {}
+        if not bool(res.ok):
+            return False, str(res.error), {}
+
+        sampled_lengths = {
+            len(res.sampled_lats),
+            len(res.sampled_lons),
+            len(res.sampled_yaws_deg),
+            len(res.sampled_phases),
+            len(res.sampled_row_indices),
+            len(res.sampled_key_flags),
+        }
+        if len(sampled_lengths) != 1:
+            return False, "generate_coverage_plan_ll returned inconsistent sampled arrays", {}
+        key_lengths = {
+            len(res.key_lats),
+            len(res.key_lons),
+            len(res.key_yaws_deg),
+        }
+        if len(key_lengths) != 1:
+            return False, "generate_coverage_plan_ll returned inconsistent key arrays", {}
+        route_lengths = {
+            len(res.route_lats),
+            len(res.route_lons),
+            len(res.route_yaws_deg),
+            len(res.route_key_flags),
+        }
+        if len(route_lengths) != 1:
+            return False, "generate_coverage_plan_ll returned inconsistent route arrays", {}
+
+        sampled_key_values = [
+            (float(lat), float(lon), float(yaw_deg))
+            for lat, lon, yaw_deg, is_key in zip(
+                res.sampled_lats,
+                res.sampled_lons,
+                res.sampled_yaws_deg,
+                res.sampled_key_flags,
+            )
+            if bool(is_key)
+        ]
+        response_key_values = [
+            (float(lat), float(lon), float(yaw_deg))
+            for lat, lon, yaw_deg in zip(
+                res.key_lats,
+                res.key_lons,
+                res.key_yaws_deg,
+            )
+        ]
+        if len(sampled_key_values) != len(response_key_values) or any(
+            not all(
+                math.isclose(sampled_value, key_value, rel_tol=0.0, abs_tol=1.0e-12)
+                for sampled_value, key_value in zip(sampled_item, key_item)
+            )
+            for sampled_item, key_item in zip(
+                sampled_key_values,
+                response_key_values,
+            )
+        ):
+            return (
+                False,
+                "generate_coverage_plan_ll key arrays do not match sampled key flags",
+                {},
+            )
+        if not response_key_values:
+            return False, "generate_coverage_plan_ll returned no key waypoints", {}
+        expected_key_count = 2 * int(res.row_count)
+        if len(response_key_values) != expected_key_count:
+            return (
+                False,
+                "generate_coverage_plan_ll key waypoint count does not match "
+                "two endpoints per row",
+                {},
+            )
+        if not all(
+            np.isfinite(value)
+            for waypoint in response_key_values
+            for value in waypoint
+        ):
+            return False, "generate_coverage_plan_ll returned non-finite key values", {}
+        response_route_values = [
+            (float(lat), float(lon), float(yaw_deg), bool(is_key))
+            for lat, lon, yaw_deg, is_key in zip(
+                res.route_lats,
+                res.route_lons,
+                res.route_yaws_deg,
+                res.route_key_flags,
+            )
+        ]
+        if not response_route_values:
+            return False, "generate_coverage_plan_ll returned no route waypoints", {}
+        if not response_route_values[0][3] or not response_route_values[-1][3]:
+            return False, "generate_coverage_plan_ll route must start and end at key waypoints", {}
+        route_key_values = [item[:3] for item in response_route_values if item[3]]
+        if len(route_key_values) != len(response_key_values) or any(
+            not all(
+                math.isclose(route_value, key_value, rel_tol=0.0, abs_tol=1.0e-12)
+                for route_value, key_value in zip(route_item, key_item)
+            )
+            for route_item, key_item in zip(route_key_values, response_key_values)
+        ):
+            return False, "generate_coverage_plan_ll route keys do not match key arrays", {}
+        expected_route_count = expected_key_count + max(0, int(res.row_count) - 1)
+        if len(response_route_values) != expected_route_count:
+            return (
+                False,
+                "generate_coverage_plan_ll route must contain one guide per turn",
+                {},
+            )
+        if not all(
+            np.isfinite(value)
+            for waypoint in response_route_values
+            for value in waypoint[:3]
+        ):
+            return False, "generate_coverage_plan_ll returned non-finite route values", {}
+
+        strict_crossing_count = int(res.strict_crossing_count)
+        nonadjacent_touch_count = int(res.nonadjacent_touch_count)
+        collinear_overlap_count = int(res.collinear_overlap_count)
+        derived_conflict_count = (
+            strict_crossing_count
+            + nonadjacent_touch_count
+            + collinear_overlap_count
+        )
+        if int(res.topology_conflict_count) != derived_conflict_count:
+            return (
+                False,
+                "generate_coverage_plan_ll topology conflict count is inconsistent",
+                {},
+            )
+        field_strict_crossing_count = int(res.field_strict_crossing_count)
+        field_nonadjacent_touch_count = int(
+            res.field_nonadjacent_touch_count
+        )
+        field_collinear_overlap_count = int(
+            res.field_collinear_overlap_count
+        )
+        derived_field_conflict_count = (
+            field_strict_crossing_count
+            + field_nonadjacent_touch_count
+            + field_collinear_overlap_count
+        )
+        if int(res.field_topology_conflict_count) != derived_field_conflict_count:
+            return (
+                False,
+                "generate_coverage_plan_ll field topology conflict count is "
+                "inconsistent",
+                {},
+            )
+        topology_scope = str(res.topology_scope or "").strip().lower()
+        if topology_scope not in {"global", "field_interior"}:
+            return (
+                False,
+                "generate_coverage_plan_ll returned an invalid topology_scope",
+                {},
+            )
+        derived_topology_safe = bool(
+            derived_field_conflict_count == 0
+            if topology_scope == "field_interior"
+            else derived_conflict_count == 0 and int(res.omega_turn_count) == 0
+        )
+        if bool(res.topology_safe) != derived_topology_safe:
+            return (
+                False,
+                "generate_coverage_plan_ll topology_safe invariant is inconsistent",
+                {},
+            )
+
+        sampled_waypoints = [
+            {
+                "lat": float(lat),
+                "lon": float(lon),
+                "yaw_deg": float(yaw_deg),
+                "phase": str(phase),
+                "row_index": int(row_index),
+                "key": bool(is_key),
+            }
+            for lat, lon, yaw_deg, phase, row_index, is_key in zip(
+                res.sampled_lats,
+                res.sampled_lons,
+                res.sampled_yaws_deg,
+                res.sampled_phases,
+                res.sampled_row_indices,
+                res.sampled_key_flags,
+            )
+        ]
+        key_waypoints = [
+            {
+                "lat": float(lat),
+                "lon": float(lon),
+                "yaw_deg": float(yaw_deg),
+            }
+            for lat, lon, yaw_deg in zip(
+                res.key_lats,
+                res.key_lons,
+                res.key_yaws_deg,
+            )
+        ]
+        route_waypoints = [
+            {
+                "lat": lat,
+                "lon": lon,
+                "yaw_deg": yaw_deg,
+                "key": is_key,
+                "guide": not is_key,
+            }
+            for lat, lon, yaw_deg, is_key in response_route_values
+        ]
+        global_topology_conflicts = {
+            "strict_crossings": strict_crossing_count,
+            "nonadjacent_touches": nonadjacent_touch_count,
+            "collinear_overlaps": collinear_overlap_count,
+            "total": derived_conflict_count,
+        }
+        field_topology_conflicts = {
+            "strict_crossings": field_strict_crossing_count,
+            "nonadjacent_touches": field_nonadjacent_touch_count,
+            "collinear_overlaps": field_collinear_overlap_count,
+            "total": derived_field_conflict_count,
+            "scope": "field_interior",
+        }
+        topology_conflicts = (
+            field_topology_conflicts
+            if topology_scope == "field_interior"
+            else {**global_topology_conflicts, "scope": "global"}
+        )
+        warnings: List[Dict[str, Any]] = []
+        if int(res.omega_turn_count) > 0:
+            warnings.append(
+                {
+                    "code": "COVERAGE_OMEGA_TURNS",
+                    "count": int(res.omega_turn_count),
+                }
+            )
+        if derived_conflict_count > 0:
+            warnings.append(
+                {
+                    "code": "COVERAGE_HEADLAND_TOPOLOGY_CONFLICTS",
+                    **global_topology_conflicts,
+                }
+            )
+
+        headland_guidance_enabled = bool(
+            getattr(self, "coverage_use_headland_guides", False)
+        )
+        execution_waypoints = (
+            route_waypoints
+            if headland_guidance_enabled
+            else [
+                {
+                    **waypoint,
+                    "key": True,
+                    "guide": False,
+                }
+                for waypoint in key_waypoints
+            ]
+        )
+        payload = {
+            "reference": {
+                "lat": float(req.start_lat),
+                "lon": float(req.start_lon),
+                "yaw_deg": float(req.start_yaw_deg),
+            },
+            "route_start_reference": {
+                "lat": float(res.route_start_lat),
+                "lon": float(res.route_start_lon),
+                "yaw_deg": float(res.route_start_yaw_deg),
+            },
+            "parameters": {
+                "field_length_m": float(req.field_length_m),
+                "field_width_m": float(req.field_width_m),
+                "cutter_width_m": float(req.cutter_width_m),
+                "overlap_ratio": float(req.overlap_ratio),
+                "min_turning_radius_m": float(req.min_turning_radius_m),
+                "waypoint_spacing_m": float(req.waypoint_spacing_m),
+                "side": str(req.side),
+                "reference_mode": (
+                    "field_corner" if req.start_is_field_corner else "first_row_start"
+                ),
+                "centerline_length_m": float(res.centerline_length_m),
+            },
+            "sampled_waypoints": sampled_waypoints,
+            "key_waypoints": key_waypoints,
+            "route_waypoints": route_waypoints,
+            "headland_guidance_enabled": headland_guidance_enabled,
+            "metrics": {
+                "row_count": int(res.row_count),
+                "lane_spacing_m": float(res.lane_spacing_m),
+                "row_visit_order": [int(value) for value in res.row_visit_order],
+                "turn_separations_m": [
+                    float(value) for value in res.turn_separations_m
+                ],
+                "clean_uturn_count": int(res.clean_uturn_count),
+                "omega_turn_count": int(res.omega_turn_count),
+                "estimated_path_length_m": float(res.estimated_path_length_m),
+                "headland_before_m": float(res.headland_before_m),
+                "headland_after_m": float(res.headland_after_m),
+                "lateral_overflow_m": float(res.lateral_overflow_m),
+                "topology_conflicts": topology_conflicts,
+                "field_topology_conflicts": field_topology_conflicts,
+                "global_topology_conflicts": global_topology_conflicts,
+                "topology_safe": bool(res.topology_safe),
+                "topology_scope": topology_scope,
+                "topology_audit_spacing_m": float(
+                    res.topology_audit_spacing_m
+                ),
+                "planner_min_turning_radius_m": float(
+                    res.planner_min_turning_radius_m
+                ),
+            },
+            "topology_safe": bool(res.topology_safe),
+            "warnings": warnings,
+            "route_request": {
+                "op": "set_route_ll",
+                "waypoints": execution_waypoints,
+                "loop": False,
+                "leg_spacing_m": float(res.recommended_leg_spacing_m),
+                "chunk_span_m": float(res.recommended_chunk_span_m),
+                "chunk_max_waypoints": int(res.recommended_chunk_max_waypoints),
+            },
+        }
+        return True, "", payload
+
+    def start_coverage(
+        self,
+        parameters: Dict[str, Any],
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        ok, error, coverage_plan = self.generate_coverage_plan(parameters)
+        result: Dict[str, Any] = {
+            "route_started": False,
+            "route_submission_state": "not_started",
+        }
+        if not ok:
+            return False, error, result
+
+        result["coverage_plan"] = coverage_plan
+        topology_conflicts = coverage_plan["metrics"]["topology_conflicts"]
+        if not bool(coverage_plan["topology_safe"]):
+            topology_scope = str(
+                coverage_plan["metrics"].get("topology_scope", "global")
+            )
+            scope_text = (
+                "inside the field"
+                if topology_scope == "field_interior"
+                else "in the complete nominal path"
+            )
+            return (
+                False,
+                f"coverage has topology conflicts {scope_text} "
+                f"(strict_crossings={int(topology_conflicts['strict_crossings'])}, "
+                f"nonadjacent_touches={int(topology_conflicts['nonadjacent_touches'])}, "
+                f"collinear_overlaps={int(topology_conflicts['collinear_overlaps'])})",
+                result,
+            )
+
+        current_reference, reference_error = self.current_coverage_reference()
+        if current_reference is None:
+            return False, f"coverage approach rejected: {reference_error}", result
+
+        first_key = coverage_plan["key_waypoints"][0]
+        meters_per_deg_lat = 111_320.0
+        average_lat_rad = math.radians(
+            0.5 * (float(current_reference["lat"]) + float(first_key["lat"]))
+        )
+        meters_per_deg_lon = meters_per_deg_lat * max(
+            1.0e-6,
+            abs(math.cos(average_lat_rad)),
+        )
+        north_m = (
+            float(first_key["lat"]) - float(current_reference["lat"])
+        ) * meters_per_deg_lat
+        east_m = (
+            float(first_key["lon"]) - float(current_reference["lon"])
+        ) * meters_per_deg_lon
+        distance_m = float(math.hypot(north_m, east_m))
+        heading_error_deg = abs(
+            self._normalize_yaw_deg(
+                float(current_reference["yaw_deg"]) - float(first_key["yaw_deg"])
+            )
+        )
+        approach = {
+            "distance_m": distance_m,
+            "max_distance_m": float(self.coverage_start_max_distance_m),
+            "heading_error_deg": float(heading_error_deg),
+            "max_heading_error_deg": float(
+                self.coverage_start_max_heading_error_deg
+            ),
+            "robot_reference": dict(current_reference),
+            "first_key_waypoint": dict(first_key),
+        }
+        result["approach"] = approach
+        if (
+            distance_m > float(self.coverage_start_max_distance_m)
+            or heading_error_deg
+            > float(self.coverage_start_max_heading_error_deg)
+        ):
+            return (
+                False,
+                "coverage approach rejected "
+                f"(distance={distance_m:.2f} m, "
+                f"limit={float(self.coverage_start_max_distance_m):.2f} m; "
+                f"heading_error={heading_error_deg:.1f} deg, "
+                "limit="
+                f"{float(self.coverage_start_max_heading_error_deg):.1f} deg)",
+                result,
+            )
+
+        route_request = coverage_plan["route_request"]
+        route_ok, route_error, input_count, expanded_count = self.set_route_mission(
+            list(route_request["waypoints"]),
+            False,
+            float(route_request["leg_spacing_m"]),
+            float(route_request["chunk_span_m"]),
+            int(route_request["chunk_max_waypoints"]),
+            # La cobertura se recorre completa desde su primera meta. Sin esto, un
+            # lote corrido respecto del vehiculo deja lazos de cabecera a pocos
+            # metros del robot y route_executor engancha la ruta por el medio,
+            # descartando las primeras pasadas.
+            start_from_first_waypoint=True,
+        )
+        result["input_waypoint_count"] = int(input_count)
+        result["expanded_waypoint_count"] = int(expanded_count)
+        result["input_key_waypoint_count"] = int(
+            len(coverage_plan["key_waypoints"])
+        )
+        result["guide_waypoint_count"] = int(
+            sum(
+                bool(waypoint.get("guide"))
+                for waypoint in route_request["waypoints"]
+            )
+        )
+        if route_ok:
+            result["route_started"] = True
+            result["route_submission_state"] = "started"
+            return True, "", result
+        if str(route_error) == "set_route_ll timeout":
+            result["route_started"] = None
+            result["route_submission_state"] = "unknown_timeout"
+        return False, str(route_error), result
+
     def set_route_mission(
         self,
         waypoints: List[Dict[str, Any]],
@@ -3153,6 +3706,7 @@ class WebZoneServerNode(Node):
         leg_spacing_m: Optional[float] = None,
         chunk_span_m: Optional[float] = None,
         chunk_max_waypoints: Optional[int] = None,
+        start_from_first_waypoint: bool = False,
     ) -> Tuple[bool, str, int, int]:
         if len(waypoints) == 0:
             return False, "at least one waypoint is required", 0, 0
@@ -3161,7 +3715,8 @@ class WebZoneServerNode(Node):
             "WS->ROS set_route_mission "
             f"(count={len(waypoints)}, loop={bool(loop)}, "
             f"leg_spacing_m={leg_spacing_m}, chunk_span_m={chunk_span_m}, "
-            f"chunk_max_waypoints={chunk_max_waypoints})"
+            f"chunk_max_waypoints={chunk_max_waypoints}, "
+            f"start_from_first_waypoint={bool(start_from_first_waypoint)})"
         )
         req = SetRouteMissionLL.Request()
         resolved_yaws_deg = self._resolve_waypoint_yaws(waypoints, loop)
@@ -3177,6 +3732,9 @@ class WebZoneServerNode(Node):
         req.waypoint_roles = [
             str(wp.get("role", "normal") or "normal").strip().lower() for wp in waypoints
         ]
+        req.waypoint_key_flags = [
+            bool(wp.get("key", True)) for wp in waypoints
+        ]
         req.loop = bool(loop)
         req.leg_spacing_m = (
             float(leg_spacing_m)
@@ -3189,6 +3747,7 @@ class WebZoneServerNode(Node):
             else 0.0
         )
         req.chunk_max_waypoints = max(0, int(chunk_max_waypoints or 0))
+        req.start_from_first_waypoint = bool(start_from_first_waypoint)
 
         res = self._call_service(self._route_set_client, req, self.set_goal_timeout_s)
         if res is None:
@@ -4001,6 +4560,75 @@ class WebSocketApi:
         except Exception as exc:
             self.node.get_logger().warning(f"nav refresh on WS connect crashed: {exc}")
 
+    def _parse_coverage_parameters(
+        self,
+        msg: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        reference_raw = msg.get("reference")
+        if reference_raw is not None and not isinstance(reference_raw, dict):
+            return None, "reference must be an object"
+
+        explicit_values = {
+            "start_lat": msg.get("start_lat", UNSET),
+            "start_lon": msg.get("start_lon", UNSET),
+            "start_yaw_deg": msg.get("start_yaw_deg", UNSET),
+        }
+        if isinstance(reference_raw, dict):
+            explicit_values = {
+                "start_lat": reference_raw.get("lat", UNSET),
+                "start_lon": reference_raw.get("lon", UNSET),
+                "start_yaw_deg": reference_raw.get(
+                    "yaw_deg",
+                    reference_raw.get("heading_deg", UNSET),
+                ),
+            }
+
+        explicit_count = sum(value is not UNSET for value in explicit_values.values())
+        if explicit_count not in {0, 3}:
+            return None, "reference requires lat, lon and yaw_deg"
+        start_is_field_corner = True
+        if explicit_count == 0:
+            current_reference, reference_error = self.node.current_coverage_reference()
+            if current_reference is None:
+                return None, reference_error
+            explicit_values = {
+                "start_lat": current_reference["lat"],
+                "start_lon": current_reference["lon"],
+                "start_yaw_deg": current_reference["yaw_deg"],
+            }
+            # La pose del vehiculo es el centro de la primera pasada, no la
+            # esquina del lote: asi arranca alineado y sin rulo de aproximacion.
+            start_is_field_corner = False
+
+        raw_values = {
+            **explicit_values,
+            "field_length_m": msg.get("field_length_m", UNSET),
+            "field_width_m": msg.get("field_width_m", UNSET),
+            "cutter_width_m": msg.get("cutter_width_m", 2.0),
+            "overlap_ratio": msg.get("overlap_ratio", 0.15),
+            "min_turning_radius_m": msg.get("min_turning_radius_m", 4.0),
+            "waypoint_spacing_m": msg.get("waypoint_spacing_m", 2.0),
+        }
+        if raw_values["field_length_m"] is UNSET:
+            return None, "field_length_m is required"
+        if raw_values["field_width_m"] is UNSET:
+            return None, "field_width_m is required"
+
+        parsed: Dict[str, Any] = {}
+        for key, raw_value in raw_values.items():
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                return None, f"{key} must be a number"
+            if not np.isfinite(value):
+                return None, f"{key} must be finite"
+            parsed[key] = float(value)
+        parsed["side"] = str(msg.get("side", "left") or "left").strip().lower()
+        if parsed["side"] not in {"left", "right"}:
+            return None, "side must be 'left' or 'right'"
+        parsed["start_is_field_corner"] = bool(start_is_field_corner)
+        return parsed, ""
+
     def _parse_waypoints_from_message(
         self, msg: Dict[str, Any]
     ) -> Tuple[Optional[List[Dict[str, Any]]], bool, str]:
@@ -4227,6 +4855,8 @@ class WebSocketApi:
         if op_name == "set_goal_ll":
             return True
         if op_name == "set_route_ll":
+            return True
+        if op_name == "start_coverage":
             return True
         if op_name == "set_patrol_ll":
             return True
@@ -4763,6 +5393,66 @@ class WebSocketApi:
                 err,
                 client_req_id=client_req_id,
                 extra=datums_payload,
+            )
+            if ok:
+                await self.node._broadcast(self.node.snapshot_state())
+            return
+
+        if op == "preview_coverage":
+            parameters, parse_error = self._parse_coverage_parameters(msg)
+            if parameters is None:
+                await self._send_ack(
+                    ws,
+                    "preview_coverage",
+                    False,
+                    parse_error,
+                    client_req_id=client_req_id,
+                )
+                return
+            ok, error, coverage_plan = await asyncio.to_thread(
+                self.node.generate_coverage_plan,
+                parameters,
+            )
+            await self._send_ack(
+                ws,
+                "preview_coverage",
+                ok,
+                error,
+                client_req_id=client_req_id,
+                extra={"coverage_plan": coverage_plan} if ok else None,
+            )
+            return
+
+        if op == "start_coverage":
+            parameters, parse_error = self._parse_coverage_parameters(msg)
+            if parameters is None:
+                await self._send_ack(
+                    ws,
+                    "start_coverage",
+                    False,
+                    parse_error,
+                    client_req_id=client_req_id,
+                    extra={
+                        "route_started": False,
+                        "route_submission_state": "not_started",
+                        **self._control_lock_extra(),
+                    },
+                )
+                return
+            ok, error, start_result = await asyncio.to_thread(
+                self.node.start_coverage,
+                parameters,
+            )
+            await self._send_ack(
+                ws,
+                "start_coverage",
+                ok,
+                error,
+                client_req_id=client_req_id,
+                extra={
+                    **start_result,
+                    **self._control_lock_extra(),
+                },
             )
             if ok:
                 await self.node._broadcast(self.node.snapshot_state())

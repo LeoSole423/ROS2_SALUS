@@ -3,7 +3,18 @@ float64[] lons
 float64[] yaws_deg
 string[] waypoint_action_jsons
 string[] waypoint_roles
+# Vacio conserva compatibilidad (todos key). False identifica una guia que debe
+# viajar dentro del chunk hasta la siguiente meta key.
+bool[] waypoint_key_flags
 bool loop
+# False conserva el comportamiento historico: si el robot esta a menos de
+# route_segment_start_tolerance_m de un tramo cualquiera de la ruta, la mision se
+# engancha ahi y descarta las metas anteriores. Eso sirve para retomar una ruta
+# que el robot ya estaba haciendo, y es un error en cobertura: un lote corrido
+# respecto del vehiculo deja lazos de cabecera cerca del robot y la mision
+# arrancaria por el medio, sin cubrir las primeras pasadas. True obliga a
+# arrancar en la primera meta.
+bool start_from_first_waypoint
 float64 leg_spacing_m
 float64 chunk_span_m
 uint32 chunk_max_waypoints

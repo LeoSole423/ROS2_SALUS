@@ -32,6 +32,7 @@ from interfaces.srv import (
     CancelPatrolMission,
     CancelNavGoal,
     CancelRouteMission,
+    GenerateCoveragePlanLL,
     GetPatrolMissionState,
     GetRouteMissionState,
     RequestReturnHome,
@@ -40,6 +41,11 @@ from interfaces.srv import (
     SetNavigationProfile,
     SetRouteMissionLL,
 )
+from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
+from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
+from navegacion_gps.coverage_waypoint_core import resolve_row_visit_order
+from navegacion_gps.nav_benchmarking import body_relative_offsets_to_north_east
+from navegacion_gps.nav_benchmarking import offset_lat_lon
 
 
 BLOCKED_STATE_NONE = ""
@@ -711,18 +717,22 @@ def expand_route_waypoints_with_actions(
     *,
     leg_spacing_m: float,
     loop: bool,
+    base_key_flags: Optional[Sequence[bool]] = None,
 ) -> Tuple[List[RouteWaypoint], List[str], List[bool]]:
     base = list(base_waypoints)
     base_actions = list(action_jsons)
+    base_flags = list(base_key_flags or [True for _ in base])
     if len(base_actions) != len(base):
         base_actions = ["" for _ in base]
+    if len(base_flags) != len(base):
+        base_flags = [True for _ in base]
     if len(base) <= 1:
-        return base, base_actions, [True for _ in base]
+        return base, base_actions, [bool(value) for value in base_flags]
 
     spacing = max(1.0, float(leg_spacing_m))
     expanded: List[RouteWaypoint] = [base[0]]
     expanded_actions: List[str] = [str(base_actions[0] or "")]
-    expanded_key_flags: List[bool] = [True]
+    expanded_key_flags: List[bool] = [bool(base_flags[0])]
     segment_count = len(base) if loop else len(base) - 1
 
     for idx in range(segment_count):
@@ -738,7 +748,7 @@ def expand_route_waypoints_with_actions(
         if idx + 1 < len(base):
             expanded.append(base[idx + 1])
             expanded_actions.append(str(base_actions[idx + 1] or ""))
-            expanded_key_flags.append(True)
+            expanded_key_flags.append(bool(base_flags[idx + 1]))
 
     return expanded, expanded_actions, expanded_key_flags
 
@@ -788,6 +798,7 @@ def prepare_route_waypoints(
     segment_start_tolerance_m: float = 5.0,
     action_jsons: Optional[Sequence[str]] = None,
     waypoint_roles: Optional[Sequence[str]] = None,
+    allow_segment_join: bool = True,
 ) -> Tuple[Optional[PreparedRouteMission], str]:
     route = list(base_waypoints)
     source_indices = list(range(len(route)))
@@ -904,7 +915,12 @@ def prepare_route_waypoints(
         start_index += 1
 
     segment_note = ""
-    if start_index == 0 and len(route) > 1:
+    # El enganche a un tramo del medio descarta las metas anteriores. Sirve para
+    # retomar una ruta que el robot ya venia haciendo, y hay que poder apagarlo:
+    # en cobertura la ruta se recorre completa desde su primera meta, y los lazos
+    # de cabecera pasan cerca del vehiculo sin que eso signifique que ese tramo ya
+    # se hizo.
+    if allow_segment_join and start_index == 0 and len(route) > 1:
         closest_segment = _closest_route_segment(
             route,
             robot_lat=float(robot_lat),
@@ -1318,6 +1334,10 @@ class RouteExecutorNode(Node):
         self.declare_parameter("nav_cancel_goal_service", "/nav_command_server/cancel_goal")
         self.declare_parameter("nav_telemetry_topic", "/nav_command_server/telemetry")
         self.declare_parameter("set_route_service", "/route_executor/set_route_ll")
+        self.declare_parameter(
+            "generate_coverage_plan_service",
+            "/route_executor/generate_coverage_plan_ll",
+        )
         self.declare_parameter("cancel_route_service", "/route_executor/cancel_route")
         self.declare_parameter("get_state_service", "/route_executor/get_state")
         self.declare_parameter("set_patrol_service", "/route_executor/set_patrol_ll")
@@ -1341,6 +1361,21 @@ class RouteExecutorNode(Node):
         self.declare_parameter("min_leg_spacing_m", 5.0)
         self.declare_parameter("min_chunk_span_m", 20.0)
         self.declare_parameter("min_chunk_max_waypoints", 2)
+        self.declare_parameter("max_route_input_waypoints", 200)
+        self.declare_parameter("coverage_max_rows", 100)
+        self.declare_parameter("coverage_max_key_waypoints", 200)
+        self.declare_parameter("coverage_max_sampled_waypoints", 2000)
+        self.declare_parameter("coverage_max_field_dimension_m", 500.0)
+        self.declare_parameter("coverage_max_turning_radius_m", 100.0)
+        self.declare_parameter("coverage_planner_min_turning_radius_m", 4.0)
+        self.declare_parameter("coverage_allow_headland_conflicts", False)
+        # Apagado: la cobertura recorre las pasadas de a una, desde la del
+        # vehiculo hacia el otro borde. Prenderlo deja que el planificador
+        # saltee pasadas para agrandar cada giro y achicar la cabecera, a costa
+        # de cubrir el lote en dos bloques intercalados.
+        self.declare_parameter("coverage_allow_row_skipping", False)
+        self.declare_parameter("coverage_min_waypoint_spacing_m", 0.5)
+        self.declare_parameter("coverage_topology_audit_spacing_m", 0.5)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1389,6 +1424,9 @@ class RouteExecutorNode(Node):
         self.nav_cancel_goal_service = str(self.get_parameter("nav_cancel_goal_service").value)
         self.nav_telemetry_topic = str(self.get_parameter("nav_telemetry_topic").value)
         self.set_route_service = str(self.get_parameter("set_route_service").value)
+        self.generate_coverage_plan_service = str(
+            self.get_parameter("generate_coverage_plan_service").value
+        )
         self.cancel_route_service = str(self.get_parameter("cancel_route_service").value)
         self.get_state_service = str(self.get_parameter("get_state_service").value)
         self.set_patrol_service = str(self.get_parameter("set_patrol_service").value)
@@ -1425,6 +1463,48 @@ class RouteExecutorNode(Node):
         self.min_chunk_span_m = max(5.0, float(self.get_parameter("min_chunk_span_m").value))
         self.min_chunk_max_waypoints = max(
             2, int(self.get_parameter("min_chunk_max_waypoints").value)
+        )
+        self.max_route_input_waypoints = max(
+            1, int(self.get_parameter("max_route_input_waypoints").value)
+        )
+        self.coverage_max_rows = max(
+            1, int(self.get_parameter("coverage_max_rows").value)
+        )
+        self.coverage_max_key_waypoints = max(
+            2, int(self.get_parameter("coverage_max_key_waypoints").value)
+        )
+        self.coverage_max_sampled_waypoints = max(
+            2, int(self.get_parameter("coverage_max_sampled_waypoints").value)
+        )
+        self.coverage_max_field_dimension_m = max(
+            1.0, float(self.get_parameter("coverage_max_field_dimension_m").value)
+        )
+        self.coverage_max_turning_radius_m = max(
+            0.1, float(self.get_parameter("coverage_max_turning_radius_m").value)
+        )
+        self.coverage_planner_min_turning_radius_m = max(
+            0.1,
+            float(
+                self.get_parameter("coverage_planner_min_turning_radius_m").value
+            ),
+        )
+        self.coverage_allow_headland_conflicts = bool(
+            self.get_parameter("coverage_allow_headland_conflicts").value
+        )
+        self.coverage_allow_row_skipping = bool(
+            self.get_parameter("coverage_allow_row_skipping").value
+        )
+        self.coverage_min_waypoint_spacing_m = max(
+            0.05, float(self.get_parameter("coverage_min_waypoint_spacing_m").value)
+        )
+        self.coverage_topology_audit_spacing_m = min(
+            0.5,
+            max(
+                0.05,
+                float(
+                    self.get_parameter("coverage_topology_audit_spacing_m").value
+                ),
+            ),
         )
         self.route_waypoint_reached_tolerance_m = max(
             0.05, float(self.get_parameter("route_waypoint_reached_tolerance_m").value)
@@ -1657,6 +1737,12 @@ class RouteExecutorNode(Node):
             SetRouteMissionLL,
             self.set_route_service,
             self._on_set_route,
+            callback_group=self._service_group,
+        )
+        self._generate_coverage_plan_srv = self.create_service(
+            GenerateCoveragePlanLL,
+            self.generate_coverage_plan_service,
+            self._on_generate_coverage_plan,
             callback_group=self._service_group,
         )
         self._cancel_route_srv = self.create_service(
@@ -3990,6 +4076,411 @@ class RouteExecutorNode(Node):
             self.get_logger().warning(f"Route mission stopped ({stop_reason})")
             self._publish_empty_route_paths()
 
+    def _validate_generate_coverage_request(
+        self,
+        request: GenerateCoveragePlanLL.Request,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        values = {
+            "start_lat": float(request.start_lat),
+            "start_lon": float(request.start_lon),
+            "start_yaw_deg": float(request.start_yaw_deg),
+            "start_is_field_corner": bool(request.start_is_field_corner),
+            "field_length_m": float(request.field_length_m),
+            "field_width_m": float(request.field_width_m),
+            "cutter_width_m": float(request.cutter_width_m),
+            "overlap_ratio": float(request.overlap_ratio),
+            "min_turning_radius_m": float(request.min_turning_radius_m),
+            "waypoint_spacing_m": float(request.waypoint_spacing_m),
+            "side": str(request.side or "").strip().lower(),
+        }
+        numeric_values = [
+            float(value)
+            for key, value in values.items()
+            if key not in {"side", "start_is_field_corner"}
+        ]
+        if not all(np.isfinite(value) for value in numeric_values):
+            return None, "coverage parameters must be finite"
+        if not -90.0 <= float(values["start_lat"]) <= 90.0:
+            return None, "start_lat must be in [-90, 90]"
+        if not -180.0 <= float(values["start_lon"]) <= 180.0:
+            return None, "start_lon must be in [-180, 180]"
+        if abs(float(values["start_yaw_deg"])) > 360.0:
+            return None, "start_yaw_deg must be in [-360, 360]"
+
+        max_dimension = float(self.coverage_max_field_dimension_m)
+        for key in ("field_length_m", "field_width_m", "cutter_width_m"):
+            value = float(values[key])
+            if value <= 0.0 or value > max_dimension:
+                return None, f"{key} must be > 0 and <= {max_dimension:g}"
+        overlap = float(values["overlap_ratio"])
+        if not 0.0 <= overlap < 1.0:
+            return None, "overlap_ratio must be in [0, 1)"
+        turning_radius = float(values["min_turning_radius_m"])
+        if turning_radius <= 0.0 or turning_radius > float(
+            self.coverage_max_turning_radius_m
+        ):
+            return (
+                None,
+                "min_turning_radius_m must be > 0 and <= "
+                f"{float(self.coverage_max_turning_radius_m):g}",
+            )
+        planner_min_turning_radius = float(
+            self.coverage_planner_min_turning_radius_m
+        )
+        if turning_radius + 1.0e-9 < planner_min_turning_radius:
+            return (
+                None,
+                "min_turning_radius_m must be >= configured planner minimum "
+                f"{planner_min_turning_radius:g}",
+            )
+        waypoint_spacing = float(values["waypoint_spacing_m"])
+        if waypoint_spacing < float(self.coverage_min_waypoint_spacing_m):
+            return (
+                None,
+                "waypoint_spacing_m must be >= "
+                f"{float(self.coverage_min_waypoint_spacing_m):g}",
+            )
+        if waypoint_spacing > max_dimension:
+            return None, f"waypoint_spacing_m must be <= {max_dimension:g}"
+        if values["side"] not in {"left", "right"}:
+            return None, "side must be 'left' or 'right'"
+
+        values["start_yaw_deg"] = (
+            (float(values["start_yaw_deg"]) + 180.0) % 360.0
+        ) - 180.0
+        values["route_start_lat"] = float(values["start_lat"])
+        values["route_start_lon"] = float(values["start_lon"])
+        values["centerline_length_m"] = float(values["field_length_m"])
+
+        field_width = float(values["field_width_m"])
+        cutter_width = float(values["cutter_width_m"])
+        if bool(values["start_is_field_corner"]):
+            field_length = float(values["field_length_m"])
+            if cutter_width >= field_length:
+                return (
+                    None,
+                    "cutter_width_m must be smaller than field_length_m for "
+                    "field-corner coverage",
+                )
+            if cutter_width > field_width:
+                return (
+                    None,
+                    "cutter_width_m must be <= field_width_m for field-corner "
+                    "coverage",
+                )
+            side_sign = 1.0 if values["side"] == "left" else -1.0
+            north_m, east_m = body_relative_offsets_to_north_east(
+                float(values["start_yaw_deg"]),
+                0.5 * cutter_width,
+                side_sign * 0.5 * cutter_width,
+            )
+            route_start_lat, route_start_lon = offset_lat_lon(
+                float(values["start_lat"]),
+                float(values["start_lon"]),
+                north_m=north_m,
+                east_m=east_m,
+            )
+            if not (
+                -90.0 <= route_start_lat <= 90.0
+                and -180.0 <= route_start_lon <= 180.0
+            ):
+                return None, "field-corner inset leaves valid latitude/longitude range"
+            values["route_start_lat"] = float(route_start_lat)
+            values["route_start_lon"] = float(route_start_lon)
+            values["centerline_length_m"] = field_length - cutter_width
+
+        centerline_span = max(0.0, field_width - cutter_width)
+        if centerline_span <= 1.0e-9:
+            row_count = 1
+            lane_spacing = 0.0
+        else:
+            max_lane_spacing = cutter_width * (1.0 - overlap)
+            row_count = int(math.ceil(centerline_span / max_lane_spacing)) + 1
+            lane_spacing = centerline_span / float(row_count - 1)
+
+        key_waypoint_count = 2 * int(row_count)
+        if row_count > int(self.coverage_max_rows):
+            return (
+                None,
+                f"coverage row_count {row_count} exceeds limit {self.coverage_max_rows}",
+            )
+        if key_waypoint_count > int(self.coverage_max_key_waypoints):
+            return (
+                None,
+                "coverage key waypoint count "
+                f"{key_waypoint_count} exceeds limit {self.coverage_max_key_waypoints}",
+            )
+
+        visit_order = resolve_row_visit_order(
+            row_count=int(row_count),
+            lane_spacing_m=float(lane_spacing),
+            min_turning_radius_m=turning_radius,
+            field_length_m=float(values["centerline_length_m"]),
+            cutter_width_m=(
+                cutter_width
+                if self.coverage_allow_headland_conflicts
+                else None
+            ),
+            allow_row_skipping=self.coverage_allow_row_skipping,
+        )
+        turn_separations = [
+            abs(int(visit_order[index + 1]) - int(visit_order[index]))
+            * float(lane_spacing)
+            for index in range(len(visit_order) - 1)
+        ]
+        topology_audit_spacing_m = min(
+            waypoint_spacing,
+            float(self.coverage_topology_audit_spacing_m),
+        )
+
+        def turn_point_bound(spacing_m: float) -> int:
+            return sum(
+                int(
+                    math.ceil(
+                        headland_turn_length_m(
+                            separation,
+                            min_turning_radius_m=turning_radius,
+                        )
+                        / spacing_m
+                    )
+                )
+                + 3
+                for separation in turn_separations
+            )
+
+        # Dos poligonales con muestreos distintos: la de preview parte las pasadas
+        # al detalle pedido y la de auditoria las toma enteras, porque una recta se
+        # cruza o no con otra figura sin importar en cuantos puntos se la parta. El
+        # tope mira la mas grande de las dos.
+        preview_row_step_count = max(
+            1,
+            int(math.ceil(float(values["centerline_length_m"]) / waypoint_spacing)),
+        )
+        preview_upper_bound = (
+            1 + int(row_count) * preview_row_step_count + turn_point_bound(waypoint_spacing)
+        )
+        audit_upper_bound = (
+            1 + int(row_count) + turn_point_bound(topology_audit_spacing_m)
+        )
+        sampled_upper_bound = max(preview_upper_bound, audit_upper_bound)
+        if sampled_upper_bound > int(self.coverage_max_sampled_waypoints):
+            hint = (
+                "increase waypoint_spacing_m"
+                if preview_upper_bound >= audit_upper_bound
+                else "reduce the field size"
+            )
+            return (
+                None,
+                "coverage sampled waypoint upper bound "
+                f"{sampled_upper_bound} exceeds limit "
+                f"{self.coverage_max_sampled_waypoints} "
+                f"(preview={preview_upper_bound}, audit={audit_upper_bound}; "
+                f"{hint})",
+            )
+
+        values["preflight_row_count"] = int(row_count)
+        values["sampled_upper_bound"] = int(sampled_upper_bound)
+        values["topology_audit_spacing_m"] = float(topology_audit_spacing_m)
+        return values, ""
+
+    def _on_generate_coverage_plan(
+        self,
+        request: GenerateCoveragePlanLL.Request,
+        response: GenerateCoveragePlanLL.Response,
+    ) -> GenerateCoveragePlanLL.Response:
+        values, error = self._validate_generate_coverage_request(request)
+        if values is None:
+            response.ok = False
+            response.error = str(error)
+            return response
+
+        try:
+            plan, sampled_waypoints = build_lawnmower_waypoints(
+                start_lat=float(values["route_start_lat"]),
+                start_lon=float(values["route_start_lon"]),
+                start_yaw_deg=float(values["start_yaw_deg"]),
+                field_length_m=float(values["centerline_length_m"]),
+                field_width_m=float(values["field_width_m"]),
+                cutter_width_m=float(values["cutter_width_m"]),
+                overlap_ratio=float(values["overlap_ratio"]),
+                min_turning_radius_m=float(values["min_turning_radius_m"]),
+                waypoint_spacing_m=float(values["waypoint_spacing_m"]),
+                side=str(values["side"]),
+                allow_headland_conflicts=self.coverage_allow_headland_conflicts,
+                allow_row_skipping=self.coverage_allow_row_skipping,
+            )
+            audit_plan = plan
+            audit_waypoints = sampled_waypoints
+            if float(values["topology_audit_spacing_m"]) + 1.0e-9 < float(
+                values["waypoint_spacing_m"]
+            ):
+                audit_plan, audit_waypoints = build_lawnmower_waypoints(
+                    start_lat=float(values["route_start_lat"]),
+                    start_lon=float(values["route_start_lon"]),
+                    start_yaw_deg=float(values["start_yaw_deg"]),
+                    field_length_m=float(values["centerline_length_m"]),
+                    field_width_m=float(values["field_width_m"]),
+                    cutter_width_m=float(values["cutter_width_m"]),
+                    overlap_ratio=float(values["overlap_ratio"]),
+                    min_turning_radius_m=float(values["min_turning_radius_m"]),
+                    waypoint_spacing_m=float(values["topology_audit_spacing_m"]),
+                    side=str(values["side"]),
+                    allow_headland_conflicts=self.coverage_allow_headland_conflicts,
+                    allow_row_skipping=self.coverage_allow_row_skipping,
+                    # El detalle fino solo hace falta en las cabeceras: ahi vive
+                    # la guia y ahi la poligonal recorta el arco. Las pasadas son
+                    # rectas y entran enteras, que es lo que evita que el conteo
+                    # crezca con el largo del lote.
+                    row_waypoint_spacing_m=float(values["centerline_length_m"]),
+                )
+        except (ArithmeticError, RuntimeError, ValueError) as exc:
+            response.ok = False
+            response.error = f"coverage generation failed: {exc}"
+            return response
+
+        if int(plan.row_count) != int(values["preflight_row_count"]):
+            response.ok = False
+            response.error = "coverage row_count changed after preflight"
+            return response
+        if len(sampled_waypoints) > int(self.coverage_max_sampled_waypoints):
+            response.ok = False
+            response.error = (
+                f"coverage sampled waypoint count {len(sampled_waypoints)} exceeds "
+                f"limit {self.coverage_max_sampled_waypoints}"
+            )
+            return response
+        if len(audit_waypoints) > int(self.coverage_max_sampled_waypoints):
+            response.ok = False
+            response.error = (
+                f"coverage topology audit waypoint count {len(audit_waypoints)} "
+                f"exceeds limit {self.coverage_max_sampled_waypoints}"
+            )
+            return response
+
+        key_waypoints = [
+            waypoint for waypoint in sampled_waypoints if bool(waypoint.get("key"))
+        ]
+        route_waypoints = [
+            waypoint
+            for waypoint in audit_waypoints
+            if bool(waypoint.get("key")) or bool(waypoint.get("guide"))
+        ]
+        if len(key_waypoints) > int(self.coverage_max_key_waypoints):
+            response.ok = False
+            response.error = (
+                f"coverage key waypoint count {len(key_waypoints)} exceeds "
+                f"limit {self.coverage_max_key_waypoints}"
+            )
+            return response
+
+        response.sampled_lats = [float(item["lat"]) for item in sampled_waypoints]
+        response.sampled_lons = [float(item["lon"]) for item in sampled_waypoints]
+        response.sampled_yaws_deg = [
+            float(item["yaw_deg"]) for item in sampled_waypoints
+        ]
+        response.sampled_phases = [str(item["phase"]) for item in sampled_waypoints]
+        response.sampled_row_indices = [
+            int(item["row_index"]) for item in sampled_waypoints
+        ]
+        response.sampled_key_flags = [
+            bool(item["key"]) for item in sampled_waypoints
+        ]
+        response.key_lats = [float(item["lat"]) for item in key_waypoints]
+        response.key_lons = [float(item["lon"]) for item in key_waypoints]
+        response.key_yaws_deg = [float(item["yaw_deg"]) for item in key_waypoints]
+        response.route_lats = [float(item["lat"]) for item in route_waypoints]
+        response.route_lons = [float(item["lon"]) for item in route_waypoints]
+        response.route_yaws_deg = [
+            float(item["yaw_deg"]) for item in route_waypoints
+        ]
+        response.route_key_flags = [
+            bool(item["key"]) for item in route_waypoints
+        ]
+
+        turn_count = len(audit_plan.turn_separations_m)
+        omega_turn_count = max(0, turn_count - int(audit_plan.clean_uturn_count))
+        strict_crossing_count = int(audit_plan.strict_crossing_count)
+        nonadjacent_touch_count = int(audit_plan.nonadjacent_touch_count)
+        collinear_overlap_count = int(audit_plan.collinear_overlap_count)
+        topology_conflict_count = (
+            strict_crossing_count
+            + nonadjacent_touch_count
+            + collinear_overlap_count
+        )
+        field_strict_crossing_count = int(
+            audit_plan.field_strict_crossing_count
+        )
+        field_nonadjacent_touch_count = int(
+            audit_plan.field_nonadjacent_touch_count
+        )
+        field_collinear_overlap_count = int(
+            audit_plan.field_collinear_overlap_count
+        )
+        field_topology_conflict_count = (
+            field_strict_crossing_count
+            + field_nonadjacent_touch_count
+            + field_collinear_overlap_count
+        )
+        response.row_count = int(plan.row_count)
+        response.lane_spacing_m = float(plan.lane_spacing_m)
+        response.row_visit_order = [int(index) for index in plan.row_visit_order]
+        response.turn_separations_m = [
+            float(value) for value in plan.turn_separations_m
+        ]
+        response.clean_uturn_count = int(audit_plan.clean_uturn_count)
+        response.omega_turn_count = int(omega_turn_count)
+        response.estimated_path_length_m = float(plan.estimated_path_length_m)
+        response.headland_before_m = float(plan.headland_before_m)
+        response.headland_after_m = float(plan.headland_after_m)
+        response.lateral_overflow_m = float(plan.lateral_overflow_m)
+        response.strict_crossing_count = strict_crossing_count
+        response.nonadjacent_touch_count = nonadjacent_touch_count
+        response.collinear_overlap_count = collinear_overlap_count
+        response.topology_conflict_count = int(topology_conflict_count)
+        response.field_strict_crossing_count = field_strict_crossing_count
+        response.field_nonadjacent_touch_count = field_nonadjacent_touch_count
+        response.field_collinear_overlap_count = field_collinear_overlap_count
+        response.field_topology_conflict_count = int(
+            field_topology_conflict_count
+        )
+        if self.coverage_allow_headland_conflicts:
+            response.topology_safe = bool(field_topology_conflict_count == 0)
+            response.topology_scope = "field_interior"
+        else:
+            response.topology_safe = bool(
+                topology_conflict_count == 0 and omega_turn_count == 0
+            )
+            response.topology_scope = "global"
+        response.topology_audit_spacing_m = float(
+            values["topology_audit_spacing_m"]
+        )
+        response.planner_min_turning_radius_m = float(
+            self.coverage_planner_min_turning_radius_m
+        )
+        response.route_start_lat = float(values["route_start_lat"])
+        response.route_start_lon = float(values["route_start_lon"])
+        response.route_start_yaw_deg = float(values["start_yaw_deg"])
+        response.centerline_length_m = float(values["centerline_length_m"])
+
+        max_turn_separation = max(plan.turn_separations_m, default=0.0)
+        response.recommended_leg_spacing_m = float(
+            max(
+                float(self.min_leg_spacing_m),
+                float(values["field_length_m"]),
+                float(max_turn_separation),
+            )
+            + 1.0
+        )
+        response.recommended_chunk_span_m = float(
+            max(self.min_chunk_span_m, 60.0)
+        )
+        response.recommended_chunk_max_waypoints = int(
+            max(self.min_chunk_max_waypoints, 25)
+        )
+        response.ok = True
+        response.error = ""
+        return response
+
     def _validate_set_route_request(
         self, request: SetRouteMissionLL.Request
     ) -> Tuple[
@@ -4007,6 +4498,17 @@ class RouteExecutorNode(Node):
         yaws = [float(value) for value in request.yaws_deg]
         if len(lats) == 0:
             return None, None, None, False, 0.0, 0.0, 0, "at least one waypoint is required"
+        if len(lats) > int(self.max_route_input_waypoints):
+            return (
+                None,
+                None,
+                None,
+                False,
+                0.0,
+                0.0,
+                0,
+                f"waypoint count exceeds limit {self.max_route_input_waypoints}",
+            )
         if len(lats) != len(lons):
             return None, None, None, False, 0.0, 0.0, 0, "lats and lons must have the same length"
         if len(yaws) not in (0, len(lats)):
@@ -4220,6 +4722,28 @@ class RouteExecutorNode(Node):
             response.error = error
             return response
 
+        requested_key_flags = [
+            bool(value) for value in getattr(request, "waypoint_key_flags", [])
+        ]
+        if len(requested_key_flags) not in (0, len(route_input)):
+            response.ok = False
+            response.error = "waypoint_key_flags must be empty or match lats length"
+            return response
+        route_key_flags = (
+            requested_key_flags
+            if requested_key_flags
+            else [True for _ in route_input]
+        )
+        if route_key_flags and (not route_key_flags[0] or not route_key_flags[-1]):
+            response.ok = False
+            response.error = "first and last route waypoints must be key"
+            return response
+
+        non_home_indices = [
+            index
+            for index, role in enumerate(waypoint_roles)
+            if str(role) != WAYPOINT_ROLE_HOME
+        ]
         route_input, action_jsons, waypoint_roles, home_waypoint, split_error = _split_home_waypoint(
             route_input,
             action_jsons,
@@ -4231,6 +4755,7 @@ class RouteExecutorNode(Node):
             response.input_waypoint_count = 0
             response.expanded_waypoint_count = 0
             return response
+        route_key_flags = [route_key_flags[index] for index in non_home_indices]
 
         route_input, action_jsons, dropped_loop_closure = drop_duplicate_loop_closure_with_actions(
             route_input,
@@ -4238,6 +4763,7 @@ class RouteExecutorNode(Node):
             loop=loop_enabled,
             closure_tolerance_m=self.route_waypoint_reached_tolerance_m,
         )
+        route_key_flags = route_key_flags[: len(route_input)]
 
         with self._lock:
             robot_pose = self._last_robot_pose
@@ -4250,10 +4776,30 @@ class RouteExecutorNode(Node):
             segment_start_tolerance_m=self.route_segment_start_tolerance_m,
             action_jsons=action_jsons,
             waypoint_roles=waypoint_roles,
+            allow_segment_join=not bool(
+                getattr(request, "start_from_first_waypoint", False)
+            ),
         )
         if prepared is None:
             response.ok = False
             response.error = prepare_error
+            response.input_waypoint_count = 0
+            response.expanded_waypoint_count = 0
+            return response
+
+        prepared_source_indices = list(
+            prepared.input_indices
+            if prepared.input_indices is not None
+            else range(len(prepared.waypoints))
+        )
+        prepared_key_flags = [
+            bool(route_key_flags[index])
+            for index in prepared_source_indices
+            if 0 <= int(index) < len(route_key_flags)
+        ]
+        if len(prepared_key_flags) != len(prepared.waypoints):
+            response.ok = False
+            response.error = "waypoint_key_flags could not be mapped to prepared route"
             response.input_waypoint_count = 0
             response.expanded_waypoint_count = 0
             return response
@@ -4271,6 +4817,7 @@ class RouteExecutorNode(Node):
             prepared.action_jsons,
             leg_spacing_m=leg_spacing_m,
             loop=loop_enabled,
+            base_key_flags=prepared_key_flags,
         )
 
         with self._lock:
@@ -4296,9 +4843,16 @@ class RouteExecutorNode(Node):
             self._route_action_jsons = list(expanded_action_jsons)
             self._route_waypoint_roles = [WAYPOINT_ROLE_NORMAL for _ in expanded]
             self._route_key_waypoint_flags = list(expanded_key_flags)
+            key_source_indices = [
+                int(source_index)
+                for source_index, is_key in zip(
+                    prepared_source_indices, prepared_key_flags
+                )
+                if bool(is_key)
+            ]
             self._route_input_indices = expanded_input_indices(
                 expanded_key_flags,
-                prepared.input_indices,
+                key_source_indices,
             )
             self._home_waypoint = (
                 home_waypoint.waypoint if home_waypoint is not None else self._configured_home_waypoint()

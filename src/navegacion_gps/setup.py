@@ -37,6 +37,7 @@ setup(
             'cmd_vel_ackermann_bridge_v2 = navegacion_gps.cmd_vel_ackermann_bridge_v2:main',
             'compass_calibration_recorder = navegacion_gps.compass_calibration_recorder:main',
             'compass_heading_gate = navegacion_gps.compass_heading_gate:main',
+            'coverage_waypoint_mission = navegacion_gps.coverage_waypoint_mission:main',
             # LEGACY: dynamic datum setter. Current global profiles use fixed
             # site datum from launch/configuration.
             'datum_setter = navegacion_gps.datum_setter:main',

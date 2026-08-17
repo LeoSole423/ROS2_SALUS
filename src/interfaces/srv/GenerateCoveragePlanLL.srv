@@ -1,0 +1,77 @@
+# Referencia geografica. Si start_is_field_corner=true es la esquina fisica
+# inferior de la franja; el proveedor aplica el inset del implemento para
+# obtener el centro de la primera pasada. Si es false, conserva la semantica
+# directa de centro de pasada. Yaw ROS/map: 0=este, 90=norte.
+float64 start_lat
+float64 start_lon
+float64 start_yaw_deg
+bool start_is_field_corner
+
+float64 field_length_m
+float64 field_width_m
+float64 cutter_width_m
+float64 overlap_ratio
+float64 min_turning_radius_m
+float64 waypoint_spacing_m
+string side
+---
+bool ok
+string error
+
+# Inicio efectivo del centro de la primera pasada, despues del inset opcional.
+float64 route_start_lat
+float64 route_start_lon
+float64 route_start_yaw_deg
+float64 centerline_length_m
+
+# Polilinea completa solo para preview. No debe enviarse como metas a Nav2.
+float64[] sampled_lats
+float64[] sampled_lons
+float64[] sampled_yaws_deg
+string[] sampled_phases
+int32[] sampled_row_indices
+bool[] sampled_key_flags
+
+# Extremos canonicos de cada pasada (metas key/de parada).
+float64[] key_lats
+float64[] key_lons
+float64[] key_yaws_deg
+
+# Ruta ejecutable: extremos key + una guia no-key en el punto exterior de cada
+# cabecera. Las guias viajan en el mismo chunk y no son metas de parada.
+float64[] route_lats
+float64[] route_lons
+float64[] route_yaws_deg
+bool[] route_key_flags
+
+uint32 row_count
+float64 lane_spacing_m
+int32[] row_visit_order
+float64[] turn_separations_m
+uint32 clean_uturn_count
+uint32 omega_turn_count
+float64 estimated_path_length_m
+float64 headland_before_m
+float64 headland_after_m
+float64 lateral_overflow_m
+
+uint32 strict_crossing_count
+uint32 nonadjacent_touch_count
+uint32 collinear_overlap_count
+uint32 topology_conflict_count
+# Subconjunto de conflictos que cae dentro del rectangulo fisico del campo.
+uint32 field_strict_crossing_count
+uint32 field_nonadjacent_touch_count
+uint32 field_collinear_overlap_count
+uint32 field_topology_conflict_count
+# La regla depende de topology_scope. field_interior: ningun conflicto dentro
+# del rectangulo, con giros/cruces exteriores solo informativos. global: ningun
+# conflicto en toda la polilinea y cero giros omega.
+bool topology_safe
+string topology_scope
+float64 topology_audit_spacing_m
+float64 planner_min_turning_radius_m
+
+float64 recommended_leg_spacing_m
+float64 recommended_chunk_span_m
+uint32 recommended_chunk_max_waypoints

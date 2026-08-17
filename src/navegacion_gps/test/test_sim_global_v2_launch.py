@@ -21,6 +21,45 @@ def _read_repo(relative_path: str) -> str:
     return (PACKAGE_ROOT.parents[1] / relative_path).read_text(encoding="utf-8")
 
 
+def test_coverage_tight_turn_experiment_is_isolated_to_simulation() -> None:
+    sim_launch = _read("launch/sim_global_v2.launch.py")
+    real_launch = _read("launch/real_global_v2.launch.py")
+    sim_params = _read("config/nav2_global_v2_sim_rolling_params.yaml")
+    sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
+    real_params = _read("config/nav2_global_v2_real_rolling_params.yaml")
+    real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
+
+    # Radio corto de simulacion: el largo del giro de cabecera y la cabecera que
+    # necesita escalan con el radio (27.5 m y 10.4 m a 4.0 m; 19.3 m y 7.4 m a
+    # 2.9 m). El plan de cobertura no puede pedir menos que el Smac que lo sigue,
+    # asi que los tres numeros se mueven juntos.
+    assert '"coverage_planner_min_turning_radius_m": 2.9' in sim_launch
+    assert '"coverage_allow_headland_conflicts": True' in sim_launch
+    # El lote se recorre pasada por pasada: el salteo agranda el giro pero cubre
+    # el lote en dos bloques intercalados, y eso no es lo que se pide en campo.
+    assert '"coverage_allow_row_skipping": False' in sim_launch
+    assert '"coverage_start_max_distance_m": "50.0"' in sim_launch
+    # Medido: la guia parte la cabecera en un tramo de radio minimo exacto que
+    # Smac cierra con una vuelta completa. El giro entero como una sola meta
+    # reproduce el nominal, asi que simulacion y real comparten la guia apagada.
+    assert '"coverage_use_headland_guides": "false"' in sim_launch
+    # 25 grados dan un radio efectivo de 2.02 m: es el margen de correccion
+    # sobre los 2.9 m que traza el planner. Con los 18 grados del perfil real
+    # (2.89 m) el seguimiento del omega quedaba sobre el tope de direccion.
+    assert '"operational_steering_limit_rad": 0.4363323130' in sim_launch
+    assert sim_params.count("minimum_turning_radius: 2.9") == 2
+    assert sim_wifi_params.count("minimum_turning_radius: 2.9") == 2
+    assert "minimum_turning_radius: 4.0" not in sim_params
+    assert "minimum_turning_radius: 4.0" not in sim_wifi_params
+
+    assert "coverage_allow_headland_conflicts" not in real_launch
+    assert "coverage_start_max_distance_m" not in real_launch
+    assert "coverage_use_headland_guides" not in real_launch
+    assert '"operational_steering_limit_rad": 0.3141592654' in real_launch
+    assert real_params.count("minimum_turning_radius: 4.0") == 2
+    assert real_wifi_params.count("minimum_turning_radius: 4.0") == 2
+
+
 def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     launch_contents = _read("launch/sim_global_v2.launch.py")
     map_gps_enable_arg = (
@@ -414,7 +453,17 @@ def test_recovery_behavior_uses_clearance_guard_without_backup() -> None:
     assert "BackUp" not in to_pose_bt
     assert '<Sequence name="WaitAndReplan">' in through_poses_bt
     assert '<Sequence name="WaitAndReplan">' in to_pose_bt
-    assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>' in through_poses_bt
+    # 1.2 m es la misma tolerancia de llegada que usa el resto del stack
+    # (route_waypoint_reached_tolerance_m y xy_goal_tolerance). Con los 2.5 m
+    # anteriores el radio superaba la separacion entre pasadas de cobertura
+    # (1.5-2.4 m): al llegar al final de una pasada, la meta de inicio de la
+    # siguiente caia dentro del radio, Nav2 la borraba y el vehiculo cruzaba el
+    # lote en diagonal en vez de hacer la cabecera.
+    assert '<RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>' in through_poses_bt
+    assert 'radius="2.5"' not in through_poses_bt
+    trace_bt = _read("config/navigate_through_poses_trace.xml")
+    assert 'radius="2.5"' not in trace_bt
+    assert trace_bt.count('radius="1.2"') == 3
     assert '<Sequence name="PruneAndComputeClearPathThroughPoses">' in through_poses_bt
     assert '<RateController hz="0.333" name="RateControllerComputePathToPose">' in to_pose_bt
     assert '<RateController hz="0.333" name="RateController">' in through_poses_bt

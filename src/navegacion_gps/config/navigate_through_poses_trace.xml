@@ -9,7 +9,7 @@
                 <GlobalUpdatedGoal/>
                 <TraceReplan reason="goal_updated" goals="{goals}" path="{path}">
                   <Sequence name="ComputeUpdatedGoalPath">
-                    <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>
+                    <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>
                     <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
                     <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
                   </Sequence>
@@ -21,7 +21,7 @@
                   <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
                   <TraceReplan reason="clearance_invalid" goals="{goals}" path="{path}">
                     <Sequence name="ComputeClearancePath">
-                      <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>
+                      <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>
                       <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
                       <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
                     </Sequence>
@@ -30,7 +30,7 @@
               </Sequence>
               <TraceReplan reason="path_invalid" goals="{goals}" path="{path}">
                 <Sequence name="ComputeValidPath">
-                  <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.5"/>
+                  <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.2"/>
                   <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
                   <IsPathClearanceValid path="{path}" service_name="/path_clearance_validator/is_path_clearance_valid" server_timeout="1000"/>
                 </Sequence>

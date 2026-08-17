@@ -73,11 +73,15 @@ planner_server:
       max_iterations: 3000000
       motion_model_for_search: "DUBIN"
       # Radio fisico con wheelbase=0.94m y steering_limit=30deg: ~1.63m.
-      # Radio con limite automatico de direccion 18deg: ~2.89m.
-      # A velocidad WiFi nominal (1.6m/s), el limite historico angular 0.4rad/s
-      # equivale a 4.0m; usamos ese radio para que Smac genere curvas de calle
-      # y deje margen de steering al controlador para corregir seguimiento.
-      minimum_turning_radius: 4.0
+      # Radio con el limite operativo de direccion de este perfil, 25deg: ~2.02m.
+      # Se planifica a 2.9m, que es el radio de la cabecera de cobertura: con
+      # pasadas mas angostas que el diametro de giro, cada giro es un omega cuyo
+      # largo y cuya cabecera escalan con el radio (a 4.0m eran 27.5m y 10.4m,
+      # a 2.9m son 19.3m y 7.4m). El margen de steering para corregir
+      # seguimiento lo da la diferencia contra los 2.02m del limite operativo.
+      # El perfil real sigue en 4.0m: este radio no esta validado en el
+      # vehiculo fisico.
+      minimum_turning_radius: 2.9
       angle_quantization_bins: 64
       reverse_penalty: 2.8
       change_penalty: 1.8
@@ -107,7 +111,8 @@ smoother_server:
       path_upsampling_factor: 1
       keep_start_orientation: true
       keep_goal_orientation: true
-      minimum_turning_radius: 4.0
+      # Igual que el planner: si el smoother suaviza a 4.0m deshace el omega.
+      minimum_turning_radius: 2.9
       optimizer:
         max_iterations: 80
 

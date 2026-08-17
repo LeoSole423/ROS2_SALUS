@@ -12,3 +12,5 @@ def test_no_go_editor_launch_supports_odom_topic_override() -> None:
     assert 'LaunchConfiguration("odom_topic")' in launch_contents
     assert 'DeclareLaunchArgument("odom_topic", default_value="/odometry/local")' in launch_contents
     assert '"odom_topic": odom_topic' in launch_contents
+    assert '"coverage_use_headland_guides"' in launch_contents
+    assert 'default_value="false"' in launch_contents

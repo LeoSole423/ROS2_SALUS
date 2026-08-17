@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -27,6 +28,9 @@ def generate_launch_description():
     nav_set_manual_mode_service = LaunchConfiguration("nav_set_manual_mode_service")
     nav_get_state_service = LaunchConfiguration("nav_get_state_service")
     route_set_service = LaunchConfiguration("route_set_service")
+    generate_coverage_plan_service = LaunchConfiguration(
+        "generate_coverage_plan_service"
+    )
     route_cancel_service = LaunchConfiguration("route_cancel_service")
     route_get_state_service = LaunchConfiguration("route_get_state_service")
     patrol_set_service = LaunchConfiguration("patrol_set_service")
@@ -60,6 +64,25 @@ def generate_launch_description():
     snapshot_request_timeout_s = LaunchConfiguration("snapshot_request_timeout_s")
     set_zones_timeout_s = LaunchConfiguration("set_zones_timeout_s")
     set_goal_timeout_s = LaunchConfiguration("set_goal_timeout_s")
+    coverage_plan_timeout_s = LaunchConfiguration("coverage_plan_timeout_s")
+    coverage_planner_min_turning_radius_m = LaunchConfiguration(
+        "coverage_planner_min_turning_radius_m"
+    )
+    coverage_topology_audit_spacing_m = LaunchConfiguration(
+        "coverage_topology_audit_spacing_m"
+    )
+    coverage_reference_max_age_s = LaunchConfiguration(
+        "coverage_reference_max_age_s"
+    )
+    coverage_start_max_distance_m = LaunchConfiguration(
+        "coverage_start_max_distance_m"
+    )
+    coverage_start_max_heading_error_deg = LaunchConfiguration(
+        "coverage_start_max_heading_error_deg"
+    )
+    coverage_use_headland_guides = LaunchConfiguration(
+        "coverage_use_headland_guides"
+    )
 
     return LaunchDescription(
         [
@@ -104,6 +127,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "route_set_service", default_value="/route_executor/set_route_ll"
+            ),
+            DeclareLaunchArgument(
+                "generate_coverage_plan_service",
+                default_value="/route_executor/generate_coverage_plan_ll",
             ),
             DeclareLaunchArgument(
                 "route_cancel_service", default_value="/route_executor/cancel_route"
@@ -187,6 +214,37 @@ def generate_launch_description():
             DeclareLaunchArgument("snapshot_request_timeout_s", default_value="5.0"),
             DeclareLaunchArgument("set_zones_timeout_s", default_value="12.0"),
             DeclareLaunchArgument("set_goal_timeout_s", default_value="12.0"),
+            DeclareLaunchArgument("coverage_plan_timeout_s", default_value="5.0"),
+            DeclareLaunchArgument(
+                "coverage_planner_min_turning_radius_m",
+                default_value="4.0",
+            ),
+            DeclareLaunchArgument(
+                "coverage_topology_audit_spacing_m",
+                default_value="0.5",
+            ),
+            DeclareLaunchArgument(
+                "coverage_reference_max_age_s",
+                default_value="5.0",
+            ),
+            DeclareLaunchArgument(
+                "coverage_start_max_distance_m",
+                default_value="5.0",
+            ),
+            DeclareLaunchArgument(
+                "coverage_start_max_heading_error_deg",
+                default_value="30.0",
+            ),
+            DeclareLaunchArgument(
+                "coverage_use_headland_guides",
+                default_value="false",
+                description=(
+                    "Use one non-key exterior guide per coverage headland. "
+                    "Leave off: splitting the turn leaves a leg at the exact "
+                    "planner minimum radius, which Smac closes with a full "
+                    "25 m loop instead of the nominal arc"
+                ),
+            ),
             Node(
                 package="navegacion_gps",
                 executable="zones_manager",
@@ -247,6 +305,13 @@ def generate_launch_description():
                         "nav_cancel_goal_service": nav_cancel_goal_service,
                         "nav_telemetry_topic": nav_telemetry_topic,
                         "set_route_service": route_set_service,
+                        "generate_coverage_plan_service": generate_coverage_plan_service,
+                        "coverage_planner_min_turning_radius_m": (
+                            coverage_planner_min_turning_radius_m
+                        ),
+                        "coverage_topology_audit_spacing_m": (
+                            coverage_topology_audit_spacing_m
+                        ),
                         "cancel_route_service": route_cancel_service,
                         "get_state_service": route_get_state_service,
                     }
@@ -274,6 +339,7 @@ def generate_launch_description():
                         "nav_set_manual_mode_service": nav_set_manual_mode_service,
                         "nav_get_state_service": nav_get_state_service,
                         "route_set_service": route_set_service,
+                        "coverage_plan_service": generate_coverage_plan_service,
                         "route_cancel_service": route_cancel_service,
                         "route_get_state_service": route_get_state_service,
                         "patrol_set_service": patrol_set_service,
@@ -304,6 +370,16 @@ def generate_launch_description():
                         "snapshot_request_timeout_s": snapshot_request_timeout_s,
                         "set_zones_timeout_s": set_zones_timeout_s,
                         "set_goal_timeout_s": set_goal_timeout_s,
+                        "coverage_plan_timeout_s": coverage_plan_timeout_s,
+                        "coverage_reference_max_age_s": coverage_reference_max_age_s,
+                        "coverage_start_max_distance_m": coverage_start_max_distance_m,
+                        "coverage_start_max_heading_error_deg": (
+                            coverage_start_max_heading_error_deg
+                        ),
+                        "coverage_use_headland_guides": ParameterValue(
+                            coverage_use_headland_guides,
+                            value_type=bool,
+                        ),
                     }
                 ],
             ),

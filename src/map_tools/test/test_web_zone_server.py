@@ -1,3 +1,5 @@
+import asyncio
+import json
 import threading
 from types import SimpleNamespace
 
@@ -5,6 +7,660 @@ from diagnostic_msgs.msg import DiagnosticStatus
 import pytest
 
 from map_tools.web_zone_server import ROSBAG_TOPIC_PROFILES, WebSocketApi, WebZoneServerNode
+
+
+def _valid_coverage_service_response(**overrides):
+    values = {
+        "ok": True,
+        "error": "",
+        "route_start_lat": -31.0,
+        "route_start_lon": -64.0,
+        "route_start_yaw_deg": 0.0,
+        "centerline_length_m": 18.0,
+        "sampled_lats": [-31.0, -31.0, -31.0],
+        "sampled_lons": [-64.0, -63.9999, -63.9998],
+        "sampled_yaws_deg": [0.0, 0.0, 0.0],
+        "sampled_phases": ["row", "row", "row"],
+        "sampled_row_indices": [0, 0, 0],
+        "sampled_key_flags": [True, False, True],
+        "key_lats": [-31.0, -31.0],
+        "key_lons": [-64.0, -63.9998],
+        "key_yaws_deg": [0.0, 0.0],
+        "route_lats": [-31.0, -31.0],
+        "route_lons": [-64.0, -63.9998],
+        "route_yaws_deg": [0.0, 0.0],
+        "route_key_flags": [True, True],
+        "row_count": 1,
+        "lane_spacing_m": 0.0,
+        "row_visit_order": [0],
+        "turn_separations_m": [],
+        "clean_uturn_count": 0,
+        "omega_turn_count": 0,
+        "estimated_path_length_m": 18.0,
+        "headland_before_m": 0.0,
+        "headland_after_m": 0.0,
+        "lateral_overflow_m": 0.0,
+        "strict_crossing_count": 0,
+        "nonadjacent_touch_count": 0,
+        "collinear_overlap_count": 0,
+        "topology_conflict_count": 0,
+        "field_strict_crossing_count": 0,
+        "field_nonadjacent_touch_count": 0,
+        "field_collinear_overlap_count": 0,
+        "field_topology_conflict_count": 0,
+        "topology_safe": True,
+        "topology_scope": "global",
+        "topology_audit_spacing_m": 0.5,
+        "planner_min_turning_radius_m": 4.0,
+        "recommended_leg_spacing_m": 21.0,
+        "recommended_chunk_span_m": 60.0,
+        "recommended_chunk_max_waypoints": 25,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _coverage_parameters():
+    return {
+        "start_lat": -31.0,
+        "start_lon": -64.0,
+        "start_yaw_deg": 0.0,
+        "field_length_m": 20.0,
+        "field_width_m": 2.0,
+        "cutter_width_m": 2.0,
+        "overlap_ratio": 0.15,
+        "min_turning_radius_m": 4.0,
+        "waypoint_spacing_m": 2.0,
+        "side": "left",
+    }
+
+
+def test_preview_coverage_parser_uses_explicit_reference_and_defaults():
+    node = SimpleNamespace()
+    api = WebSocketApi(node)
+
+    parameters, error = api._parse_coverage_parameters(
+        {
+            "reference": {"lat": -31.485, "lon": -64.241, "yaw_deg": 90.0},
+            "field_length_m": 20.0,
+            "field_width_m": 20.0,
+        }
+    )
+
+    assert error == ""
+    assert parameters is not None
+    assert parameters["start_lat"] == pytest.approx(-31.485)
+    assert parameters["start_yaw_deg"] == pytest.approx(90.0)
+    assert parameters["cutter_width_m"] == pytest.approx(2.0)
+    assert parameters["overlap_ratio"] == pytest.approx(0.15)
+    assert parameters["min_turning_radius_m"] == pytest.approx(4.0)
+    assert parameters["side"] == "left"
+    # El operador marco la esquina fisica: el proveedor aplica el inset.
+    assert parameters["start_is_field_corner"] is True
+
+
+def test_preview_coverage_parser_uses_fresh_current_reference():
+    node = SimpleNamespace(
+        current_coverage_reference=lambda: (
+            {"lat": -31.1, "lon": -64.2, "yaw_deg": 12.0},
+            "",
+        )
+    )
+    api = WebSocketApi(node)
+
+    parameters, error = api._parse_coverage_parameters(
+        {"field_length_m": 20.0, "field_width_m": 10.0, "side": "right"}
+    )
+
+    assert error == ""
+    assert parameters is not None
+    assert parameters["start_lon"] == pytest.approx(-64.2)
+    assert parameters["start_yaw_deg"] == pytest.approx(12.0)
+    assert parameters["side"] == "right"
+    # Sin referencia explicita la pose del vehiculo es el centro de la primera
+    # pasada. Tomarla como esquina dejaria la primera meta media pasada adelante
+    # y media al costado: un corrimiento lateral que con radio minimo obliga a un
+    # rulo de aproximacion antes de empezar la primera pasada.
+    assert parameters["start_is_field_corner"] is False
+
+
+def test_current_coverage_reference_rejects_stale_heading(monkeypatch):
+    node = object.__new__(WebZoneServerNode)
+    node._lock = threading.Lock()
+    node._last_robot_pose = {"lat": -31.1, "lon": -64.2, "heading_deg": 12.0}
+    node._last_robot_pose_monotonic = 100.0
+    node._last_robot_heading_monotonic = 90.0
+    node.coverage_reference_max_age_s = 5.0
+    monkeypatch.setattr("map_tools.web_zone_server.time.monotonic", lambda: 102.0)
+
+    reference, error = WebZoneServerNode.current_coverage_reference(node)
+
+    assert reference is None
+    assert error == "current robot map heading is stale"
+
+
+def test_generate_coverage_plan_maps_typed_arrays_to_preview_and_route_request():
+    node = object.__new__(WebZoneServerNode)
+    node._coverage_plan_client = object()
+    node.coverage_plan_timeout_s = 2.0
+    captured = {}
+
+    def call_service(client, request, timeout_s):
+        captured["client"] = client
+        captured["request"] = request
+        captured["timeout_s"] = timeout_s
+        return SimpleNamespace(
+            ok=True,
+            error="",
+            route_start_lat=-31.0,
+            route_start_lon=-64.0,
+            route_start_yaw_deg=90.0,
+            centerline_length_m=18.0,
+            sampled_lats=[-31.0, -30.9999, -30.9998],
+            sampled_lons=[-64.0, -64.0, -64.0],
+            sampled_yaws_deg=[90.0, 90.0, 90.0],
+            sampled_phases=["row", "row", "row"],
+            sampled_row_indices=[0, 0, 0],
+            sampled_key_flags=[True, False, True],
+            key_lats=[-31.0, -30.9998],
+            key_lons=[-64.0, -64.0],
+            key_yaws_deg=[90.0, 90.0],
+            route_lats=[-31.0, -30.9998],
+            route_lons=[-64.0, -64.0],
+            route_yaws_deg=[90.0, 90.0],
+            route_key_flags=[True, True],
+            row_count=1,
+            lane_spacing_m=0.0,
+            row_visit_order=[0],
+            turn_separations_m=[],
+            clean_uturn_count=0,
+            omega_turn_count=0,
+            estimated_path_length_m=20.0,
+            headland_before_m=0.0,
+            headland_after_m=0.0,
+            lateral_overflow_m=0.0,
+            strict_crossing_count=0,
+            nonadjacent_touch_count=0,
+            collinear_overlap_count=0,
+            topology_conflict_count=0,
+            field_strict_crossing_count=0,
+            field_nonadjacent_touch_count=0,
+            field_collinear_overlap_count=0,
+            field_topology_conflict_count=0,
+            topology_safe=True,
+            topology_scope="global",
+            topology_audit_spacing_m=0.5,
+            planner_min_turning_radius_m=4.0,
+            recommended_leg_spacing_m=21.0,
+            recommended_chunk_span_m=60.0,
+            recommended_chunk_max_waypoints=25,
+        )
+
+    node._call_service = call_service
+    parameters = {
+        "start_lat": -31.0,
+        "start_lon": -64.0,
+        "start_yaw_deg": 90.0,
+        "field_length_m": 20.0,
+        "field_width_m": 2.0,
+        "cutter_width_m": 2.0,
+        "overlap_ratio": 0.15,
+        "min_turning_radius_m": 4.0,
+        "waypoint_spacing_m": 2.0,
+        "side": "left",
+    }
+
+    ok, error, payload = node.generate_coverage_plan(parameters)
+
+    assert ok is True
+    assert error == ""
+    assert len(payload["sampled_waypoints"]) == 3
+    assert len(payload["key_waypoints"]) == 2
+    assert payload["topology_safe"] is True
+    assert payload["parameters"]["field_length_m"] == pytest.approx(20.0)
+    assert payload["parameters"]["field_width_m"] == pytest.approx(2.0)
+    assert payload["parameters"]["centerline_length_m"] == pytest.approx(18.0)
+    assert payload["route_start_reference"]["lat"] == pytest.approx(-31.0)
+    assert payload["headland_guidance_enabled"] is False
+    assert payload["route_request"] == {
+        "op": "set_route_ll",
+        "waypoints": [
+            {**waypoint, "key": True, "guide": False}
+            for waypoint in payload["key_waypoints"]
+        ],
+        "loop": False,
+        "leg_spacing_m": 21.0,
+        "chunk_span_m": 60.0,
+        "chunk_max_waypoints": 25,
+    }
+    assert captured["request"].field_length_m == pytest.approx(20.0)
+    assert captured["request"].start_is_field_corner is True
+    assert captured["request"].side == "left"
+    assert captured["timeout_s"] == pytest.approx(2.0)
+
+
+def test_generate_coverage_plan_uses_one_headland_guide_only_when_enabled():
+    node = object.__new__(WebZoneServerNode)
+    node._coverage_plan_client = object()
+    node.coverage_plan_timeout_s = 2.0
+    node.coverage_use_headland_guides = True
+    node._call_service = lambda *_args: _valid_coverage_service_response(
+        sampled_lats=[-31.0, -31.0, -30.99999, -30.99999],
+        sampled_lons=[-64.0, -63.9998, -63.9998, -64.0],
+        sampled_yaws_deg=[0.0, 0.0, 180.0, 180.0],
+        sampled_phases=["row", "row", "row", "row"],
+        sampled_row_indices=[0, 0, 1, 1],
+        sampled_key_flags=[True, True, True, True],
+        key_lats=[-31.0, -31.0, -30.99999, -30.99999],
+        key_lons=[-64.0, -63.9998, -63.9998, -64.0],
+        key_yaws_deg=[0.0, 0.0, 180.0, 180.0],
+        route_lats=[-31.0, -31.0, -30.9999, -30.99999, -30.99999],
+        route_lons=[-64.0, -63.9998, -63.9997, -63.9998, -64.0],
+        route_yaws_deg=[0.0, 0.0, 90.0, 180.0, 180.0],
+        route_key_flags=[True, True, False, True, True],
+        row_count=2,
+        lane_spacing_m=1.5,
+        row_visit_order=[0, 1],
+        turn_separations_m=[1.5],
+        omega_turn_count=1,
+        strict_crossing_count=1,
+        topology_conflict_count=1,
+        topology_safe=True,
+        topology_scope="field_interior",
+    )
+
+    ok, error, payload = node.generate_coverage_plan(_coverage_parameters())
+
+    assert ok is True
+    assert error == ""
+    assert payload["headland_guidance_enabled"] is True
+    assert payload["route_request"]["waypoints"] == payload["route_waypoints"]
+    assert [waypoint["key"] for waypoint in payload["route_request"]["waypoints"]] == [
+        True,
+        True,
+        False,
+        True,
+        True,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_error"),
+    [
+        (
+            _valid_coverage_service_response(
+                omega_turn_count=1,
+                topology_safe=True,
+            ),
+            "topology_safe invariant is inconsistent",
+        ),
+        (
+            _valid_coverage_service_response(
+                strict_crossing_count=1,
+                topology_conflict_count=0,
+                topology_safe=False,
+            ),
+            "topology conflict count is inconsistent",
+        ),
+        (
+            _valid_coverage_service_response(key_lons=[-64.0, -63.7]),
+            "key arrays do not match sampled key flags",
+        ),
+        (
+            _valid_coverage_service_response(row_count=2),
+            "two endpoints per row",
+        ),
+    ],
+)
+def test_generate_coverage_plan_rejects_contradictory_service_response(
+    response,
+    expected_error,
+):
+    node = object.__new__(WebZoneServerNode)
+    node._coverage_plan_client = object()
+    node.coverage_plan_timeout_s = 2.0
+    node._call_service = lambda *_args: response
+
+    ok, error, payload = node.generate_coverage_plan(_coverage_parameters())
+
+    assert ok is False
+    assert expected_error in error
+    assert payload == {}
+
+
+def test_generate_coverage_plan_allows_only_field_safe_headland_conflicts_in_sim():
+    node = object.__new__(WebZoneServerNode)
+    node._coverage_plan_client = object()
+    node.coverage_plan_timeout_s = 2.0
+    node._call_service = lambda *_args: _valid_coverage_service_response(
+        strict_crossing_count=4,
+        topology_conflict_count=4,
+        field_strict_crossing_count=0,
+        field_topology_conflict_count=0,
+        omega_turn_count=3,
+        topology_safe=True,
+        topology_scope="field_interior",
+    )
+
+    ok, error, payload = node.generate_coverage_plan(_coverage_parameters())
+
+    assert ok is True
+    assert error == ""
+    assert payload["topology_safe"] is True
+    assert payload["metrics"]["topology_conflicts"]["total"] == 0
+    assert payload["metrics"]["global_topology_conflicts"]["total"] == 4
+    assert payload["metrics"]["topology_scope"] == "field_interior"
+
+
+def test_start_coverage_rejects_unsafe_plan_without_route_submission():
+    node = object.__new__(WebZoneServerNode)
+    node.generate_coverage_plan = lambda _parameters: (
+        True,
+        "",
+        {
+            "topology_safe": False,
+            "metrics": {
+                "omega_turn_count": 0,
+                "topology_conflicts": {
+                    "strict_crossings": 1,
+                    "nonadjacent_touches": 0,
+                    "collinear_overlaps": 0,
+                    "total": 1,
+                },
+            },
+        },
+    )
+    route_calls = []
+    node.set_route_mission = lambda *_args, **_kwargs: route_calls.append(_args)
+
+    ok, error, result = node.start_coverage(_coverage_parameters())
+
+    assert ok is False
+    assert "topology conflicts" in error
+    assert result["route_started"] is False
+    assert result["route_submission_state"] == "not_started"
+    assert route_calls == []
+
+
+def test_start_coverage_rejects_far_or_misaligned_approach_without_route_submission():
+    node = object.__new__(WebZoneServerNode)
+    node.coverage_start_max_distance_m = 5.0
+    node.coverage_start_max_heading_error_deg = 30.0
+    plan = {
+        "topology_safe": True,
+        "metrics": {
+            "omega_turn_count": 0,
+            "topology_conflicts": {
+                "strict_crossings": 0,
+                "nonadjacent_touches": 0,
+                "collinear_overlaps": 0,
+                "total": 0,
+            },
+        },
+        "key_waypoints": [{"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0}],
+        "route_request": {
+            "waypoints": [],
+            "leg_spacing_m": 21.0,
+            "chunk_span_m": 60.0,
+            "chunk_max_waypoints": 25,
+        },
+    }
+    node.generate_coverage_plan = lambda _parameters: (True, "", plan)
+    node.current_coverage_reference = lambda: (
+        {"lat": -31.001, "lon": -64.0, "yaw_deg": 90.0},
+        "",
+    )
+    route_calls = []
+    node.set_route_mission = lambda *_args, **_kwargs: route_calls.append(_args)
+
+    ok, error, result = node.start_coverage(_coverage_parameters())
+
+    assert ok is False
+    assert "distance=" in error
+    assert "limit=5.00 m" in error
+    assert "heading_error=90.0 deg" in error
+    assert "limit=30.0 deg" in error
+    assert result["approach"]["distance_m"] > 100.0
+    assert route_calls == []
+
+
+def test_start_coverage_regenerates_checks_approach_and_submits_recommended_route():
+    node = object.__new__(WebZoneServerNode)
+    node.coverage_start_max_distance_m = 5.0
+    node.coverage_start_max_heading_error_deg = 30.0
+    plan = {
+        "topology_safe": True,
+        "metrics": {
+            "omega_turn_count": 0,
+            "topology_conflicts": {
+                "strict_crossings": 0,
+                "nonadjacent_touches": 0,
+                "collinear_overlaps": 0,
+                "total": 0,
+            },
+        },
+        "key_waypoints": [
+            {"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0},
+            {"lat": -31.0, "lon": -63.9998, "yaw_deg": 0.0},
+        ],
+        "route_request": {
+            "waypoints": [
+                {"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0},
+                {"lat": -31.0, "lon": -63.9998, "yaw_deg": 0.0},
+            ],
+            "leg_spacing_m": 21.0,
+            "chunk_span_m": 60.0,
+            "chunk_max_waypoints": 25,
+        },
+    }
+    generated = []
+    node.generate_coverage_plan = lambda parameters: (
+        generated.append(parameters) or True,
+        "",
+        plan,
+    )
+    node.current_coverage_reference = lambda: (
+        {"lat": -31.0, "lon": -64.0, "yaw_deg": 5.0},
+        "",
+    )
+    route_calls = []
+
+    def set_route(*args, **kwargs):
+        route_calls.append((args, kwargs))
+        return True, "", 2, 2
+
+    node.set_route_mission = set_route
+
+    ok, error, result = node.start_coverage(_coverage_parameters())
+
+    assert ok is True
+    assert error == ""
+    assert len(generated) == 1
+    assert len(route_calls) == 1
+    assert route_calls[0][0][1:] == (False, 21.0, 60.0, 25)
+    # La cobertura se recorre completa: sin esto route_executor puede enganchar la
+    # ruta en un tramo del medio y descartar las primeras pasadas.
+    assert route_calls[0][1] == {"start_from_first_waypoint": True}
+    assert result["route_started"] is True
+    assert result["route_submission_state"] == "started"
+    assert result["input_waypoint_count"] == 2
+
+
+def test_start_coverage_reports_route_service_timeout_as_unknown():
+    node = object.__new__(WebZoneServerNode)
+    node.coverage_start_max_distance_m = 5.0
+    node.coverage_start_max_heading_error_deg = 30.0
+    plan = {
+        "topology_safe": True,
+        "metrics": {
+            "omega_turn_count": 0,
+            "topology_conflicts": {
+                "strict_crossings": 0,
+                "nonadjacent_touches": 0,
+                "collinear_overlaps": 0,
+                "total": 0,
+            },
+        },
+        "key_waypoints": [{"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0}],
+        "route_request": {
+            "waypoints": [{"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0}],
+            "leg_spacing_m": 21.0,
+            "chunk_span_m": 60.0,
+            "chunk_max_waypoints": 25,
+        },
+    }
+    node.generate_coverage_plan = lambda _parameters: (True, "", plan)
+    node.current_coverage_reference = lambda: (
+        {"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0},
+        "",
+    )
+    node.set_route_mission = lambda *_args, **_kwargs: (
+        False,
+        "set_route_ll timeout",
+        1,
+        0,
+    )
+
+    ok, error, result = node.start_coverage(_coverage_parameters())
+
+    assert ok is False
+    assert error == "set_route_ll timeout"
+    assert result["route_started"] is None
+    assert result["route_submission_state"] == "unknown_timeout"
+
+
+def test_preview_coverage_is_not_a_motion_control_operation():
+    node = SimpleNamespace(enable_control_lock=True)
+    api = WebSocketApi(node)
+
+    assert api._is_controlled_robot_op("preview_coverage", {}) is False
+    assert api._is_controlled_robot_op("start_coverage", {}) is True
+
+
+def test_preview_coverage_websocket_operation_returns_correlated_ack():
+    sent_payloads = []
+
+    class FakeNode:
+        enable_control_lock = False
+
+        def get_logger(self):
+            return SimpleNamespace(
+                info=lambda *_args, **_kwargs: None,
+                warning=lambda *_args, **_kwargs: None,
+            )
+
+        def generate_coverage_plan(self, parameters):
+            assert parameters["field_length_m"] == pytest.approx(20.0)
+            return True, "", {"topology_safe": True, "route_request": {}}
+
+        async def send_ws_json(self, _ws, payload):
+            sent_payloads.append(payload)
+            return True
+
+    api = WebSocketApi(FakeNode())
+    asyncio.run(
+        api._handle_message(
+            object(),
+            json.dumps(
+                {
+                    "op": "preview_coverage",
+                    "client_req_id": "coverage-1",
+                    "reference": {"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0},
+                    "field_length_m": 20.0,
+                    "field_width_m": 2.0,
+                }
+            ),
+        )
+    )
+
+    assert sent_payloads == [
+        {
+            "op": "ack",
+            "ok": True,
+            "request": "preview_coverage",
+            "error": None,
+            "client_req_id": "coverage-1",
+            "coverage_plan": {"topology_safe": True, "route_request": {}},
+        }
+    ]
+
+
+def test_start_coverage_websocket_operation_returns_explicit_started_state():
+    sent_payloads = []
+    broadcasts = []
+
+    class FakeNode:
+        enable_control_lock = False
+
+        def get_logger(self):
+            return SimpleNamespace(
+                info=lambda *_args, **_kwargs: None,
+                warning=lambda *_args, **_kwargs: None,
+            )
+
+        def is_ui_control_locked(self):
+            return False
+
+        def get_ui_control_lock_reason(self):
+            return ""
+
+        def start_coverage(self, parameters):
+            assert parameters["field_length_m"] == pytest.approx(20.0)
+            return (
+                True,
+                "",
+                {
+                    "route_started": True,
+                    "route_submission_state": "started",
+                    "input_waypoint_count": 2,
+                    "expanded_waypoint_count": 2,
+                },
+            )
+
+        def snapshot_state(self):
+            return {"op": "state"}
+
+        async def _broadcast(self, payload):
+            broadcasts.append(payload)
+
+        async def send_ws_json(self, _ws, payload):
+            sent_payloads.append(payload)
+            return True
+
+    api = WebSocketApi(FakeNode())
+    asyncio.run(
+        api._handle_message(
+            object(),
+            json.dumps(
+                {
+                    "op": "start_coverage",
+                    "client_req_id": "coverage-start-1",
+                    "reference": {"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0},
+                    "field_length_m": 20.0,
+                    "field_width_m": 2.0,
+                }
+            ),
+        )
+    )
+
+    assert sent_payloads == [
+        {
+            "op": "ack",
+            "ok": True,
+            "request": "start_coverage",
+            "error": None,
+            "client_req_id": "coverage-start-1",
+            "route_started": True,
+            "route_submission_state": "started",
+            "input_waypoint_count": 2,
+            "expanded_waypoint_count": 2,
+            "control_locked": False,
+            "control_lock_reason": "",
+            "locked": False,
+            "lock_reason": "",
+        }
+    ]
+    assert broadcasts == [{"op": "state"}]
 
 
 def test_normalize_waypoint_actions_accepts_navigation_profiles():

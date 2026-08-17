@@ -32,10 +32,13 @@ Los tres nodos de `navegacion_gps` se pueden desactivar por argumento si ya est�
 - servir la interfaz web en WebSocket
 - publicar control manual en `/cmd_vel_teleop`
 - hablar con servicios de navegación y zonas
+- crear/cancelar rutas y patrullas, pedir HOME y conmutar perfiles `urban/rural`
+- generar previews de cobertura sin iniciar movimiento (`preview_coverage`)
 - exponer snapshots de navegación
 - exponer eventos recientes y alertas activas
 - arrancar/parar rosbag de debug
-- persistir waypoints YAML
+- persistir waypoints/patrulla y datums
+- puentear PTZ, presets, frames y detecciones de cámara
 
 Los perfiles de rosbag del backend web incluyen la cadena GPS necesaria para replay offline de localización global:
 - `/global_position/raw/fix`
@@ -62,7 +65,12 @@ Los perfiles de rosbag del backend web incluyen la cadena GPS necesaria para rep
   - `/nav_command_server/brake`
   - `/nav_command_server/set_manual_mode`
   - `/nav_command_server/get_state`
+  - `/route_executor/set_route_ll`, `/route_executor/cancel_route`, `/route_executor/get_state`
+  - `/route_executor/generate_coverage_plan_ll`
+  - `/route_executor/set_patrol_ll`, `/route_executor/cancel_patrol`, `/route_executor/get_patrol_state`
+  - `/route_executor/request_return_home`, `/route_executor/set_navigation_profile`
   - `/nav_snapshot_server/get_nav_snapshot`
+  - `/camara/camera_*`
 - Tópicos consumidos:
   - `/gps/fix`
   - `/odometry/local`
@@ -70,9 +78,18 @@ Los perfiles de rosbag del backend web incluyen la cadena GPS necesaria para rep
   - `/nav_command_server/events`
   - `/battery_state`
   - `/controller/telemetry`
+  - `/controller/status`
+  - `/controller/drive_telemetry`
   - `/diagnostics`
+  - `/camera/image_raw`
+  - `/detections`
 - Tópico publicado:
   - `/cmd_vel_teleop`
+
+`preview_coverage` devuelve dos listas distintas: `sampled_waypoints` para dibujar
+la curva nominal y `key_waypoints` para el posterior `set_route_ll`. El preview no
+mueve el vehículo. `topology_safe` solo es verdadero si no hay cruces, contactos
+ni solapes no adyacentes y tampoco hay giros omega.
 
 ## Batería en WebSocket
 - `battery_pct` sigue siendo el valor principal para UI.
