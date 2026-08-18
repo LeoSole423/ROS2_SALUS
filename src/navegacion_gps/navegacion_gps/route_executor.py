@@ -1389,6 +1389,14 @@ class RouteExecutorNode(Node):
         # Colchon sobre el medio ancho de corte: la ruta pasa por el centro del
         # implemento, asi que sin margen el ala de afuera pisaria la zona.
         self.declare_parameter("coverage_nogo_extra_margin_m", 0.5)
+        # Cuanto radio de giro se suma al margen. El rodeo hace que el vehiculo
+        # maniobre pegado al contorno, y un Ackermann no puede seguir una
+        # escuadra: necesita su radio de espacio para doblar. Con el margen
+        # calculado solo por el ancho de corte, Nav2 planifica entre metas lo
+        # mejor que puede y termina barriendo por adentro de la zona. Medido en
+        # simulacion con radio 2.9 m y margen 1.5 m: hasta 1.14 m adentro.
+        # En 0 se vuelve al comportamiento anterior.
+        self.declare_parameter("coverage_nogo_turning_margin_ratio", 1.0)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1525,6 +1533,10 @@ class RouteExecutorNode(Node):
         )
         self.coverage_nogo_extra_margin_m = max(
             0.0, float(self.get_parameter("coverage_nogo_extra_margin_m").value)
+        )
+        self.coverage_nogo_turning_margin_ratio = max(
+            0.0,
+            float(self.get_parameter("coverage_nogo_turning_margin_ratio").value),
         )
         self.coverage_topology_audit_spacing_m = min(
             0.5,
@@ -4387,8 +4399,16 @@ class RouteExecutorNode(Node):
         if not self.coverage_nogo_enabled:
             return [], 0.0, ""
 
-        margin_m = (0.5 * float(values["cutter_width_m"])) + float(
-            self.coverage_nogo_extra_margin_m
+        # Tres terminos: medio implemento (la ruta va por el centro), un colchon
+        # fijo, y el radio de giro porque el vehiculo maniobra contra el contorno
+        # y no puede doblar en escuadra.
+        margin_m = (
+            (0.5 * float(values["cutter_width_m"]))
+            + float(self.coverage_nogo_extra_margin_m)
+            + (
+                float(self.coverage_nogo_turning_margin_ratio)
+                * float(values["min_turning_radius_m"])
+            )
         )
         age_s = time.monotonic() - self._zones_updated_at
         if self._zones_updated_at <= 0.0 or age_s > self.zones_max_age_s:
