@@ -9,6 +9,7 @@ from typing import Callable, Optional, Sequence, Tuple
 from navegacion_gps.heading_math import normalize_yaw_deg
 from navegacion_gps.nav_benchmarking import body_relative_offsets_to_north_east
 from navegacion_gps.nav_benchmarking import offset_lat_lon
+from navegacion_gps.coverage_nogo import clip_plan_to_nogo
 
 
 _DUBINS_PATH_TYPES = ("LSL", "RSR", "LSR", "RSL", "RLR", "LRL")
@@ -63,6 +64,11 @@ class CoveragePlan:
     field_collinear_overlap_count: int = 0
     topology_audit_spacing_m: float = 0.0
     minimum_safe_lane_spacing_m: float = 0.0
+    # Efecto de las zonas no-go. Quedan en cero cuando no se pasa ninguna, que es
+    # el caso de toda la operacion previa a esta funcionalidad.
+    nogo_polygon_count: int = 0
+    nogo_dropped_count: int = 0
+    nogo_detour_count: int = 0
 
     @property
     def key_waypoints(self) -> Tuple[CoverageBodyWaypoint, ...]:
@@ -1725,6 +1731,8 @@ def build_lawnmower_waypoints(
     allow_headland_conflicts: bool = False,
     allow_row_skipping: bool = False,
     row_waypoint_spacing_m: Optional[float] = None,
+    no_go_polygons_body: Optional[Sequence[Sequence[Tuple[float, float]]]] = None,
+    no_go_margin_m: float = 0.0,
 ) -> Tuple[CoveragePlan, list[dict[str, object]]]:
     """Generar waypoints GPS de cobertura relativos a la pose inicial."""
 
@@ -1740,6 +1748,25 @@ def build_lawnmower_waypoints(
         allow_row_skipping=allow_row_skipping,
         row_waypoint_spacing_m=row_waypoint_spacing_m,
     )
+    # El recorte va aca y no despues de georreferenciar: en el marco del cuerpo
+    # las cuentas son euclideas, y lo que salga de aca pasa por el mismo bucle de
+    # georreferenciacion que el resto, asi que se comporta igual con el lote
+    # derecho que en diagonal. Ademas esta funcion es comun al preview y al
+    # arranque, con lo cual dibujo y ejecucion no pueden divergir.
+    if no_go_polygons_body:
+        clipped, dropped, detours = clip_plan_to_nogo(
+            plan.waypoints,
+            no_go_polygons_body,
+            margin_m=float(no_go_margin_m),
+        )
+        plan = replace(
+            plan,
+            waypoints=tuple(clipped),
+            estimated_path_length_m=_path_length(clipped),
+            nogo_polygon_count=len(no_go_polygons_body),
+            nogo_dropped_count=int(dropped),
+            nogo_detour_count=int(detours),
+        )
     geographic_waypoints: list[dict[str, object]] = []
     for point in plan.waypoints:
         north_m, east_m = body_relative_offsets_to_north_east(

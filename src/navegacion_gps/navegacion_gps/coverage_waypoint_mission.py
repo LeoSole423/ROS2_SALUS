@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 from typing import Optional
 
+from interfaces.srv import GetZonesState
 from interfaces.srv import SetRouteMissionLL
 from nav_msgs.msg import Odometry
 import rclpy
@@ -16,6 +17,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix
 from tf2_msgs.msg import TFMessage
 
+from navegacion_gps.coverage_nogo_zones import fetch_no_go_polygons_body
 from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
 from navegacion_gps.heading_math import normalize_yaw_deg
 from navegacion_gps.heading_math import yaw_deg_from_quaternion_xyzw
@@ -36,6 +38,14 @@ class CoverageWaypointMissionNode(Node):
         self.route_client = self.create_client(
             SetRouteMissionLL,
             "/route_executor/set_route_ll",
+        )
+        # Las zonas no-go se leen tambien desde aca y no solo desde el
+        # route_executor: con --send-route esta CLI arma la ruta por su cuenta,
+        # asi que sin esto mandaria un trazado sin recortar aunque el operador
+        # tenga zonas dibujadas.
+        self.zones_client = self.create_client(
+            GetZonesState,
+            "/zones_manager/get_state",
         )
 
     def _on_gps_fix(self, msg: NavSatFix) -> None:
@@ -71,6 +81,36 @@ class CoverageWaypointMissionNode(Node):
             if predicate():
                 return True
         return False
+
+    def _wait_for_future(self, future, timeout_s: float):
+        """Esperar una respuesta de servicio girando el nodo."""
+        if not self.spin_until(lambda: future.done(), timeout_s=float(timeout_s)):
+            return None
+        return future.result()
+
+    def no_go_polygons_body(
+        self,
+        *,
+        origin_lat: float,
+        origin_lon: float,
+        origin_yaw_deg: float,
+        wait_timeout_s: float = 1.0,
+    ):
+        """Zonas no-go en marco del lote; lista vacia si no se pudieron leer."""
+        result = fetch_no_go_polygons_body(
+            self.zones_client,
+            GetZonesState.Request,
+            origin_lat=float(origin_lat),
+            origin_lon=float(origin_lon),
+            origin_yaw_deg=float(origin_yaw_deg),
+            wait_timeout_s=float(wait_timeout_s),
+            wait_for_future=self._wait_for_future,
+        )
+        if not result.available:
+            self.get_logger().warning(
+                f"cobertura planificada sin zonas no-go: {result.note}"
+            )
+        return result.polygons
 
     def wait_for_bootstrap(self, *, timeout_s: float) -> bool:
         """Esperar el servicio de ruta y la referencia GPS/odom/TF."""
@@ -172,6 +212,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # Sin esta bandera las pasadas se recorren de a una, igual que el perfil de
     # simulacion. Prenderla permite saltear pasadas para achicar la cabecera.
     parser.add_argument("--allow-row-skipping", action="store_true")
+    # Las zonas se aplican por defecto; la bandera es para reproducir un plan
+    # viejo o para depurar sin depender de zones_manager.
+    parser.add_argument("--ignore-nogo-zones", action="store_true")
+    parser.add_argument("--nogo-extra-margin-m", type=float, default=0.5)
     parser.add_argument("--chunk-span-m", type=float, default=60.0)
     parser.add_argument("--chunk-max-waypoints", type=int, default=25)
     parser.add_argument("--timeout-s", type=float, default=20.0)
@@ -192,6 +236,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise RuntimeError("timeout esperando GPS, odometria, TF y route_executor")
 
         reference = node.current_reference()
+        no_go_polygons = (
+            []
+            if bool(args.ignore_nogo_zones)
+            else node.no_go_polygons_body(
+                origin_lat=float(reference["lat"]),
+                origin_lon=float(reference["lon"]),
+                origin_yaw_deg=float(reference["yaw_deg"]),
+            )
+        )
         plan, waypoints = build_lawnmower_waypoints(
             start_lat=float(reference["lat"]),
             start_lon=float(reference["lon"]),
@@ -204,6 +257,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             waypoint_spacing_m=float(args.waypoint_spacing_m),
             side=str(args.side),
             allow_row_skipping=bool(args.allow_row_skipping),
+            no_go_polygons_body=no_go_polygons,
+            no_go_margin_m=(
+                (0.5 * float(args.cutter_width_m)) + float(args.nogo_extra_margin_m)
+            ),
         )
         # Solo los extremos de pasada viajan al route_executor. Los puntos
         # intermedios de las curvas convierten cada cabecera en una cadena de
@@ -228,6 +285,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "omega_turns": len(turn_separations) - int(plan.clean_uturn_count),
                 "min_separation_m": min(turn_separations) if turn_separations else 0.0,
                 "separation_needed_for_uturn_m": 2.0 * float(plan.min_turning_radius_m),
+            },
+            "no_go_zones": {
+                "polygon_count": int(plan.nogo_polygon_count),
+                "dropped_waypoints": int(plan.nogo_dropped_count),
+                "detours": int(plan.nogo_detour_count),
             },
             "sampled_waypoint_count": len(waypoints),
             "route_waypoint_count": len(route_waypoints),

@@ -35,12 +35,14 @@ from interfaces.srv import (
     GenerateCoveragePlanLL,
     GetPatrolMissionState,
     GetRouteMissionState,
+    GetZonesState,
     RequestReturnHome,
     SetPatrolMissionLL,
     SetNavGoalLL,
     SetNavigationProfile,
     SetRouteMissionLL,
 )
+from navegacion_gps.coverage_nogo_zones import fetch_no_go_polygons_body
 from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
 from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
 from navegacion_gps.coverage_waypoint_core import resolve_row_visit_order
@@ -1376,6 +1378,17 @@ class RouteExecutorNode(Node):
         self.declare_parameter("coverage_allow_row_skipping", False)
         self.declare_parameter("coverage_min_waypoint_spacing_m", 0.5)
         self.declare_parameter("coverage_topology_audit_spacing_m", 0.5)
+        # Zonas no-go dibujadas en el cockpit. El planificador las recorta del
+        # trazado; el filtro keepout del costmap es independiente y puede estar
+        # apagado (lo esta en los perfiles reales), asi que este recorte es la
+        # unica proteccion que tiene el trabajo de cobertura.
+        self.declare_parameter("coverage_nogo_enabled", True)
+        self.declare_parameter("zones_get_state_service", "/zones_manager/get_state")
+        self.declare_parameter("zones_get_state_wait_timeout_s", 1.0)
+        self.declare_parameter("zones_get_state_call_timeout_s", 2.0)
+        # Colchon sobre el medio ancho de corte: la ruta pasa por el centro del
+        # implemento, asi que sin margen el ala de afuera pisaria la zona.
+        self.declare_parameter("coverage_nogo_extra_margin_m", 0.5)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1496,6 +1509,21 @@ class RouteExecutorNode(Node):
         )
         self.coverage_min_waypoint_spacing_m = max(
             0.05, float(self.get_parameter("coverage_min_waypoint_spacing_m").value)
+        )
+        self.coverage_nogo_enabled = bool(
+            self.get_parameter("coverage_nogo_enabled").value
+        )
+        self.zones_get_state_service = str(
+            self.get_parameter("zones_get_state_service").value
+        )
+        self.zones_get_state_wait_timeout_s = max(
+            0.0, float(self.get_parameter("zones_get_state_wait_timeout_s").value)
+        )
+        self.zones_get_state_call_timeout_s = max(
+            0.1, float(self.get_parameter("zones_get_state_call_timeout_s").value)
+        )
+        self.coverage_nogo_extra_margin_m = max(
+            0.0, float(self.get_parameter("coverage_nogo_extra_margin_m").value)
         )
         self.coverage_topology_audit_spacing_m = min(
             0.5,
@@ -1667,6 +1695,15 @@ class RouteExecutorNode(Node):
         self._service_group = MutuallyExclusiveCallbackGroup()
         self._client_group = ReentrantCallbackGroup()
 
+        self._zones_get_state_client = (
+            self.create_client(
+                GetZonesState,
+                self.zones_get_state_service,
+                callback_group=self._client_group,
+            )
+            if self.coverage_nogo_enabled and self.zones_get_state_service
+            else None
+        )
         self._nav_set_goal_client = self.create_client(
             SetNavGoalLL,
             self.nav_set_goal_service,
@@ -4283,6 +4320,41 @@ class RouteExecutorNode(Node):
         values["topology_audit_spacing_m"] = float(topology_audit_spacing_m)
         return values, ""
 
+    def _coverage_no_go_polygons(
+        self,
+        values: Dict[str, Any],
+    ) -> Tuple[List[List[Tuple[float, float]]], float, str]:
+        """Zonas no-go en marco del lote, con el margen y una nota de estado.
+
+        La nota queda vacia cuando la consulta salio bien. Si `zones_manager` no
+        responde se planifica igual, sin recorte: dejar al operador sin
+        cobertura porque un nodo auxiliar esta caido seria peor. Lo que no se
+        hace es ocultarlo, por eso la nota viaja hasta la respuesta del preview
+        y el cockpit puede bloquear el arranque.
+        """
+        if not self.coverage_nogo_enabled:
+            return [], 0.0, ""
+
+        margin_m = (0.5 * float(values["cutter_width_m"])) + float(
+            self.coverage_nogo_extra_margin_m
+        )
+        result = fetch_no_go_polygons_body(
+            self._zones_get_state_client,
+            GetZonesState.Request,
+            origin_lat=float(values["route_start_lat"]),
+            origin_lon=float(values["route_start_lon"]),
+            origin_yaw_deg=float(values["start_yaw_deg"]),
+            wait_timeout_s=self.zones_get_state_wait_timeout_s,
+            call_timeout_s=self.zones_get_state_call_timeout_s,
+            wait_for_future=self._wait_for_future,
+        )
+        if not result.available:
+            self.get_logger().warning(
+                f"coverage planned without no-go zones: {result.note}"
+            )
+            return [], margin_m, str(result.note)
+        return result.polygons, margin_m, ""
+
     def _on_generate_coverage_plan(
         self,
         request: GenerateCoveragePlanLL.Request,
@@ -4293,6 +4365,10 @@ class RouteExecutorNode(Node):
             response.ok = False
             response.error = str(error)
             return response
+
+        no_go_polygons, no_go_margin_m, no_go_note = self._coverage_no_go_polygons(
+            values
+        )
 
         try:
             plan, sampled_waypoints = build_lawnmower_waypoints(
@@ -4308,6 +4384,8 @@ class RouteExecutorNode(Node):
                 side=str(values["side"]),
                 allow_headland_conflicts=self.coverage_allow_headland_conflicts,
                 allow_row_skipping=self.coverage_allow_row_skipping,
+                no_go_polygons_body=no_go_polygons,
+                no_go_margin_m=no_go_margin_m,
             )
             audit_plan = plan
             audit_waypoints = sampled_waypoints
@@ -4332,6 +4410,8 @@ class RouteExecutorNode(Node):
                     # rectas y entran enteras, que es lo que evita que el conteo
                     # crezca con el largo del lote.
                     row_waypoint_spacing_m=float(values["centerline_length_m"]),
+                    no_go_polygons_body=no_go_polygons,
+                    no_go_margin_m=no_go_margin_m,
                 )
         except (ArithmeticError, RuntimeError, ValueError) as exc:
             response.ok = False
@@ -4457,6 +4537,15 @@ class RouteExecutorNode(Node):
         response.planner_min_turning_radius_m = float(
             self.coverage_planner_min_turning_radius_m
         )
+        # Los contadores de topologia salen del plan sin recortar: el recorte
+        # solo reemplaza la lista de waypoints y deja intactas las metricas que
+        # calculo build_lawnmower_body_plan. Es lo que se quiere: un rodeo que
+        # roza otra pasada es una desviacion deliberada, no un defecto del
+        # trazado, y no tiene por que bloquear el arranque.
+        response.nogo_polygon_count = int(plan.nogo_polygon_count)
+        response.nogo_dropped_count = int(plan.nogo_dropped_count)
+        response.nogo_detour_count = int(plan.nogo_detour_count)
+        response.nogo_note = str(no_go_note)
         response.route_start_lat = float(values["route_start_lat"])
         response.route_start_lon = float(values["route_start_lon"])
         response.route_start_yaw_deg = float(values["start_yaw_deg"])

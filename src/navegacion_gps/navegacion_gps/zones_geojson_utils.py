@@ -1,7 +1,6 @@
 import math
 from typing import Any, Dict, Iterable, List, Tuple
 
-import cv2
 import numpy as np
 
 
@@ -259,6 +258,11 @@ def rasterize_polygons_trinary(
     origin_y: float,
     buffer_margin_m: float = 0.0,
 ) -> Tuple[np.ndarray, Dict[str, int], List[str]]:
+    # OpenCV se importa aca y no arriba porque el rasterizado es lo unico que lo
+    # usa. Asi los helpers de GeoJSON de este modulo —pura geometria— se pueden
+    # usar desde nodos que no tienen OpenCV instalado.
+    import cv2
+
     image = np.full((height, width), 255, dtype=np.uint8)
     clipped_vertices: Dict[str, int] = {}
     outside_polygon_ids: List[str] = []

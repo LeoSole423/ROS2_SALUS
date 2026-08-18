@@ -72,6 +72,14 @@ string topology_scope
 float64 topology_audit_spacing_m
 float64 planner_min_turning_radius_m
 
+# Efecto de las zonas no-go sobre el trazado. nogo_note viene con el motivo
+# cuando no se pudieron leer las zonas: en ese caso los tres contadores van en
+# cero y el trazado NO esta recortado, aunque el operador tenga zonas dibujadas.
+uint32 nogo_polygon_count
+uint32 nogo_dropped_count
+uint32 nogo_detour_count
+string nogo_note
+
 float64 recommended_leg_spacing_m
 float64 recommended_chunk_span_m
 uint32 recommended_chunk_max_waypoints
