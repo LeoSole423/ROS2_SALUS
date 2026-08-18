@@ -3325,8 +3325,16 @@ class WebZoneServerNode(Node):
             )
         if not response_key_values:
             return False, "generate_coverage_plan_ll returned no key waypoints", {}
+        # "Dos metas por pasada" y "una guia por cabecera" describen el zigzag
+        # nominal. Con zonas no-go el trazado se aparta de esa forma a proposito:
+        # los rodeos agregan metas de parada y una zona que tapa la punta de una
+        # pasada le borra el extremo. No hay formula que lo prediga —depende de
+        # la forma de la zona—, asi que los invariantes de forma se exigen solo
+        # cuando no hubo recorte. El resto de las validaciones sigue corriendo
+        # siempre.
+        nogo_applied = int(res.nogo_polygon_count) > 0
         expected_key_count = 2 * int(res.row_count)
-        if len(response_key_values) != expected_key_count:
+        if not nogo_applied and len(response_key_values) != expected_key_count:
             return (
                 False,
                 "generate_coverage_plan_ll key waypoint count does not match "
@@ -3362,7 +3370,7 @@ class WebZoneServerNode(Node):
         ):
             return False, "generate_coverage_plan_ll route keys do not match key arrays", {}
         expected_route_count = expected_key_count + max(0, int(res.row_count) - 1)
-        if len(response_route_values) != expected_route_count:
+        if not nogo_applied and len(response_route_values) != expected_route_count:
             return (
                 False,
                 "generate_coverage_plan_ll route must contain one guide per turn",
@@ -3570,6 +3578,15 @@ class WebZoneServerNode(Node):
                 ),
             },
             "topology_safe": bool(res.topology_safe),
+            # Efecto de las zonas no-go. El cockpit repite el recorte por su
+            # cuenta y compara contra esto: si el ve zonas y aca viene un cero,
+            # sabe que la ruta que se va a ejecutar no es la que esta dibujando
+            # y bloquea el arranque. Por eso los campos tienen que viajar aunque
+            # no haya zonas.
+            "nogo_polygon_count": int(res.nogo_polygon_count),
+            "nogo_dropped_count": int(res.nogo_dropped_count),
+            "nogo_detour_count": int(res.nogo_detour_count),
+            "nogo_note": str(res.nogo_note),
             "warnings": warnings,
             "route_request": {
                 "op": "set_route_ll",

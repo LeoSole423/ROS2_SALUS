@@ -42,7 +42,7 @@ from interfaces.srv import (
     SetNavigationProfile,
     SetRouteMissionLL,
 )
-from navegacion_gps.coverage_nogo_zones import fetch_no_go_polygons_body
+from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
 from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
 from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
 from navegacion_gps.coverage_waypoint_core import resolve_row_visit_order
@@ -1384,8 +1384,8 @@ class RouteExecutorNode(Node):
         # unica proteccion que tiene el trabajo de cobertura.
         self.declare_parameter("coverage_nogo_enabled", True)
         self.declare_parameter("zones_get_state_service", "/zones_manager/get_state")
-        self.declare_parameter("zones_get_state_wait_timeout_s", 1.0)
-        self.declare_parameter("zones_get_state_call_timeout_s", 2.0)
+        self.declare_parameter("zones_refresh_period_s", 2.0)
+        self.declare_parameter("zones_max_age_s", 15.0)
         # Colchon sobre el medio ancho de corte: la ruta pasa por el centro del
         # implemento, asi que sin margen el ala de afuera pisaria la zona.
         self.declare_parameter("coverage_nogo_extra_margin_m", 0.5)
@@ -1516,11 +1516,12 @@ class RouteExecutorNode(Node):
         self.zones_get_state_service = str(
             self.get_parameter("zones_get_state_service").value
         )
-        self.zones_get_state_wait_timeout_s = max(
-            0.0, float(self.get_parameter("zones_get_state_wait_timeout_s").value)
+        self.zones_refresh_period_s = max(
+            0.2, float(self.get_parameter("zones_refresh_period_s").value)
         )
-        self.zones_get_state_call_timeout_s = max(
-            0.1, float(self.get_parameter("zones_get_state_call_timeout_s").value)
+        self.zones_max_age_s = max(
+            self.zones_refresh_period_s * 2.0,
+            float(self.get_parameter("zones_max_age_s").value),
         )
         self.coverage_nogo_extra_margin_m = max(
             0.0, float(self.get_parameter("coverage_nogo_extra_margin_m").value)
@@ -1695,6 +1696,16 @@ class RouteExecutorNode(Node):
         self._service_group = MutuallyExclusiveCallbackGroup()
         self._client_group = ReentrantCallbackGroup()
 
+        # Las zonas se refrescan de fondo y se guardan aca. El planificado NO
+        # puede pedirlas en el momento: `_on_generate_coverage_plan` corre en un
+        # callback de servicio y el executor tiene dos hilos, asi que bloquear
+        # esperando la respuesta compite con el resto del trafico del nodo y se
+        # va a timeout justo cuando el cockpit esta conectado (que es cuando hay
+        # trafico). Con el cache la planificacion no espera a nadie.
+        self._zones_geojson = ""
+        self._zones_updated_at = 0.0
+        self._zones_note = "zones state not received yet"
+        self._zones_request_pending = False
         self._zones_get_state_client = (
             self.create_client(
                 GetZonesState,
@@ -1702,6 +1713,15 @@ class RouteExecutorNode(Node):
                 callback_group=self._client_group,
             )
             if self.coverage_nogo_enabled and self.zones_get_state_service
+            else None
+        )
+        self._zones_refresh_timer = (
+            self.create_timer(
+                self.zones_refresh_period_s,
+                self._refresh_no_go_zones,
+                callback_group=self._client_group,
+            )
+            if self._zones_get_state_client is not None
             else None
         )
         self._nav_set_goal_client = self.create_client(
@@ -4320,17 +4340,49 @@ class RouteExecutorNode(Node):
         values["topology_audit_spacing_m"] = float(topology_audit_spacing_m)
         return values, ""
 
+    def _refresh_no_go_zones(self) -> None:
+        """Pedirle el estado de zonas a `zones_manager` sin bloquear el nodo."""
+        client = self._zones_get_state_client
+        if client is None or self._zones_request_pending:
+            return
+        if not client.service_is_ready():
+            self._zones_note = "zones service unavailable"
+            return
+        self._zones_request_pending = True
+        future = client.call_async(GetZonesState.Request())
+        future.add_done_callback(self._on_zones_state_response)
+
+    def _on_zones_state_response(self, future: Any) -> None:
+        """Guardar el GeoJSON que devolvio `zones_manager`."""
+        self._zones_request_pending = False
+        try:
+            response = future.result()
+        except Exception as exc:  # pragma: no cover - depende del middleware
+            self._zones_note = f"zones call failed: {exc}"
+            return
+        if response is None:
+            self._zones_note = "empty zones state response"
+            return
+        if not bool(getattr(response, "ok", False)):
+            reason = str(getattr(response, "error", "") or "unknown error")
+            self._zones_note = f"zones service error: {reason}"
+            return
+        self._zones_geojson = str(getattr(response, "geojson", ""))
+        self._zones_updated_at = time.monotonic()
+        self._zones_note = ""
+
     def _coverage_no_go_polygons(
         self,
         values: Dict[str, Any],
     ) -> Tuple[List[List[Tuple[float, float]]], float, str]:
         """Zonas no-go en marco del lote, con el margen y una nota de estado.
 
-        La nota queda vacia cuando la consulta salio bien. Si `zones_manager` no
-        responde se planifica igual, sin recorte: dejar al operador sin
-        cobertura porque un nodo auxiliar esta caido seria peor. Lo que no se
-        hace es ocultarlo, por eso la nota viaja hasta la respuesta del preview
-        y el cockpit puede bloquear el arranque.
+        Sale del cache que mantiene `_refresh_no_go_zones`; no hay ninguna
+        llamada de red aca adentro. La nota queda vacia cuando el cache esta
+        fresco. Si `zones_manager` no responde se planifica igual, sin recorte:
+        dejar al operador sin cobertura porque un nodo auxiliar esta caido seria
+        peor. Lo que no se hace es ocultarlo, por eso la nota viaja hasta la
+        respuesta del preview y el cockpit puede bloquear el arranque.
         """
         if not self.coverage_nogo_enabled:
             return [], 0.0, ""
@@ -4338,22 +4390,28 @@ class RouteExecutorNode(Node):
         margin_m = (0.5 * float(values["cutter_width_m"])) + float(
             self.coverage_nogo_extra_margin_m
         )
-        result = fetch_no_go_polygons_body(
-            self._zones_get_state_client,
-            GetZonesState.Request,
-            origin_lat=float(values["route_start_lat"]),
-            origin_lon=float(values["route_start_lon"]),
-            origin_yaw_deg=float(values["start_yaw_deg"]),
-            wait_timeout_s=self.zones_get_state_wait_timeout_s,
-            call_timeout_s=self.zones_get_state_call_timeout_s,
-            wait_for_future=self._wait_for_future,
-        )
-        if not result.available:
+        age_s = time.monotonic() - self._zones_updated_at
+        if self._zones_updated_at <= 0.0 or age_s > self.zones_max_age_s:
+            note = self._zones_note or f"zones state is stale ({age_s:.1f}s)"
             self.get_logger().warning(
-                f"coverage planned without no-go zones: {result.note}"
+                f"coverage planned without no-go zones: {note}"
             )
-            return [], margin_m, str(result.note)
-        return result.polygons, margin_m, ""
+            return [], margin_m, note
+
+        try:
+            polygons = polygons_from_geojson(
+                self._zones_geojson,
+                origin_lat=float(values["route_start_lat"]),
+                origin_lon=float(values["route_start_lon"]),
+                origin_yaw_deg=float(values["start_yaw_deg"]),
+            )
+        except (TypeError, ValueError) as exc:
+            note = f"invalid zones geojson: {exc}"
+            self.get_logger().warning(
+                f"coverage planned without no-go zones: {note}"
+            )
+            return [], margin_m, note
+        return polygons, margin_m, ""
 
     def _on_generate_coverage_plan(
         self,
@@ -4440,9 +4498,17 @@ class RouteExecutorNode(Node):
         key_waypoints = [
             waypoint for waypoint in sampled_waypoints if bool(waypoint.get("key"))
         ]
+        # Con zonas no-go la ruta ejecutable sale del mismo plan que se dibuja.
+        # El plan de auditoria muestrea las cabeceras mas fino, y sobre un arco
+        # esa poligonal corta la zona en puntos levemente distintos: el rodeo
+        # ejecutado quedaria unos 30 cm corrido del dibujado. Es poco, pero es
+        # exactamente la divergencia que este trabajo viene a eliminar. Los
+        # contadores de topologia no se ven afectados: se calculan antes del
+        # recorte, sobre el trazado nominal.
+        route_source = audit_waypoints if not no_go_polygons else sampled_waypoints
         route_waypoints = [
             waypoint
-            for waypoint in audit_waypoints
+            for waypoint in route_source
             if bool(waypoint.get("key")) or bool(waypoint.get("guide"))
         ]
         if len(key_waypoints) > int(self.coverage_max_key_waypoints):
