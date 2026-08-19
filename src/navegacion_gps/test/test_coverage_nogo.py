@@ -359,3 +359,59 @@ def test_polygons_from_geojson_saltea_zonas_apagadas_y_de_otro_tipo() -> None:
             )
             == []
         )
+
+
+# Lote de prueba en marco del cuerpo para los casos de borde: forward 0..38,
+# left 0..40. Compartido con `cockpit/src/test/coverageNoGo.test.ts`.
+LOTE = (0.0, 38.0, 0.0, 40.0)
+
+
+def _zona_centrada(forward_c: float, left_c: float):
+    return [
+        (forward_c - 2.6, left_c - 1.6),
+        (forward_c + 2.6, left_c - 1.6),
+        (forward_c + 2.6, left_c + 1.6),
+        (forward_c - 2.6, left_c + 1.6),
+    ]
+
+
+@pytest.mark.parametrize("left_c", [1.0, 2.5, 4.0, 6.0])
+def test_una_zona_pegada_al_borde_no_hace_salir_el_rodeo_del_lote(left_c: float) -> None:
+    # Sin el rectangulo del lote, el lado corto del contorno cae afuera y el
+    # rodeo se dibuja saliendo del campo. Con zonas cerca del borde tiene que
+    # ganar la vuelta larga por adentro aunque sea mas larga.
+    zona = _zona_centrada(21.4, left_c)
+    plan = _fila([(f, left_c) for f in (0.0, 10.0, 21.4, 30.0, 38.0)])
+    recortado, _, rodeos = clip_plan_to_nogo(
+        plan, [zona], margin_m=4.4, bounds=LOTE
+    )
+    assert rodeos >= 1
+    for item in recortado:
+        assert -0.5 <= float(item.forward_m) <= 38.5
+        assert -0.5 <= float(item.left_m) <= 40.5
+
+
+def test_sin_lote_el_rodeo_puede_salirse() -> None:
+    # El comportamiento de antes, que es el que hay que evitar: se documenta para
+    # que quede claro que el rectangulo es lo unico que lo impide.
+    zona = _zona_centrada(21.4, 2.5)
+    plan = _fila([(0.0, 2.5), (38.0, 2.5)])
+    recortado, _, _ = clip_plan_to_nogo(plan, [zona], margin_m=4.4)
+    assert min(float(item.left_m) for item in recortado) < -0.5
+
+
+def test_el_lote_no_cambia_el_rodeo_cuando_la_zona_esta_en_el_medio() -> None:
+    zona = _zona_centrada(21.4, 20.0)
+    plan = _fila([(0.0, 20.0), (38.0, 20.0)])
+    con, _, _ = clip_plan_to_nogo(plan, [zona], margin_m=4.4, bounds=LOTE)
+    sin, _, _ = clip_plan_to_nogo(plan, [zona], margin_m=4.4)
+    assert _posiciones(con) == _posiciones(sin)
+
+
+def test_zona_que_cruza_el_lote_de_lado_a_lado_igual_devuelve_un_rodeo() -> None:
+    # Los dos lados se salen; no hay por donde bordear, pero no se puede dejar
+    # el tramo cruzando la zona: se toma el mas corto igual.
+    zona = [(18.0, -50.0), (24.0, -50.0), (24.0, 50.0), (18.0, 50.0)]
+    plan = _fila([(0.0, 20.0), (38.0, 20.0)])
+    _, _, rodeos = clip_plan_to_nogo(plan, [zona], margin_m=1.0, bounds=LOTE)
+    assert rodeos >= 1

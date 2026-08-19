@@ -1754,10 +1754,21 @@ def build_lawnmower_waypoints(
     # derecho que en diagonal. Ademas esta funcion es comun al preview y al
     # arranque, con lo cual dibujo y ejecucion no pueden divergir.
     if no_go_polygons_body:
+        # El rectangulo del lote en marco del cuerpo. Sin esto, una zona pegada
+        # al borde hace que el rodeo salga del lote para bordearla, que es peor
+        # que dar la vuelta larga por adentro.
+        side_sign = 1.0 if str(side) == "left" else -1.0
+        field_bounds = (
+            0.0,
+            float(field_length_m),
+            min(0.0, side_sign * float(field_width_m)),
+            max(0.0, side_sign * float(field_width_m)),
+        )
         clipped, dropped, detours = clip_plan_to_nogo(
             plan.waypoints,
             no_go_polygons_body,
             margin_m=float(no_go_margin_m),
+            bounds=field_bounds,
         )
         plan = replace(
             plan,
