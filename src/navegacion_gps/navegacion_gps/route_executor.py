@@ -1431,8 +1431,19 @@ class RouteExecutorNode(Node):
         self.declare_parameter(
             "coverage_f2c_parameter_service", "/coverage_server/set_parameters"
         )
+        self.declare_parameter(
+            "coverage_f2c_change_state_service", "/coverage_server/change_state"
+        )
         self.declare_parameter("coverage_f2c_timeout_s", 30.0)
-        self.declare_parameter("coverage_f2c_route_type", "BOUSTROPHEDON")
+        # SNAKE y no BOUSTROPHEDON: el boustrophedon recorre pasadas vecinas y
+        # a 1.65 m de separacion con radio 2.9 m no entra un giro valido.
+        # Medido sobre un octogono de 50 m: BOUSTROPHEDON deja giros de 0.32 m
+        # de radio —el vehiculo no los puede hacer— y SNAKE da 2.90 m exactos,
+        # ningun punto por debajo. Se paga en recorrido: 244.8 m de giros contra
+        # 468.4 m, pero los primeros no son ejecutables.
+        self.declare_parameter("coverage_f2c_route_type", "SNAKE")
+        # DUBIN y no REEDS_SHEPP: Reeds-Shepp usa marcha atras y mete cuspides
+        # en las cabeceras. Para una cortadora eso no se quiere.
         self.declare_parameter("coverage_f2c_path_type", "DUBIN")
         self.declare_parameter("coverage_f2c_path_continuity", "CONTINUOUS")
         # Ancho fisico del vehiculo, distinto del ancho de corte.
@@ -1607,6 +1618,9 @@ class RouteExecutorNode(Node):
         )
         self.coverage_f2c_parameter_service = str(
             self.get_parameter("coverage_f2c_parameter_service").value
+        )
+        self.coverage_f2c_change_state_service = str(
+            self.get_parameter("coverage_f2c_change_state_service").value
         )
         self.coverage_f2c_timeout_s = max(
             1.0, float(self.get_parameter("coverage_f2c_timeout_s").value)
@@ -4594,6 +4608,7 @@ class RouteExecutorNode(Node):
             self._fields2cover = Fields2CoverPlanner(
                 action_name=self.coverage_f2c_action,
                 parameter_service=self.coverage_f2c_parameter_service,
+                change_state_service=self.coverage_f2c_change_state_service,
                 logger=self.get_logger(),
             )
         return self._fields2cover
@@ -4648,9 +4663,14 @@ class RouteExecutorNode(Node):
                 min_turning_radius_m=float(values["min_turning_radius_m"]),
                 waypoint_spacing_m=float(values["waypoint_spacing_m"]),
                 swath_angle_deg=self.coverage_f2c_swath_angle_deg,
-                route_type=self.coverage_f2c_route_type,
-                path_type=self.coverage_f2c_path_type,
-                path_continuity=self.coverage_f2c_path_continuity,
+                # Se leen frescos en cada pedido: son los que se tocan para
+                # tunear la forma de los giros, y tener que reiniciar el nodo
+                # para probar un valor hace que no se prueben.
+                route_type=str(self.get_parameter("coverage_f2c_route_type").value),
+                path_type=str(self.get_parameter("coverage_f2c_path_type").value),
+                path_continuity=str(
+                    self.get_parameter("coverage_f2c_path_continuity").value
+                ),
                 # El paso de los giros escala con el detalle que pidio el
                 # operador. Fijo en 0.5 m, un lote grande con detalle grueso
                 # gasta casi todo el presupuesto de waypoints en cabeceras: 2525

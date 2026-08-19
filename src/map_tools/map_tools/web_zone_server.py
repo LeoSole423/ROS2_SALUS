@@ -3701,7 +3701,17 @@ class WebZoneServerNode(Node):
                 float(current_reference["yaw_deg"]) - float(first_key["yaw_deg"])
             )
         )
+        # El criterio de rumbo describe el trazado del planificador propio: ahi
+        # la primera pasada arranca bajo el vehiculo y alineada con el, asi que
+        # un rumbo distinto es senal de que algo no cierra. Fields2Cover elige
+        # el swath inicial y su sentido segun la forma del lote, y el vehiculo
+        # puede estar parado en cualquier lado: un rumbo distinto es lo normal,
+        # no una falla. Nav2 lo lleva hasta la primera meta como con cualquier
+        # otra. El criterio de distancia se mantiene en los dos casos, que es lo
+        # que evita arrancar la cobertura de un lote que esta lejos.
+        exige_rumbo = bool(coverage_plan.get("topology_audited", True))
         approach = {
+            "checks_heading": exige_rumbo,
             "distance_m": distance_m,
             "max_distance_m": float(self.coverage_start_max_distance_m),
             "heading_error_deg": float(heading_error_deg),
@@ -3712,19 +3722,22 @@ class WebZoneServerNode(Node):
             "first_key_waypoint": dict(first_key),
         }
         result["approach"] = approach
-        if (
-            distance_m > float(self.coverage_start_max_distance_m)
-            or heading_error_deg
-            > float(self.coverage_start_max_heading_error_deg)
-        ):
+        rumbo_fuera = exige_rumbo and heading_error_deg > float(
+            self.coverage_start_max_heading_error_deg
+        )
+        if distance_m > float(self.coverage_start_max_distance_m) or rumbo_fuera:
+            detalle_rumbo = (
+                f"; heading_error={heading_error_deg:.1f} deg, "
+                f"limit={float(self.coverage_start_max_heading_error_deg):.1f} deg"
+                if exige_rumbo
+                else " (sin criterio de rumbo: el planificador elige la pasada inicial)"
+            )
             return (
                 False,
                 "coverage approach rejected "
                 f"(distance={distance_m:.2f} m, "
-                f"limit={float(self.coverage_start_max_distance_m):.2f} m; "
-                f"heading_error={heading_error_deg:.1f} deg, "
-                "limit="
-                f"{float(self.coverage_start_max_heading_error_deg):.1f} deg)",
+                f"limit={float(self.coverage_start_max_distance_m):.2f} m"
+                f"{detalle_rumbo})",
                 result,
             )
 

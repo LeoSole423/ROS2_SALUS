@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
+from lifecycle_msgs.msg import Transition
+from lifecycle_msgs.srv import ChangeState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 
@@ -190,6 +192,7 @@ class Fields2CoverPlanner:
         *,
         action_name: str = "compute_coverage_path",
         parameter_service: str = "/coverage_server/set_parameters",
+        change_state_service: str = "/coverage_server/change_state",
         node_name: str = "route_executor_fields2cover_client",
         logger: Any = None,
     ) -> None:
@@ -198,6 +201,10 @@ class Fields2CoverPlanner:
         self._node = rclpy.create_node(node_name)
         self._action = ActionClient(self._node, ComputeCoveragePath, action_name)
         self._parameters = self._node.create_client(SetParameters, parameter_service)
+        self._change_state = self._node.create_client(ChangeState, change_state_service)
+        # Ultimos parametros fisicos aplicados de verdad, para no reciclar el
+        # servidor en cada pedido.
+        self._applied: Dict[str, float] = {}
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(
@@ -216,6 +223,42 @@ class Fields2CoverPlanner:
     def available(self, timeout_s: float = 2.0) -> bool:
         """Decir si el Coverage Server esta escuchando."""
         return bool(self._action.wait_for_server(timeout_sec=float(timeout_s)))
+
+    def _cycle_server(self, timeout_s: float) -> None:
+        """Reciclar el Coverage Server para que relea los parametros.
+
+        Sin esto los parametros del vehiculo no tienen efecto: el servidor arma
+        su objeto de robot al configurarse y no vuelve a mirarlos. Medido: con
+        radio minimo 2.9 m seteado por parametro pero sin reciclar, los giros
+        salian con radio de 0.32 m —fisicamente inejecutables— porque adentro
+        seguia el valor de la configuracion anterior. Despues del ciclo, 2.90 m
+        exactos y ningun punto por debajo.
+        """
+        if not self._change_state.wait_for_service(timeout_sec=float(timeout_s)):
+            raise Fields2CoverError(
+                "el Coverage Server no expone change_state; no se pueden "
+                "aplicar los parametros del vehiculo"
+            )
+        transiciones = (
+            Transition.TRANSITION_DEACTIVATE,
+            Transition.TRANSITION_CLEANUP,
+            Transition.TRANSITION_CONFIGURE,
+            Transition.TRANSITION_ACTIVATE,
+        )
+        for transicion in transiciones:
+            request = ChangeState.Request()
+            request.transition.id = int(transicion)
+            future = self._change_state.call_async(request)
+            if not self._wait(future, timeout_s):
+                raise Fields2CoverError(
+                    "timeout reciclando el Coverage Server para aplicar los "
+                    "parametros del vehiculo"
+                )
+            respuesta = future.result()
+            if respuesta is None or not bool(respuesta.success):
+                raise Fields2CoverError(
+                    f"el Coverage Server rechazo la transicion {int(transicion)}"
+                )
 
     def _push_parameters(self, values: Dict[str, float], timeout_s: float) -> None:
         """Mandarle al server los parametros fisicos del vehiculo."""
@@ -247,6 +290,16 @@ class Fields2CoverPlanner:
             raise Fields2CoverError(
                 f"el Coverage Server rechazo los parametros {fallidos}"
             )
+        # Solo se recicla cuando algo cambio de verdad: el ciclo tarda y no
+        # tiene sentido pagarlo en cada preview con los mismos numeros.
+        if any(
+            abs(float(values[name]) - float(self._applied.get(name, float("nan"))))
+            > 1.0e-9
+            or name not in self._applied
+            for name in values
+        ):
+            self._cycle_server(timeout_s)
+            self._applied = {name: float(value) for name, value in values.items()}
 
     @staticmethod
     def _wait(future: Any, timeout_s: float) -> bool:
