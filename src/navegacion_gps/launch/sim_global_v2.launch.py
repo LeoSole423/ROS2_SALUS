@@ -706,12 +706,27 @@ def generate_launch_description():
                         # cobertura no puede pedir mas chico.
                         "coverage_planner_min_turning_radius_m": 2.9,
                         "coverage_allow_headland_conflicts": True,
-                        # El lote se recorre pasada por pasada, de la del
-                        # vehiculo hacia el borde opuesto. Con las pasadas a
-                        # 1.64 m y radio minimo 4 m cada cabecera sale omega:
-                        # mide 27.4 m y sobresale 10.4 m del lote, que es lo
-                        # que compra el recorrido sin saltos.
-                        "coverage_allow_row_skipping": False,
+                        # Se deja que el planificador elija el orden de pasadas.
+                        #
+                        # Con radio 2.9 m y pasadas a 1.65 m, dos pasadas
+                        # vecinas no se pueden unir con una U: 1.65 m es menos
+                        # que el radio. El enlace mas corto que existe —el
+                        # optimo Dubins sobre las 6 familias, saliendo libre del
+                        # lote— es un omega de 19.24 m. No hay maniobra exterior
+                        # que lo mejore; lo unico que lo mejora es que las
+                        # pasadas vecinas en el tiempo esten mas separadas.
+                        #
+                        # Medido sobre un lote de 40 m (24 pasadas):
+                        #
+                        #   adyacente:        23 omegas, 442.6 m de giros,
+                        #                     1354.6 m totales, cabecera 7.35 m
+                        #   alternada skip=4:  0 omegas, 302.2 m de giros,
+                        #                     1214.2 m totales, cabecera 2.90 m
+                        #
+                        # El buscador elige solo la segunda. El costo es que el
+                        # lote queda cubierto en bloques intercalados en vez de
+                        # corrido.
+                        "coverage_allow_row_skipping": True,
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",
                         "set_patrol_service": "/route_executor/set_patrol_ll",

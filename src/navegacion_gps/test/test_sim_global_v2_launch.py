@@ -35,9 +35,12 @@ def test_coverage_tight_turn_experiment_is_isolated_to_simulation() -> None:
     # asi que los tres numeros se mueven juntos.
     assert '"coverage_planner_min_turning_radius_m": 2.9' in sim_launch
     assert '"coverage_allow_headland_conflicts": True' in sim_launch
-    # El lote se recorre pasada por pasada: el salteo agranda el giro pero cubre
-    # el lote en dos bloques intercalados, y eso no es lo que se pide en campo.
-    assert '"coverage_allow_row_skipping": False' in sim_launch
+    # El planificador elige el orden. A 1.65 m de separacion y radio 2.9 m el
+    # enlace entre pasadas vecinas es un omega de 19.24 m —el optimo Dubins, no
+    # hay maniobra exterior mejor—. Saltear de a 4 lo convierte en U limpia:
+    # 23 omegas y 1354.6 m pasan a 0 omegas y 1214.2 m, con la cabecera de 7.35
+    # a 2.90 m. Se paga cubriendo el lote en bloques intercalados.
+    assert '"coverage_allow_row_skipping": True' in sim_launch
     assert '"coverage_start_max_distance_m": "50.0"' in sim_launch
     # Medido: la guia parte la cabecera en un tramo de radio minimo exacto que
     # Smac cierra con una vuelta completa. El giro entero como una sola meta
