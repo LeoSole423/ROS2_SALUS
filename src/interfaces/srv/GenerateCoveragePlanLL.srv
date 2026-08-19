@@ -9,6 +9,22 @@ bool start_is_field_corner
 
 float64 field_length_m
 float64 field_width_m
+
+# --- Lote como poligono (modo preferente) ---
+# Anillo exterior del campo. Vacio = modo legacy: el lote sale del rectangulo
+# start_* + field_length_m + field_width_m + side, que se mantiene soportado.
+# Cuando viene un poligono valido, tiene prioridad sobre el rectangulo.
+interfaces/GeoRing coverage_polygon
+
+# Zonas donde NO se debe cortar, como anillos interiores del campo.
+#
+# Esto es coverage_exclusion, NO keepout. El planificador no genera pasadas de
+# trabajo adentro, pero un giro de cabecera puede atravesarlas: medido tanto con
+# el planificador propio como con Fields2Cover, los enlaces Dubins entre pasadas
+# no son conscientes de obstaculos. La garantia de que el vehiculo no entre
+# nunca es el filtro keepout del costmap, no este campo.
+interfaces/GeoRing[] coverage_exclusions
+
 float64 cutter_width_m
 float64 overlap_ratio
 float64 min_turning_radius_m
@@ -17,6 +33,10 @@ string side
 ---
 bool ok
 string error
+
+# Con que definicion de lote se planifico: "polygon" o "rectangle". Permite al
+# cockpit detectar que mando un poligono y el backend planifico el rectangulo.
+string field_mode
 
 # Inicio efectivo del centro de la primera pasada, despues del inset opcional.
 float64 route_start_lat

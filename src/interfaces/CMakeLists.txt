@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CmdVelFinal.msg"
   "msg/DriveTelemetry.msg"
   "msg/NoGoPoint.msg"
+  "msg/GeoRing.msg"
   "msg/NoGoZone.msg"
   "msg/NavSnapshotLayers.msg"
   "msg/NavTelemetry.msg"

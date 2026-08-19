@@ -42,6 +42,7 @@ from interfaces.srv import (
     SetNavigationProfile,
     SetRouteMissionLL,
 )
+from navegacion_gps.coverage_field_polygon import validate_coverage_field
 from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
 from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
 from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
@@ -1328,6 +1329,15 @@ def should_suppress_chunk_success_brake(
     return int(current_target_index) < max(0, total - 1)
 
 
+# Claves de `values` en la validacion de cobertura que NO son numeros. Se listan
+# aparte porque el resto del dict se convierte a float en bloque: sumar una clave
+# no numerica sin agregarla aca revienta la validacion.
+_NON_NUMERIC_COVERAGE_KEYS = frozenset(
+    {"side", "start_is_field_corner", "coverage_polygon", "coverage_exclusions",
+     "field_mode"}
+)
+
+
 class RouteExecutorNode(Node):
     def __init__(self) -> None:
         super().__init__("route_executor")
@@ -1405,6 +1415,14 @@ class RouteExecutorNode(Node):
         # Lo que corrige eso de verdad es prender el filtro keepout del costmap,
         # que es lo unico que hace que Nav2 respete la zona por si mismo.
         self.declare_parameter("coverage_nogo_turning_margin_ratio", 0.0)
+        # Que planificador atiende el modo Campo.
+        #
+        #   legacy       : el generador propio, rectangulo pose+largo+ancho.
+        #   fields2cover : el planificador agricola, acepta poligono con huecos.
+        #
+        # Solo Campo mira este parametro. Ruta, patrulla y goals no pasan por
+        # aca en ningun caso.
+        self.declare_parameter("coverage_planner", "legacy")
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1546,6 +1564,14 @@ class RouteExecutorNode(Node):
             0.0,
             float(self.get_parameter("coverage_nogo_turning_margin_ratio").value),
         )
+        self.coverage_planner = str(
+            self.get_parameter("coverage_planner").value or "legacy"
+        ).strip().lower()
+        if self.coverage_planner not in {"legacy", "fields2cover"}:
+            raise ValueError(
+                "coverage_planner debe ser 'legacy' o 'fields2cover', "
+                f"llego '{self.coverage_planner}'"
+            )
         self.coverage_topology_audit_spacing_m = min(
             0.5,
             max(
@@ -4170,10 +4196,14 @@ class RouteExecutorNode(Node):
             "waypoint_spacing_m": float(request.waypoint_spacing_m),
             "side": str(request.side or "").strip().lower(),
         }
+
+        # `values` se recorre entero convirtiendo a float mas abajo, asi que las
+        # claves no numericas se declaran aca y se excluyen por nombre. La
+        # geometria del lote se agrega despues de esa validacion.
         numeric_values = [
             float(value)
             for key, value in values.items()
-            if key not in {"side", "start_is_field_corner"}
+            if key not in _NON_NUMERIC_COVERAGE_KEYS
         ]
         if not all(np.isfinite(value) for value in numeric_values):
             return None, "coverage parameters must be finite"
@@ -4221,6 +4251,31 @@ class RouteExecutorNode(Node):
             return None, f"waypoint_spacing_m must be <= {max_dimension:g}"
         if values["side"] not in {"left", "right"}:
             return None, "side must be 'left' or 'right'"
+
+        # El lote puede llegar como poligono o como el rectangulo de siempre.
+        outer_ll, exclusions_ll, polygon_error = validate_coverage_field(
+            [
+                (float(vertex.lat), float(vertex.lon))
+                for vertex in request.coverage_polygon.vertices
+            ],
+            [
+                [(float(vertex.lat), float(vertex.lon)) for vertex in ring.vertices]
+                for ring in request.coverage_exclusions
+            ],
+        )
+        if polygon_error:
+            return None, polygon_error
+        values["coverage_polygon"] = outer_ll
+        values["coverage_exclusions"] = exclusions_ll
+        values["field_mode"] = "polygon" if outer_ll else "rectangle"
+        if outer_ll and self.coverage_planner != "fields2cover":
+            # Planificar el rectangulo cuando el operador mando un poligono
+            # seria dibujar una cosa y trabajar otra. Mejor negarse.
+            return (
+                None,
+                "el planner legacy no soporta poligonos; usa "
+                "coverage_planner=fields2cover o envia el lote rectangular",
+            )
 
         values["start_yaw_deg"] = (
             (float(values["start_yaw_deg"]) + 180.0) % 360.0
@@ -4452,6 +4507,19 @@ class RouteExecutorNode(Node):
             response.error = str(error)
             return response
 
+        if self.coverage_planner == "fields2cover":
+            # Etapa 2: el .srv ya acepta el poligono y lo valida, pero el
+            # planificador agricola todavia no esta enganchado. Seguir de largo
+            # planificaria el rectangulo legacy y devolveria field_mode=polygon:
+            # el operador veria un trazado que no corresponde al lote que
+            # dibujo. Es preferible un error claro.
+            response.ok = False
+            response.error = (
+                "coverage_planner=fields2cover todavia no esta implementado; "
+                "usa coverage_planner=legacy"
+            )
+            return response
+
         no_go_polygons, no_go_margin_m, no_go_note = self._coverage_no_go_polygons(
             values
         )
@@ -4640,6 +4708,7 @@ class RouteExecutorNode(Node):
         response.nogo_dropped_count = int(plan.nogo_dropped_count)
         response.nogo_detour_count = int(plan.nogo_detour_count)
         response.nogo_note = str(no_go_note)
+        response.field_mode = str(values["field_mode"])
         response.route_start_lat = float(values["route_start_lat"])
         response.route_start_lon = float(values["route_start_lon"])
         response.route_start_yaw_deg = float(values["start_yaw_deg"])
