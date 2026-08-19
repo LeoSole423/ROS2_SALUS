@@ -4382,6 +4382,24 @@ class RouteExecutorNode(Node):
             values["route_start_lon"] = float(route_start_lon)
             values["centerline_length_m"] = field_length - cutter_width
 
+        if values["field_mode"] == "polygon":
+            # De aca en adelante todo el preflight deriva de la geometria
+            # rectangular y del zigzag propio: cuantas pasadas entran en el
+            # ancho, cuantos waypoints muestrea, en que orden se recorren. Con
+            # un poligono esos numeros no describen el plan que se va a generar
+            # —F2C decide las pasadas sobre la forma real— y aplicarlos rechaza
+            # lotes perfectamente validos con cuentas que no corresponden.
+            #
+            # Los limites de verdad no se pierden: se verifican sobre el plan
+            # que devuelve Fields2Cover, en _fill_fields2cover_response, contra
+            # los mismos maximos de waypoints y de metas key.
+            values["preflight_row_count"] = 0
+            values["sampled_upper_bound"] = 0
+            values["topology_audit_spacing_m"] = float(
+                self.coverage_topology_audit_spacing_m
+            )
+            return values, ""
+
         centerline_span = max(0.0, field_width - cutter_width)
         if centerline_span <= 1.0e-9:
             row_count = 1
@@ -4620,7 +4638,15 @@ class RouteExecutorNode(Node):
                 route_type=self.coverage_f2c_route_type,
                 path_type=self.coverage_f2c_path_type,
                 path_continuity=self.coverage_f2c_path_continuity,
-                turn_point_distance_m=self.coverage_f2c_turn_point_distance_m,
+                # El paso de los giros escala con el detalle que pidio el
+                # operador. Fijo en 0.5 m, un lote grande con detalle grueso
+                # gasta casi todo el presupuesto de waypoints en cabeceras: 2525
+                # de los cuales solo ~400 eran de trabajo. El parametro queda
+                # como piso, asi que el caso tipico no cambia.
+                turn_point_distance_m=max(
+                    self.coverage_f2c_turn_point_distance_m,
+                    float(values["waypoint_spacing_m"]) / 4.0,
+                ),
                 headland_width_m=self.coverage_f2c_headland_width_m,
                 server_timeout_s=self.coverage_f2c_timeout_s,
             )
