@@ -1,5 +1,7 @@
+import ast
 import json
 import math
+import pathlib
 
 import pytest
 
@@ -415,3 +417,64 @@ def test_zona_que_cruza_el_lote_de_lado_a_lado_igual_devuelve_un_rodeo() -> None
     plan = _fila([(0.0, 20.0), (38.0, 20.0)])
     _, _, rodeos = clip_plan_to_nogo(plan, [zona], margin_m=1.0, bounds=LOTE)
     assert rodeos >= 1
+
+
+# ---------------------------------------------------------------------------
+# Campo con Fields2Cover tambien recorta.
+#
+# Se lee el fuente en vez de levantar el nodo: lo que hay que garantizar no es
+# que en un escenario concreto se recorte, sino que no exista un camino por el
+# que Campo planifique ignorando las zonas. Si el recorte desaparece de esa
+# rama, el cockpit lo repite por su cuenta, ve que el backend no lo hizo y
+# bloquea el arranque con "el backend no aplico las zonas no-go" — que es
+# exactamente el sintoma que este test evita que vuelva.
+# ---------------------------------------------------------------------------
+
+_FUENTE_ROUTE_EXECUTOR = (
+    pathlib.Path(__file__).resolve().parents[1] / "navegacion_gps" / "route_executor.py"
+)
+
+
+def _cuerpo_de_metodo(nombre: str) -> ast.AST:
+    arbol = ast.parse(_FUENTE_ROUTE_EXECUTOR.read_text(encoding="utf-8"))
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if nodo.name == nombre:
+                return nodo
+    raise AssertionError(f"{nombre} ya no existe en route_executor.py")
+
+
+def _nombres_llamados(nodo: ast.AST) -> set:
+    salida = set()
+    for hijo in ast.walk(nodo):
+        if isinstance(hijo, ast.Call):
+            func = hijo.func
+            if isinstance(func, ast.Name):
+                salida.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                salida.add(func.attr)
+    return salida
+
+
+def test_la_rama_de_fields2cover_aplica_el_recorte_de_zonas() -> None:
+    llamados = _nombres_llamados(_cuerpo_de_metodo("_generate_coverage_plan_fields2cover"))
+    assert "_coverage_no_go_polygons" in llamados
+    assert "clip_plan_to_nogo" in llamados
+
+
+def test_la_respuesta_de_fields2cover_informa_las_zonas_aplicadas() -> None:
+    metodo = _cuerpo_de_metodo("_fill_fields2cover_response")
+    asignados = {
+        destino.attr
+        for nodo in ast.walk(metodo)
+        if isinstance(nodo, ast.Assign)
+        for destino in nodo.targets
+        if isinstance(destino, ast.Attribute)
+    }
+    for campo in (
+        "nogo_polygon_count",
+        "nogo_dropped_count",
+        "nogo_detour_count",
+        "nogo_note",
+    ):
+        assert campo in asignados, f"la respuesta de Fields2Cover no informa {campo}"

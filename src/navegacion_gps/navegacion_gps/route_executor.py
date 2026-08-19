@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -45,6 +46,7 @@ from interfaces.srv import (
 from navegacion_gps.coverage_field_polygon import validate_coverage_field
 from navegacion_gps.coverage_fields2cover import Fields2CoverError
 from navegacion_gps.coverage_fields2cover import Fields2CoverPlanner
+from navegacion_gps.coverage_nogo import clip_plan_to_nogo
 from navegacion_gps.coverage_nogo_zones import ll_to_body
 from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
 from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
@@ -4602,6 +4604,22 @@ class RouteExecutorNode(Node):
             return [], margin_m, note
         return polygons, margin_m, ""
 
+    @staticmethod
+    def _body_path_length_m(waypoints: Sequence[Any]) -> float:
+        """Largo de la poligonal en marco del cuerpo.
+
+        Despues de recortar zonas, el largo que reporto Fields2Cover ya no
+        describe la trayectoria: sobran las pasadas que se borraron y faltan los
+        rodeos que se agregaron.
+        """
+        total = 0.0
+        for previo, actual in zip(waypoints, waypoints[1:]):
+            total += math.hypot(
+                float(actual.forward_m) - float(previo.forward_m),
+                float(actual.left_m) - float(previo.left_m),
+            )
+        return total
+
     def _fields2cover_planner(self) -> Fields2CoverPlanner:
         """Cliente del Coverage Server, creado al primer uso."""
         if self._fields2cover is None:
@@ -4694,13 +4712,58 @@ class RouteExecutorNode(Node):
             response.error = f"Fields2Cover fallo inesperadamente: {exc}"
             return response
 
-        return self._fill_fields2cover_response(values, response, plan)
+        no_go_polygons, no_go_margin_m, no_go_note = self._coverage_no_go_polygons(
+            values
+        )
+        nogo_dropped = 0
+        nogo_detours = 0
+        if no_go_polygons:
+            # El mismo recorte que usa el planner propio, sobre la salida de
+            # Fields2Cover. Podria pasarse la zona como agujero del lote y dejar
+            # que Fields2Cover parta los swaths, pero eso solo cuidaria las
+            # pasadas: los giros seguirian cruzando la zona. Y sobre todo, el
+            # cockpit repite ESTE recorte sobre lo que llega para detectar que el
+            # backend no lo aplico; si aca se hiciera otra cosa, los dos dibujos
+            # no coincidirian y el arranque quedaria bloqueado por una diferencia
+            # que no es un problema.
+            cuerpo = a_cuerpo(polygon_ll)
+            bounds = (
+                min(punto[0] for punto in cuerpo),
+                max(punto[0] for punto in cuerpo),
+                min(punto[1] for punto in cuerpo),
+                max(punto[1] for punto in cuerpo),
+            )
+            try:
+                recortados, nogo_dropped, nogo_detours = clip_plan_to_nogo(
+                    plan.waypoints,
+                    no_go_polygons,
+                    margin_m=no_go_margin_m,
+                    bounds=bounds,
+                )
+            except ValueError as exc:
+                response.ok = False
+                response.error = f"zonas no-go: {exc}"
+                return response
+            plan = replace(
+                plan,
+                waypoints=recortados,
+                total_length_m=self._body_path_length_m(recortados),
+            )
+
+        return self._fill_fields2cover_response(
+            values,
+            response,
+            plan,
+            nogo=(len(no_go_polygons), nogo_dropped, nogo_detours, no_go_note),
+        )
 
     def _fill_fields2cover_response(
         self,
         values: Dict[str, Any],
         response: GenerateCoveragePlanLL.Response,
         plan: Any,
+        *,
+        nogo: Tuple[int, int, int, str] = (0, 0, 0, ""),
     ) -> GenerateCoveragePlanLL.Response:
         """Georreferenciar el plan y llenar la respuesta del servicio."""
         geographic: List[Dict[str, object]] = []
@@ -4794,6 +4857,13 @@ class RouteExecutorNode(Node):
         response.recommended_chunk_max_waypoints = int(
             self.default_chunk_max_waypoints
         )
+        # Sin esto el cockpit ve nogo_polygon_count=0, repite el recorte por su
+        # cuenta, encuentra diferencias y bloquea el arranque avisando que el
+        # backend no aplico las zonas. Aca se aplicaron.
+        response.nogo_polygon_count = int(nogo[0])
+        response.nogo_dropped_count = int(nogo[1])
+        response.nogo_detour_count = int(nogo[2])
+        response.nogo_note = str(nogo[3])
         response.ok = True
         response.error = ""
         return response
