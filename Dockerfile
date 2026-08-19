@@ -115,6 +115,60 @@ RUN apt-get install -y --no-install-recommends \
       libyaml-cpp-dev
 RUN rm -rf /var/lib/apt/lists/*
 
+# ============================================================================
+# Planificador agricola de cobertura: Fields2Cover + Coverage Server de OpenNav
+# ============================================================================
+# Lo usa exclusivamente el modo Campo, con coverage_planner=fields2cover. Ruta,
+# patrulla y goals no lo tocan.
+#
+# Ninguno de los dos tiene binario para Humble, asi que se compilan aca y no a
+# mano dentro de un contenedor: un contenedor nuevo tiene que arrancar con esto
+# disponible.
+#
+# Los commits van fijados a proposito. Son las versiones verificadas contra este
+# stack; dejarlos flotando en una rama haria que un cambio upstream alterara el
+# comportamiento del planificador sin que nadie lo pida.
+ARG FIELDS2COVER_COMMIT=8bf28f7c5b6d8b8a2688aaa8fb1ac426e5c2d942
+ARG OPENNAV_COVERAGE_COMMIT=ad914562a4e3f10892c84ad105d225d1284c61d3
+ENV SALUS_COVERAGE_WS=/opt/salus_coverage_ws
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+      libgeos++-dev \
+      libgeos-dev \
+      libgdal-dev \
+      libeigen3-dev \
+      libtbb-dev \
+      nlohmann-json3-dev \
+      libtinyxml2-dev \
+  && mkdir -p ${SALUS_COVERAGE_WS}/src \
+  && cd ${SALUS_COVERAGE_WS}/src \
+  # Se clona y se hace checkout del commit exacto en vez de --branch: una rama
+  # avanza, un commit no.
+  && git clone https://github.com/Fields2Cover/Fields2Cover.git \
+  && git -C Fields2Cover checkout --quiet ${FIELDS2COVER_COMMIT} \
+  && git clone https://github.com/open-navigation/opennav_coverage.git \
+  && git -C opennav_coverage checkout --quiet ${OPENNAV_COVERAGE_COMMIT} \
+  # Solo se compilan los tres componentes verificados. El navigator y el
+  # backport del bt_navigator quedan fuera a proposito: ese backport reemplaza
+  # el bt_navigator de Nav2, que es de TODAS las misiones de SALUS y no solo de
+  # Campo. Row coverage y las demos no se usan.
+  && for ignorado in backported_bt_navigator opennav_coverage_bt \
+                     opennav_coverage_demo opennav_coverage_navigator \
+                     opennav_row_coverage; do \
+       touch opennav_coverage/$ignorado/COLCON_IGNORE; \
+     done \
+  && cd ${SALUS_COVERAGE_WS} \
+  && . /opt/ros/${ROS_DISTRO}/setup.sh \
+  && colcon build \
+      --packages-select fields2cover opennav_coverage_msgs opennav_coverage \
+      --cmake-args -DBUILD_TESTS=OFF -DBUILD_TUTORIALS=OFF \
+                   -DBUILD_PYTHON=OFF -DBUILD_DOC=OFF \
+  # Las fuentes y los artefactos intermedios no hacen falta en tiempo de
+  # ejecucion y son la mayor parte del peso.
+  && rm -rf ${SALUS_COVERAGE_WS}/src ${SALUS_COVERAGE_WS}/build ${SALUS_COVERAGE_WS}/log \
+  && rm -rf /var/lib/apt/lists/*
+
 ARG USERNAME=ros
 ARG USER_UID=1000
 ARG USER_GID=1000

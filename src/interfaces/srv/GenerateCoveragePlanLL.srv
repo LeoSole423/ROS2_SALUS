@@ -84,11 +84,25 @@ uint32 field_strict_crossing_count
 uint32 field_nonadjacent_touch_count
 uint32 field_collinear_overlap_count
 uint32 field_topology_conflict_count
-# La regla depende de topology_scope. field_interior: ningun conflicto dentro
-# del rectangulo, con giros/cruces exteriores solo informativos. global: ningun
-# conflicto en toda la polilinea y cero giros omega.
+# La regla depende de topology_scope:
+#
+#   global         : ningun conflicto en toda la polilinea y cero giros omega.
+#   field_interior : ningun conflicto dentro del rectangulo, con giros y cruces
+#                    exteriores solo informativos.
+#   fields2cover   : NO hubo auditoria topologica. La auditoria de arriba mide
+#                    autointersecciones del zigzag propio y no aplica a una
+#                    trayectoria de Fields2Cover, que tiene otra estructura.
+#                    Con este alcance topology_safe=true significa unicamente
+#                    "Fields2Cover produjo la trayectoria sin errores", no
+#                    "el verificador legacy la reviso y dio limpia". Los
+#                    contadores de conflictos van en cero por eso mismo: son
+#                    ausencia de medicion, no ausencia de conflictos.
 bool topology_safe
 string topology_scope
+# Si se corrio de verdad la auditoria topologica. En false, topology_safe y los
+# contadores de conflictos no significan nada: no se midieron. Evita tener que
+# deducir "no auditado" mirando el string de topology_scope.
+bool topology_audited
 float64 topology_audit_spacing_m
 float64 planner_min_turning_radius_m
 

@@ -10,6 +10,12 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_LOCALHOST_ONLY=0
 export ROS_DOMAIN_ID=0
 
+# Planificador agricola de cobertura (modo Campo). Va antes del workspace de
+# SALUS para que este pueda superponerlo.
+if [ -f /opt/salus_coverage_ws/install/setup.bash ]; then
+  source /opt/salus_coverage_ws/install/setup.bash
+fi
+
 if [ -f /ros2_ws/install/setup.bash ]; then
   source /ros2_ws/install/setup.bash
 fi

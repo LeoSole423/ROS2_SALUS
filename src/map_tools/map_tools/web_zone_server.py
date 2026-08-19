@@ -32,7 +32,8 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from vision_msgs.msg import Detection2DArray
 
-from interfaces.msg import CmdVelFinal, DriveTelemetry, NavEvent, NavTelemetry
+from interfaces.msg import CmdVelFinal, DriveTelemetry, GeoRing, NavEvent
+from interfaces.msg import NavTelemetry, NoGoPoint
 from interfaces.srv import (
     BrakeNav,
     CameraPan,
@@ -142,6 +143,31 @@ MISSION_SESSION_DIR = Path("/tmp/mission_sessions")
 MISSION_STATUS_FILE = "status.json"
 
 UNSET = object()
+
+
+def _geo_ring(raw: Any) -> GeoRing:
+    """Anillo del cockpit al mensaje GeoRing.
+
+    Acepta ``{"vertices": [{"lat": .., "lon": ..}]}`` y tambien una lista pelada
+    de vertices. Los anillos viajan ABIERTOS: el cockpit no repite el primer
+    vertice y el route_executor descarta el cierre si igual llegara.
+    """
+    if raw is None:
+        return GeoRing()
+    vertices = raw.get("vertices") if isinstance(raw, dict) else raw
+    if not isinstance(vertices, list):
+        return GeoRing()
+    anillo = GeoRing()
+    for vertex in vertices:
+        if not isinstance(vertex, dict):
+            continue
+        try:
+            anillo.vertices.append(
+                NoGoPoint(lat=float(vertex["lat"]), lon=float(vertex["lon"]))
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return anillo
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -3248,6 +3274,12 @@ class WebZoneServerNode(Node):
         )
         req.field_length_m = float(parameters["field_length_m"])
         req.field_width_m = float(parameters["field_width_m"])
+        # Lote como poligono. Vacio = modo rectangulo legacy; la validacion fina
+        # la hace el route_executor, aca solo se traduce.
+        req.coverage_polygon = _geo_ring(parameters.get("coverage_polygon"))
+        req.coverage_exclusions = [
+            _geo_ring(ring) for ring in parameters.get("coverage_exclusions", [])
+        ]
         req.cutter_width_m = float(parameters["cutter_width_m"])
         req.overlap_ratio = float(parameters["overlap_ratio"])
         req.min_turning_radius_m = float(parameters["min_turning_radius_m"])
@@ -3332,7 +3364,12 @@ class WebZoneServerNode(Node):
         # la forma de la zona—, asi que los invariantes de forma se exigen solo
         # cuando no hubo recorte. El resto de las validaciones sigue corriendo
         # siempre.
-        nogo_applied = int(res.nogo_polygon_count) > 0
+        # Los invariantes de forma que siguen describen el zigzag del
+        # planificador propio. `topology_audited=false` significa que el plan no
+        # salio de ese planificador —hoy, Fields2Cover— y ahi no aplican: su
+        # trayectoria no tiene guias de cabecera ni dos metas por pasada.
+        legacy_shape = bool(res.topology_audited)
+        nogo_applied = int(res.nogo_polygon_count) > 0 or not legacy_shape
         expected_key_count = 2 * int(res.row_count)
         if not nogo_applied and len(response_key_values) != expected_key_count:
             return (
@@ -3417,7 +3454,7 @@ class WebZoneServerNode(Node):
                 {},
             )
         topology_scope = str(res.topology_scope or "").strip().lower()
-        if topology_scope not in {"global", "field_interior"}:
+        if topology_scope not in {"global", "field_interior", "fields2cover"}:
             return (
                 False,
                 "generate_coverage_plan_ll returned an invalid topology_scope",
@@ -3428,7 +3465,9 @@ class WebZoneServerNode(Node):
             if topology_scope == "field_interior"
             else derived_conflict_count == 0 and int(res.omega_turn_count) == 0
         )
-        if bool(res.topology_safe) != derived_topology_safe:
+        # Sin auditoria no hay nada con que contrastar topology_safe: los
+        # contadores estan en cero porque no se midieron.
+        if legacy_shape and bool(res.topology_safe) != derived_topology_safe:
             return (
                 False,
                 "generate_coverage_plan_ll topology_safe invariant is inconsistent",
@@ -3570,6 +3609,7 @@ class WebZoneServerNode(Node):
                 "global_topology_conflicts": global_topology_conflicts,
                 "topology_safe": bool(res.topology_safe),
                 "topology_scope": topology_scope,
+                "topology_audited": bool(res.topology_audited),
                 "topology_audit_spacing_m": float(
                     res.topology_audit_spacing_m
                 ),
@@ -3583,6 +3623,11 @@ class WebZoneServerNode(Node):
             # sabe que la ruta que se va a ejecutar no es la que esta dibujando
             # y bloquea el arranque. Por eso los campos tienen que viajar aunque
             # no haya zonas.
+            # Con que definicion de lote planifico el backend, y si corrio la
+            # auditoria topologica. El cockpit los necesita para no leer
+            # topology_safe como si lo hubiera verificado el verificador legacy.
+            "field_mode": str(res.field_mode or "rectangle"),
+            "topology_audited": bool(res.topology_audited),
             "nogo_polygon_count": int(res.nogo_polygon_count),
             "nogo_dropped_count": int(res.nogo_dropped_count),
             "nogo_detour_count": int(res.nogo_detour_count),
@@ -4644,6 +4689,14 @@ class WebSocketApi:
         if parsed["side"] not in {"left", "right"}:
             return None, "side must be 'left' or 'right'"
         parsed["start_is_field_corner"] = bool(start_is_field_corner)
+        # El poligono viaja crudo: la geometria la valida el route_executor, que
+        # es el unico que sabe si el planner activo la soporta. Duplicar esa
+        # validacion aca daria dos verdades que se desincronizan.
+        parsed["coverage_polygon"] = msg.get("coverage_polygon")
+        exclusiones = msg.get("coverage_exclusions")
+        parsed["coverage_exclusions"] = (
+            exclusiones if isinstance(exclusiones, list) else []
+        )
         return parsed, ""
 
     def _parse_waypoints_from_message(

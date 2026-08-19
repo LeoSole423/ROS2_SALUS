@@ -1443,6 +1443,12 @@ class RouteExecutorNode(Node):
         # Paso de muestreo de los giros. El default de Fields2Cover es
         # 0.1 m y solo infla el conteo de waypoints.
         self.declare_parameter("coverage_f2c_turn_point_distance_m", 0.5)
+        # Orientacion de las pasadas, en grados del marco del lote. NaN deja que
+        # Fields2Cover busque el angulo que minimiza el objetivo (BRUTE_FORCE).
+        # Fijarlo importa porque la guarda de aproximacion compara el rumbo del
+        # vehiculo contra el de la primera meta: con el angulo libre, el
+        # planificador puede elegir uno que el vehiculo no esta mirando.
+        self.declare_parameter("coverage_f2c_swath_angle_deg", float("nan"))
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1614,6 +1620,10 @@ class RouteExecutorNode(Node):
         self.coverage_f2c_turn_point_distance_m = max(
             0.05,
             float(self.get_parameter("coverage_f2c_turn_point_distance_m").value),
+        )
+        angulo = float(self.get_parameter("coverage_f2c_swath_angle_deg").value)
+        self.coverage_f2c_swath_angle_deg = (
+            None if not math.isfinite(angulo) else angulo
         )
         if self.coverage_planner not in {"legacy", "fields2cover"}:
             raise ValueError(
@@ -4606,6 +4616,7 @@ class RouteExecutorNode(Node):
                 overlap_ratio=float(values["overlap_ratio"]),
                 min_turning_radius_m=float(values["min_turning_radius_m"]),
                 waypoint_spacing_m=float(values["waypoint_spacing_m"]),
+                swath_angle_deg=self.coverage_f2c_swath_angle_deg,
                 route_type=self.coverage_f2c_route_type,
                 path_type=self.coverage_f2c_path_type,
                 path_continuity=self.coverage_f2c_path_continuity,
@@ -4698,11 +4709,18 @@ class RouteExecutorNode(Node):
         response.route_start_lon = float(values["route_start_lon"])
         response.route_start_yaw_deg = float(values["start_yaw_deg"])
         response.centerline_length_m = float(values["centerline_length_m"])
-        # La auditoria topologica es del trazado en zigzag propio y no aplica al
-        # de Fields2Cover; se informa el alcance para que nadie lo lea como que
-        # se audito y dio limpio.
+        # No se corre la auditoria topologica. La del planificador propio mide
+        # autointersecciones de un zigzag con cabeceras Dubins y no aplica a una
+        # trayectoria de Fields2Cover, que tiene otra estructura. Adaptarla a la
+        # fuerza daria un numero sin significado.
+        #
+        # Con topology_scope="fields2cover", topology_safe=true significa
+        # "Fields2Cover produjo la trayectoria sin errores" y nada mas. Los
+        # contadores de conflictos quedan en cero porque no se midieron, no
+        # porque se haya verificado que no hay.
         response.topology_safe = True
         response.topology_scope = "fields2cover"
+        response.topology_audited = False
         response.planner_min_turning_radius_m = float(
             self.coverage_planner_min_turning_radius_m
         )
@@ -4902,6 +4920,7 @@ class RouteExecutorNode(Node):
                 topology_conflict_count == 0 and omega_turn_count == 0
             )
             response.topology_scope = "global"
+        response.topology_audited = True
         response.topology_audit_spacing_m = float(
             values["topology_audit_spacing_m"]
         )
