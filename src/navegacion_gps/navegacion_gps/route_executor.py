@@ -43,6 +43,9 @@ from interfaces.srv import (
     SetRouteMissionLL,
 )
 from navegacion_gps.coverage_field_polygon import validate_coverage_field
+from navegacion_gps.coverage_fields2cover import Fields2CoverError
+from navegacion_gps.coverage_fields2cover import Fields2CoverPlanner
+from navegacion_gps.coverage_nogo_zones import ll_to_body
 from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
 from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
 from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
@@ -1423,6 +1426,23 @@ class RouteExecutorNode(Node):
         # Solo Campo mira este parametro. Ruta, patrulla y goals no pasan por
         # aca en ningun caso.
         self.declare_parameter("coverage_planner", "legacy")
+        # Solo se leen con coverage_planner=fields2cover.
+        self.declare_parameter("coverage_f2c_action", "compute_coverage_path")
+        self.declare_parameter(
+            "coverage_f2c_parameter_service", "/coverage_server/set_parameters"
+        )
+        self.declare_parameter("coverage_f2c_timeout_s", 30.0)
+        self.declare_parameter("coverage_f2c_route_type", "BOUSTROPHEDON")
+        self.declare_parameter("coverage_f2c_path_type", "DUBIN")
+        self.declare_parameter("coverage_f2c_path_continuity", "CONTINUOUS")
+        # Ancho fisico del vehiculo, distinto del ancho de corte.
+        self.declare_parameter("coverage_f2c_robot_width_m", 1.0)
+        # Cabecera interior. En 0 el lote entero es superficie de trabajo y los
+        # giros salen del poligono, que es lo que se quiere en Campo.
+        self.declare_parameter("coverage_f2c_headland_width_m", 0.0)
+        # Paso de muestreo de los giros. El default de Fields2Cover es
+        # 0.1 m y solo infla el conteo de waypoints.
+        self.declare_parameter("coverage_f2c_turn_point_distance_m", 0.5)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1567,6 +1587,34 @@ class RouteExecutorNode(Node):
         self.coverage_planner = str(
             self.get_parameter("coverage_planner").value or "legacy"
         ).strip().lower()
+        self.coverage_f2c_action = str(
+            self.get_parameter("coverage_f2c_action").value
+        )
+        self.coverage_f2c_parameter_service = str(
+            self.get_parameter("coverage_f2c_parameter_service").value
+        )
+        self.coverage_f2c_timeout_s = max(
+            1.0, float(self.get_parameter("coverage_f2c_timeout_s").value)
+        )
+        self.coverage_f2c_route_type = str(
+            self.get_parameter("coverage_f2c_route_type").value
+        )
+        self.coverage_f2c_path_type = str(
+            self.get_parameter("coverage_f2c_path_type").value
+        )
+        self.coverage_f2c_path_continuity = str(
+            self.get_parameter("coverage_f2c_path_continuity").value
+        )
+        self.coverage_f2c_robot_width_m = max(
+            0.01, float(self.get_parameter("coverage_f2c_robot_width_m").value)
+        )
+        self.coverage_f2c_headland_width_m = max(
+            0.0, float(self.get_parameter("coverage_f2c_headland_width_m").value)
+        )
+        self.coverage_f2c_turn_point_distance_m = max(
+            0.05,
+            float(self.get_parameter("coverage_f2c_turn_point_distance_m").value),
+        )
         if self.coverage_planner not in {"legacy", "fields2cover"}:
             raise ValueError(
                 "coverage_planner debe ser 'legacy' o 'fields2cover', "
@@ -1761,6 +1809,9 @@ class RouteExecutorNode(Node):
             if self.coverage_nogo_enabled and self.zones_get_state_service
             else None
         )
+        # Se crea recien al primer pedido y solo con el planner agricola: un
+        # perfil legacy no levanta un nodo ni un hilo de mas.
+        self._fields2cover: Optional[Fields2CoverPlanner] = None
         self._zones_refresh_timer = (
             self.create_timer(
                 self.zones_refresh_period_s,
@@ -4496,6 +4547,174 @@ class RouteExecutorNode(Node):
             return [], margin_m, note
         return polygons, margin_m, ""
 
+    def _fields2cover_planner(self) -> Fields2CoverPlanner:
+        """Cliente del Coverage Server, creado al primer uso."""
+        if self._fields2cover is None:
+            self._fields2cover = Fields2CoverPlanner(
+                action_name=self.coverage_f2c_action,
+                parameter_service=self.coverage_f2c_parameter_service,
+                logger=self.get_logger(),
+            )
+        return self._fields2cover
+
+    def _generate_coverage_plan_fields2cover(
+        self,
+        values: Dict[str, Any],
+        response: GenerateCoveragePlanLL.Response,
+    ) -> GenerateCoveragePlanLL.Response:
+        """Planificar Campo con Fields2Cover.
+
+        Exige poligono: caer al rectangulo seria planificar una cosa distinta de
+        la que dibujo el operador. Cualquier falla del Coverage Server sale como
+        respuesta con ok=False; nada escapa de aca, porque una excepcion en un
+        callback de rclpy mata el nodo y se llevaria puestas la ruta y la
+        patrulla, que no tienen nada que ver con cobertura.
+        """
+        polygon_ll = values.get("coverage_polygon")
+        if not polygon_ll:
+            response.ok = False
+            response.error = (
+                "coverage_planner=fields2cover necesita un poligono; "
+                "el lote rectangular solo lo atiende el planner legacy"
+            )
+            return response
+
+        origin_lat = float(values["route_start_lat"])
+        origin_lon = float(values["route_start_lon"])
+        origin_yaw = float(values["start_yaw_deg"])
+
+        def a_cuerpo(ring):
+            return [
+                ll_to_body(
+                    float(lat),
+                    float(lon),
+                    origin_lat=origin_lat,
+                    origin_lon=origin_lon,
+                    origin_yaw_deg=origin_yaw,
+                )
+                for lat, lon in ring
+            ]
+
+        try:
+            plan = self._fields2cover_planner().plan(
+                polygon_body=a_cuerpo(polygon_ll),
+                exclusions_body=[
+                    a_cuerpo(ring) for ring in values.get("coverage_exclusions", [])
+                ],
+                cutter_width_m=float(values["cutter_width_m"]),
+                robot_width_m=self.coverage_f2c_robot_width_m,
+                overlap_ratio=float(values["overlap_ratio"]),
+                min_turning_radius_m=float(values["min_turning_radius_m"]),
+                waypoint_spacing_m=float(values["waypoint_spacing_m"]),
+                route_type=self.coverage_f2c_route_type,
+                path_type=self.coverage_f2c_path_type,
+                path_continuity=self.coverage_f2c_path_continuity,
+                turn_point_distance_m=self.coverage_f2c_turn_point_distance_m,
+                headland_width_m=self.coverage_f2c_headland_width_m,
+                server_timeout_s=self.coverage_f2c_timeout_s,
+            )
+        except Fields2CoverError as exc:
+            self.get_logger().warning(f"fields2cover coverage failed: {exc}")
+            response.ok = False
+            response.error = f"Fields2Cover: {exc}"
+            return response
+        except Exception as exc:  # pragma: no cover - depende del middleware
+            self.get_logger().error(f"fields2cover unexpected failure: {exc}")
+            response.ok = False
+            response.error = f"Fields2Cover fallo inesperadamente: {exc}"
+            return response
+
+        return self._fill_fields2cover_response(values, response, plan)
+
+    def _fill_fields2cover_response(
+        self,
+        values: Dict[str, Any],
+        response: GenerateCoveragePlanLL.Response,
+        plan: Any,
+    ) -> GenerateCoveragePlanLL.Response:
+        """Georreferenciar el plan y llenar la respuesta del servicio."""
+        geographic: List[Dict[str, object]] = []
+        for point in plan.waypoints:
+            north_m, east_m = body_relative_offsets_to_north_east(
+                start_yaw_deg=float(values["start_yaw_deg"]),
+                forward_m=float(point.forward_m),
+                left_m=float(point.left_m),
+            )
+            lat, lon = offset_lat_lon(
+                lat_deg=float(values["route_start_lat"]),
+                lon_deg=float(values["route_start_lon"]),
+                north_m=float(north_m),
+                east_m=float(east_m),
+            )
+            geographic.append(
+                {
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "yaw_deg": float(
+                        _normalize_yaw_deg(
+                            float(values["start_yaw_deg"]) + float(point.yaw_delta_deg)
+                        )
+                    ),
+                    "phase": str(point.phase),
+                    "row_index": int(point.row_index),
+                    "key": bool(point.is_key),
+                }
+            )
+
+        if len(geographic) > int(self.coverage_max_sampled_waypoints):
+            response.ok = False
+            response.error = (
+                f"Fields2Cover devolvio {len(geographic)} waypoints, "
+                f"sobre el limite de {self.coverage_max_sampled_waypoints}"
+            )
+            return response
+        key_waypoints = [item for item in geographic if bool(item["key"])]
+        if len(key_waypoints) > int(self.coverage_max_key_waypoints):
+            response.ok = False
+            response.error = (
+                f"Fields2Cover devolvio {len(key_waypoints)} metas key, "
+                f"sobre el limite de {self.coverage_max_key_waypoints}"
+            )
+            return response
+
+        response.sampled_lats = [float(i["lat"]) for i in geographic]
+        response.sampled_lons = [float(i["lon"]) for i in geographic]
+        response.sampled_yaws_deg = [float(i["yaw_deg"]) for i in geographic]
+        response.sampled_phases = [str(i["phase"]) for i in geographic]
+        response.sampled_row_indices = [int(i["row_index"]) for i in geographic]
+        response.sampled_key_flags = [bool(i["key"]) for i in geographic]
+        response.key_lats = [float(i["lat"]) for i in key_waypoints]
+        response.key_lons = [float(i["lon"]) for i in key_waypoints]
+        response.key_yaws_deg = [float(i["yaw_deg"]) for i in key_waypoints]
+        response.route_lats = list(response.key_lats)
+        response.route_lons = list(response.key_lons)
+        response.route_yaws_deg = list(response.key_yaws_deg)
+        response.route_key_flags = [True] * len(key_waypoints)
+
+        response.row_count = int(plan.swath_count)
+        response.estimated_path_length_m = float(plan.total_length_m)
+        response.field_mode = str(values["field_mode"])
+        response.route_start_lat = float(values["route_start_lat"])
+        response.route_start_lon = float(values["route_start_lon"])
+        response.route_start_yaw_deg = float(values["start_yaw_deg"])
+        response.centerline_length_m = float(values["centerline_length_m"])
+        # La auditoria topologica es del trazado en zigzag propio y no aplica al
+        # de Fields2Cover; se informa el alcance para que nadie lo lea como que
+        # se audito y dio limpio.
+        response.topology_safe = True
+        response.topology_scope = "fields2cover"
+        response.planner_min_turning_radius_m = float(
+            self.coverage_planner_min_turning_radius_m
+        )
+        response.recommended_leg_spacing_m = float(self.min_leg_spacing_m)
+        response.recommended_chunk_span_m = float(self.default_chunk_span_m)
+        response.recommended_chunk_max_waypoints = int(
+            self.default_chunk_max_waypoints
+        )
+        response.ok = True
+        response.error = ""
+        return response
+
     def _on_generate_coverage_plan(
         self,
         request: GenerateCoveragePlanLL.Request,
@@ -4508,17 +4727,7 @@ class RouteExecutorNode(Node):
             return response
 
         if self.coverage_planner == "fields2cover":
-            # Etapa 2: el .srv ya acepta el poligono y lo valida, pero el
-            # planificador agricola todavia no esta enganchado. Seguir de largo
-            # planificaria el rectangulo legacy y devolveria field_mode=polygon:
-            # el operador veria un trazado que no corresponde al lote que
-            # dibujo. Es preferible un error claro.
-            response.ok = False
-            response.error = (
-                "coverage_planner=fields2cover todavia no esta implementado; "
-                "usa coverage_planner=legacy"
-            )
-            return response
+            return self._generate_coverage_plan_fields2cover(values, response)
 
         no_go_polygons, no_go_margin_m, no_go_note = self._coverage_no_go_polygons(
             values
