@@ -1849,9 +1849,25 @@ class RouteExecutorNode(Node):
             if self.coverage_nogo_enabled and self.zones_get_state_service
             else None
         )
-        # Se crea recien al primer pedido y solo con el planner agricola: un
-        # perfil legacy no levanta un nodo ni un hilo de mas.
+        # Solo con el planner agricola: un perfil legacy no levanta un nodo ni
+        # un hilo de mas. Con fields2cover se crea en el arranque y no al primer
+        # pedido, porque al crearse deja activo el Coverage Server —que viene
+        # del lanzamiento sin configurar— y eso tarda mas que el timeout del
+        # cockpit. Hacerlo aca es la diferencia entre que el primer preview de
+        # la sesion ande o falle.
         self._fields2cover: Optional[Fields2CoverPlanner] = None
+        # Se agenda, no se hace: el arranque del nodo no puede depender de que
+        # un servidor de cobertura conteste, y asi el planificador agricola
+        # sigue apareciendo solo dentro de metodos de Campo.
+        self._coverage_warmup_timer = (
+            self.create_timer(
+                0.5,
+                self._coverage_warmup,
+                callback_group=self._client_group,
+            )
+            if self.coverage_planner == "fields2cover"
+            else None
+        )
         self._zones_refresh_timer = (
             self.create_timer(
                 self.zones_refresh_period_s,
@@ -4632,6 +4648,26 @@ class RouteExecutorNode(Node):
                     transicion += largo
             anterior = actual
         return trabajo, transicion
+
+    def _coverage_warmup(self) -> None:
+        """Dejar listo el planificador agricola antes del primer pedido.
+
+        Una sola vez. El Coverage Server viene del lanzamiento sin configurar y
+        activarlo tarda mas que el timeout del cockpit: si se hace en el primer
+        preview, ese preview falla y el siguiente anda, que es la peor forma de
+        andar.
+        """
+        if self._coverage_warmup_timer is not None:
+            self._coverage_warmup_timer.cancel()
+            self._coverage_warmup_timer = None
+        try:
+            self._fields2cover_planner()
+        except Exception as exc:  # pragma: no cover - depende del entorno
+            # Que falte el overlay no puede impedir que ande el nodo: ruta
+            # automatica y patrulla no dependen de cobertura.
+            self.get_logger().warning(
+                f"coverage_planner=fields2cover no disponible: {exc}"
+            )
 
     def _fields2cover_planner(self) -> Fields2CoverPlanner:
         """Cliente del Coverage Server, creado al primer uso."""

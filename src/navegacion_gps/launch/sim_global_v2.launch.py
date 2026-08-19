@@ -13,6 +13,28 @@ from launch_ros.parameter_descriptions import ParameterValue
 from navegacion_gps.datum_profile_resolver import resolve_selected_datum
 
 
+def _coverage_server_disponible() -> bool:
+    """Si el overlay de Fields2Cover esta en este entorno.
+
+    Se mira aca, al armar el lanzamiento, y no se asume: el overlay se
+    instala aparte y si no esta, agregar el nodo hace fallar el lanzamiento
+    entero —y con el la navegacion, que no tiene nada que ver con cobertura—.
+    """
+    try:
+        get_package_share_directory("opennav_coverage")
+        return True
+    except Exception:
+        return False
+
+
+_COVERAGE_SERVER_OK = _coverage_server_disponible()
+# CAMPO necesita Fields2Cover para trabajar con el poligono del cockpit. Si el
+# overlay no esta, se deja el planificador propio: sigue andando el lote
+# rectangular, y el poligono devuelve un error que dice exactamente que falta,
+# en vez de un timeout.
+_COVERAGE_PLANNER = "fields2cover" if _COVERAGE_SERVER_OK else "legacy"
+
+
 def _resolve_config_file_path(package_share_dir: str, filename: str) -> str:
     package_share_path = Path(package_share_dir)
     default_path = package_share_path / "config" / filename
@@ -727,6 +749,20 @@ def generate_launch_description():
                         # lote queda cubierto en bloques intercalados en vez de
                         # corrido.
                         "coverage_allow_row_skipping": True,
+                        # CAMPO planifica con Fields2Cover. Es lo unico que
+                        # entiende el poligono que dibuja el cockpit: el
+                        # planificador propio solo sabe de lotes rectangulares y
+                        # rechaza el pedido —"el planner legacy no soporta
+                        # poligonos"— antes que planificar una figura distinta
+                        # de la dibujada. Ruta automatica, patrulla y goals no
+                        # pasan por aca.
+                        "coverage_planner": _COVERAGE_PLANNER,
+                        "coverage_f2c_robot_width_m": 1.0,
+                        # 0 grados: pasadas de este a oeste, que es como se leen
+                        # en el mapa. Sin esto Fields2Cover elige la orientacion
+                        # que minimiza el numero de pasadas y cambia sola al
+                        # mover un vertice del lote.
+                        "coverage_f2c_swath_angle_deg": 0.0,
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",
                         "set_patrol_service": "/route_executor/set_patrol_ll",
@@ -738,6 +774,36 @@ def generate_launch_description():
                         "blocked_retry_reanchor_tolerance_m": 8.0,
                     }
                 ],
+            ),
+            # Coverage Server de Fields2Cover: es quien planifica CAMPO cuando
+            # el lote viene como poligono. Queda en `unconfigured`; lo configura
+            # y activa el route_executor al primer pedido, que es cuando ya sabe
+            # el ancho de corte y el radio de giro del vehiculo. Activarlo aca
+            # con los valores por omision no serviria: el server arma su objeto
+            # de robot al configurarse y no vuelve a mirar los parametros.
+            *(
+                [
+                    Node(
+                        package="opennav_coverage",
+                        executable="opennav_coverage",
+                        name="coverage_server",
+                        output="screen",
+                        parameters=[
+                            {
+                                "use_sim_time": ParameterValue(
+                                    use_sim_time, value_type=bool
+                                ),
+                                "coordinates_type": "cartesian",
+                                "robot_width": 1.0,
+                                "operation_width": 2.0,
+                                "min_turning_radius": 2.9,
+                                "default_headland_width": 0.0,
+                            }
+                        ],
+                    )
+                ]
+                if _COVERAGE_SERVER_OK
+                else []
             ),
             Node(
                 package="navegacion_gps",

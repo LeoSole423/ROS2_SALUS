@@ -34,6 +34,7 @@ METODOS_DE_CAMPO = {
     "_validate_generate_coverage_request",
     "_on_generate_coverage_plan",
     "_coverage_no_go_polygons",
+    "_coverage_warmup",
     "_fields2cover_planner",
     "_generate_coverage_plan_fields2cover",
     "_fill_fields2cover_response",

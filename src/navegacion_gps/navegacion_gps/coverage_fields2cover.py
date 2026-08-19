@@ -235,6 +235,29 @@ class Fields2CoverPlanner:
             target=self._executor.spin, name=node_name, daemon=True
         )
         self._thread.start()
+        # Levantar el Coverage Server ahora y no en el primer pedido: viene del
+        # lanzamiento en `unconfigured`, y configurarlo tarda mas que el timeout
+        # del cockpit. Sin esto el primer preview de la sesion falla siempre y
+        # el segundo anda, que es la peor forma de andar. En un hilo aparte para
+        # no demorar el arranque del route_executor.
+        threading.Thread(
+            target=self._warmup, name=f"{node_name}_warmup", daemon=True
+        ).start()
+
+    def _warmup(self) -> None:
+        """Dejar el Coverage Server activo, si es que hay uno."""
+        try:
+            if self.available(timeout_s=10.0):
+                return
+            self._cycle_server(10.0)
+            # Los parametros del vehiculo todavia no se saben —dependen del
+            # pedido—, asi que el primero que llegue va a reciclar igual.
+            self._applied = {}
+            if self._logger is not None:
+                self._logger.info("Coverage Server activado desde el arranque")
+        except Exception as exc:  # pragma: no cover - depende del entorno
+            if self._logger is not None:
+                self._logger.warning(f"no se pudo activar el Coverage Server: {exc}")
 
     def shutdown(self) -> None:
         """Bajar el executor y el nodo cliente."""
@@ -263,13 +286,18 @@ class Fields2CoverPlanner:
                 "el Coverage Server no expone change_state; no se pueden "
                 "aplicar los parametros del vehiculo"
             )
+        # Bajar solo tiene sentido si el server ya estaba arriba. Recien
+        # lanzado esta en `unconfigured` y ahi DEACTIVATE y CLEANUP se rechazan
+        # —correctamente—, asi que exigirlas dejaria a Campo sin funcionar
+        # cuando el server viene del lanzamiento y nadie lo activo a mano.
+        # Configurar y activar, en cambio, tienen que salir si o si.
         transiciones = (
-            Transition.TRANSITION_DEACTIVATE,
-            Transition.TRANSITION_CLEANUP,
-            Transition.TRANSITION_CONFIGURE,
-            Transition.TRANSITION_ACTIVATE,
+            (Transition.TRANSITION_DEACTIVATE, False),
+            (Transition.TRANSITION_CLEANUP, False),
+            (Transition.TRANSITION_CONFIGURE, True),
+            (Transition.TRANSITION_ACTIVATE, True),
         )
-        for transicion in transiciones:
+        for transicion, obligatoria in transiciones:
             request = ChangeState.Request()
             request.transition.id = int(transicion)
             future = self._change_state.call_async(request)
@@ -280,9 +308,10 @@ class Fields2CoverPlanner:
                 )
             respuesta = future.result()
             if respuesta is None or not bool(respuesta.success):
-                raise Fields2CoverError(
-                    f"el Coverage Server rechazo la transicion {int(transicion)}"
-                )
+                if obligatoria:
+                    raise Fields2CoverError(
+                        f"el Coverage Server rechazo la transicion {int(transicion)}"
+                    )
 
     def _push_parameters(self, values: Dict[str, float], timeout_s: float) -> None:
         """Mandarle al server los parametros fisicos del vehiculo."""
@@ -354,10 +383,21 @@ class Fields2CoverPlanner:
         if len(polygon_body) < 3:
             raise Fields2CoverError("el poligono del lote necesita al menos 3 vertices")
         if not self.available(timeout_s=min(5.0, server_timeout_s)):
-            raise Fields2CoverError(
-                "el Coverage Server no responde; revisa que opennav_coverage "
-                "este corriendo y activo"
-            )
+            # Recien lanzado, el Coverage Server esta en `unconfigured` y su
+            # action server todavia no existe: nadie lo activo. Antes de darlo
+            # por caido se lo intenta levantar, que es lo que el lanzamiento
+            # espera que pase en el primer pedido de CAMPO. Si tampoco asi
+            # aparece, entonces si no esta.
+            try:
+                self._cycle_server(min(5.0, server_timeout_s))
+                self._applied = {}
+            except Fields2CoverError:
+                pass
+            if not self.available(timeout_s=min(5.0, server_timeout_s)):
+                raise Fields2CoverError(
+                    "el Coverage Server no responde; revisa que opennav_coverage "
+                    "este corriendo y activo"
+                )
 
         # El solape se traduce a un ancho de operacion menor, que es como lo
         # expresa Fields2Cover. Da la misma separacion entre pasadas que la
