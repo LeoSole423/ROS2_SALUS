@@ -46,6 +46,7 @@ from interfaces.srv import (
 from navegacion_gps.coverage_field_polygon import validate_coverage_field
 from navegacion_gps.coverage_fields2cover import Fields2CoverError
 from navegacion_gps.coverage_fields2cover import Fields2CoverPlanner
+from navegacion_gps.coverage_fields2cover import WORK_PHASE
 from navegacion_gps.coverage_nogo import clip_plan_to_nogo
 from navegacion_gps.coverage_nogo_zones import ll_to_body
 from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
@@ -4605,20 +4606,32 @@ class RouteExecutorNode(Node):
         return polygons, margin_m, ""
 
     @staticmethod
-    def _body_path_length_m(waypoints: Sequence[Any]) -> float:
-        """Largo de la poligonal en marco del cuerpo.
+    def _body_lengths_by_phase(waypoints: Sequence[Any]) -> Tuple[float, float]:
+        """Largo de trabajo y de transiciones de la poligonal, en metros.
 
-        Despues de recortar zonas, el largo que reporto Fields2Cover ya no
-        describe la trayectoria: sobran las pasadas que se borraron y faltan los
-        rodeos que se agregaron.
+        Un tramo cuenta como trabajo cuando sus dos extremos son de la misma
+        pasada; todo lo demas —rodeos incluidos— es transicion.
         """
-        total = 0.0
-        for previo, actual in zip(waypoints, waypoints[1:]):
-            total += math.hypot(
-                float(actual.forward_m) - float(previo.forward_m),
-                float(actual.left_m) - float(previo.left_m),
-            )
-        return total
+        trabajo = 0.0
+        transicion = 0.0
+        anterior = None
+        for actual in waypoints:
+            if anterior is not None:
+                largo = math.hypot(
+                    float(actual.forward_m) - float(anterior.forward_m),
+                    float(actual.left_m) - float(anterior.left_m),
+                )
+                mismo_tramo = (
+                    str(anterior.phase) == WORK_PHASE
+                    and str(actual.phase) == WORK_PHASE
+                    and int(anterior.row_index) == int(actual.row_index)
+                )
+                if mismo_tramo:
+                    trabajo += largo
+                else:
+                    transicion += largo
+            anterior = actual
+        return trabajo, transicion
 
     def _fields2cover_planner(self) -> Fields2CoverPlanner:
         """Cliente del Coverage Server, creado al primer uso."""
@@ -4744,10 +4757,23 @@ class RouteExecutorNode(Node):
                 response.ok = False
                 response.error = f"zonas no-go: {exc}"
                 return response
+            except Exception as exc:  # pragma: no cover - red de seguridad
+                # Nada de aca puede escapar: una excepcion en un callback de
+                # servicio de rclpy mata el nodo, y con el se van la ruta
+                # automatica y la patrulla, que no pidieron ninguna cobertura.
+                self.get_logger().error(f"nogo clip failed: {exc}")
+                response.ok = False
+                response.error = f"zonas no-go: fallo inesperado ({exc})"
+                return response
+            # El largo lo calcula el plan sumando trabajo y transiciones, asi
+            # que hay que rehacer los dos: sobran las pasadas que se borraron y
+            # faltan los rodeos que se agregaron.
+            trabajo_m, transicion_m = self._body_lengths_by_phase(recortados)
             plan = replace(
                 plan,
                 waypoints=recortados,
-                total_length_m=self._body_path_length_m(recortados),
+                work_length_m=trabajo_m,
+                transition_length_m=transicion_m,
             )
 
         return self._fill_fields2cover_response(
@@ -4880,7 +4906,19 @@ class RouteExecutorNode(Node):
             return response
 
         if self.coverage_planner == "fields2cover":
-            return self._generate_coverage_plan_fields2cover(values, response)
+            # Ultimo cinturon. Cualquier excepcion que se escape de aca mata el
+            # nodo entero —rclpy no atrapa nada dentro de un callback— y el
+            # cockpit lo ve como "generate_coverage_plan_ll timeout", que no
+            # dice nada de lo que paso. Un pedido de cobertura roto tiene que
+            # volver como respuesta con el error, no llevarse puestas la ruta
+            # automatica y la patrulla.
+            try:
+                return self._generate_coverage_plan_fields2cover(values, response)
+            except Exception as exc:  # pragma: no cover - red de seguridad
+                self.get_logger().error(f"coverage fields2cover crashed: {exc}")
+                response.ok = False
+                response.error = f"Fields2Cover fallo inesperadamente: {exc}"
+                return response
 
         no_go_polygons, no_go_margin_m, no_go_note = self._coverage_no_go_polygons(
             values

@@ -37,8 +37,21 @@ from lifecycle_msgs.srv import ChangeState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 
-from opennav_coverage_msgs.action import ComputeCoveragePath
-from opennav_coverage_msgs.msg import Coordinate, Coordinates
+try:
+    from opennav_coverage_msgs.action import ComputeCoveragePath
+    from opennav_coverage_msgs.msg import Coordinate, Coordinates
+    _IMPORT_ERROR = ""
+except ImportError as _exc:  # pragma: no cover - depende del overlay instalado
+    # Importar esto arriba y sin red mataba al nodo ENTERO cuando el overlay de
+    # Fields2Cover no estaba: route_executor no llegaba ni a arrancar y se caian
+    # con el la ruta automatica, la patrulla y los goals, que no tienen nada que
+    # ver con cobertura. El modulo tiene que poder importarse siempre; lo unico
+    # que puede fallar es planificar Campo con fields2cover, y falla con un
+    # mensaje que dice que instalar.
+    ComputeCoveragePath = None  # type: ignore[assignment]
+    Coordinate = None  # type: ignore[assignment]
+    Coordinates = None  # type: ignore[assignment]
+    _IMPORT_ERROR = str(_exc)
 
 from navegacion_gps.coverage_waypoint_core import CoverageBodyWaypoint
 
@@ -100,7 +113,12 @@ def _sample_segment(start: Point, end: Point, spacing_m: float) -> List[Point]:
     ]
 
 
-def _ring_to_coordinates(ring: Sequence[Point]) -> Coordinates:
+def fields2cover_disponible() -> bool:
+    """Si el overlay de Fields2Cover esta instalado en este entorno."""
+    return not _IMPORT_ERROR
+
+
+def _ring_to_coordinates(ring: Sequence[Point]) -> Any:
     """Anillo en metros locales al tipo que espera la accion.
 
     Se cierra repitiendo el primer vertice al final. SALUS maneja los anillos
@@ -197,6 +215,12 @@ class Fields2CoverPlanner:
         logger: Any = None,
     ) -> None:
         """Levantar el nodo cliente y su executor en un hilo aparte."""
+        if _IMPORT_ERROR:
+            raise Fields2CoverError(
+                "el overlay de Fields2Cover no esta instalado en este entorno "
+                f"({_IMPORT_ERROR}); source del workspace de opennav_coverage "
+                "antes de lanzar, o coverage_planner:=legacy"
+            )
         self._logger = logger
         self._node = rclpy.create_node(node_name)
         self._action = ActionClient(self._node, ComputeCoveragePath, action_name)
