@@ -1449,6 +1449,15 @@ class RouteExecutorNode(Node):
         # vehiculo contra el de la primera meta: con el angulo libre, el
         # planificador puede elegir uno que el vehiculo no esta mirando.
         self.declare_parameter("coverage_f2c_swath_angle_deg", float("nan"))
+        # Tope de waypoints muestreados del planner agricola, aparte del que usa
+        # el planificador propio.
+        #
+        # Los sampled_waypoints son para dibujar el preview, no metas: las metas
+        # son las key, y esas siguen con su tope estricto. Fields2Cover muestrea
+        # bastante mas denso —cada giro es un Path propio, y una exclusion parte
+        # las pasadas y suma giros—, asi que con el tope de 2000 del zigzag un
+        # lote normal con una exclusion se rechazaba de entrada.
+        self.declare_parameter("coverage_f2c_max_sampled_waypoints", 10000)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
@@ -1620,6 +1629,10 @@ class RouteExecutorNode(Node):
         self.coverage_f2c_turn_point_distance_m = max(
             0.05,
             float(self.get_parameter("coverage_f2c_turn_point_distance_m").value),
+        )
+        self.coverage_f2c_max_sampled_waypoints = max(
+            int(self.coverage_max_sampled_waypoints),
+            int(self.get_parameter("coverage_f2c_max_sampled_waypoints").value),
         )
         angulo = float(self.get_parameter("coverage_f2c_swath_angle_deg").value)
         self.coverage_f2c_swath_angle_deg = (
@@ -4698,19 +4711,25 @@ class RouteExecutorNode(Node):
                 }
             )
 
-        if len(geographic) > int(self.coverage_max_sampled_waypoints):
+        if len(geographic) > int(self.coverage_f2c_max_sampled_waypoints):
+            # El detalle de preview es lo unico de esto que el operador tiene a
+            # mano en el cockpit, asi que el aviso apunta ahi.
             response.ok = False
             response.error = (
-                f"Fields2Cover devolvio {len(geographic)} waypoints, "
-                f"sobre el limite de {self.coverage_max_sampled_waypoints}"
+                f"Fields2Cover devolvio {len(geographic)} waypoints, sobre el "
+                f"limite de {self.coverage_f2c_max_sampled_waypoints}; subi el "
+                "detalle de preview (waypoint_spacing_m) o achica el lote"
             )
             return response
         key_waypoints = [item for item in geographic if bool(item["key"])]
         if len(key_waypoints) > int(self.coverage_max_key_waypoints):
+            # Las metas key son metas de parada reales, no dibujo: aca subir el
+            # tope no es la salida, hay que pedir menos pasadas.
             response.ok = False
             response.error = (
-                f"Fields2Cover devolvio {len(key_waypoints)} metas key, "
-                f"sobre el limite de {self.coverage_max_key_waypoints}"
+                f"Fields2Cover devolvio {len(key_waypoints)} metas key, sobre "
+                f"el limite de {self.coverage_max_key_waypoints}; achica el "
+                "lote, subi el ancho de corte o baja el solape"
             )
             return response
 
