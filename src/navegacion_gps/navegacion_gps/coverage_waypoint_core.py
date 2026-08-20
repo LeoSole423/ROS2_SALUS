@@ -37,6 +37,12 @@ class CoverageBodyWaypoint:
     row_index: int
     is_key: bool = False
     is_guide: bool = False
+    # Metros de marcha atras que hay que hacer AL LLEGAR a este waypoint, antes
+    # de seguir al proximo. Solo lo usa la cabecera de tres puntos de Campo:
+    # cuando las pasadas quedan mas juntas que el diametro de giro, el giro
+    # hacia adelante no existe y hay que retroceder. En 0 —todo el resto del
+    # plan, y todo lo que produce el planificador propio— no hay maniobra.
+    backup_m: float = 0.0
 
 
 @dataclass(frozen=True)

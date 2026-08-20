@@ -219,6 +219,66 @@ def test_dos_zonas_seguidas_se_rodean_las_dos() -> None:
             )
 
 
+def test_zonas_solapadas_siguen_siendo_idempotentes() -> None:
+    """Un rodeo no puede dejar un vertice adentro de la otra zona.
+
+    Las dos zonas se solapan como puede pasar cuando el operador dibuja dos
+    cuadros parcialmente encima. Antes el primer recorte dejaba un punto de
+    rodeo dentro de la primera y el segundo lo borraba: backend y cockpit
+    terminaban mostrando rutas distintas.
+    """
+    primera_zona = [
+        (21.9132805385, -19.4012230618),
+        (24.9744600865, -19.4012230618),
+        (24.9744600865, -3.5730292693),
+        (21.9132805385, -3.5730292693),
+    ]
+    segunda_zona = [
+        (15.8286704333, -16.4143527562),
+        (24.8657650897, -16.4143527562),
+        (24.8657650897, 1.2712427780),
+        (15.8286704333, 1.2712427780),
+    ]
+    plan = _fila([(0.0, -8.3883739760), (100.0, -1.0162519810)])
+    recortado, _, _ = clip_plan_to_nogo(
+        plan,
+        [primera_zona, segunda_zona],
+        margin_m=1.5,
+        bounds=(0.0, 100.0, -30.0, 30.0),
+    )
+    segunda_pasada, descartados, rodeos = clip_plan_to_nogo(
+        recortado,
+        [primera_zona, segunda_zona],
+        margin_m=1.5,
+        bounds=(0.0, 100.0, -30.0, 30.0),
+    )
+    assert _posiciones(segunda_pasada) == _posiciones(recortado)
+    assert (descartados, rodeos) == (0, 0)
+
+
+def test_el_rodeo_de_un_lote_concavo_no_usa_el_hueco_de_su_caja() -> None:
+    # En una L la caja 0..10 x 0..10 contiene el hueco x>4,y>4, que no es
+    # lote. El lado corto de este rodeo pasa por ahi; tiene que elegirse el
+    # contorno largo que si queda dentro del poligono real.
+    lote_en_l = [
+        (0.0, 0.0), (10.0, 0.0), (10.0, 4.0),
+        (4.0, 4.0), (4.0, 10.0), (0.0, 10.0),
+    ]
+    zona = [(2.0, 3.0), (4.0, 3.0), (4.0, 5.0), (2.0, 5.0)]
+    recortado, _, rodeos = clip_plan_to_nogo(
+        _fila([(3.0, 0.0), (3.0, 10.0)]),
+        [zona],
+        margin_m=0.25,
+        bounds=(0.0, 10.0, 0.0, 10.0),
+        field_boundary=lote_en_l,
+    )
+    assert rodeos == 1
+    assert all(
+        point_in_polygon((float(item.forward_m), float(item.left_m)), lote_en_l)
+        for item in recortado
+    )
+
+
 def _plan_de_cobertura(**kwargs: object):
     return build_lawnmower_waypoints(
         start_lat=-31.42,
@@ -306,6 +366,20 @@ def test_ll_to_body_es_la_inversa_de_la_georreferenciacion(yaw_deg: float) -> No
         )
         assert math.isclose(vuelta[0], forward_m, abs_tol=1.0e-6)
         assert math.isclose(vuelta[1], left_m, abs_tol=1.0e-6)
+
+
+def test_ll_to_body_es_inversa_al_cruzar_el_antimeridiano() -> None:
+    origen_lat, origen_lon = 0.0, 179.9999
+    lat, lon = offset_lat_lon(
+        lat_deg=origen_lat, lon_deg=origen_lon, north_m=10.0, east_m=30.0
+    )
+    assert lon < -179.999
+    vuelta = ll_to_body(
+        lat, lon,
+        origin_lat=origen_lat, origin_lon=origen_lon, origin_yaw_deg=0.0,
+    )
+    assert math.isclose(vuelta[0], 30.0, abs_tol=1.0e-6)
+    assert math.isclose(vuelta[1], 10.0, abs_tol=1.0e-6)
 
 
 def _geojson_de_zona(zona_body, *, enabled=True, zone_type="no_go"):

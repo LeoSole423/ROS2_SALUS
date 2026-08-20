@@ -1,0 +1,291 @@
+# YOLO Vision Pipeline — ROS2_SALUS
+**Informe completo del sistema de visión del robot SALUS**
+
+---
+
+## ¿Qué es esto?
+
+El robot SALUS tiene un sistema de visión basado en inteligencia artificial que:
+1. Captura video desde una cámara (USB o IP por red)
+2. Analiza cada frame con YOLO para detectar objetos
+3. Frena automáticamente si detecta una persona cerca
+4. Muestra todo en tiempo real en el cockpit web
+
+---
+
+## El modelo de IA
+
+| Dato | Valor |
+|------|-------|
+| Modelo | YOLOv11 Nano |
+| Archivo | `src/vision_pipeline/models/yolo11n.onnx` |
+| Tamaño | 11 MB |
+| Clases | 80 (personas, coches, animales, objetos COCO) |
+| Resolución entrada | 320 × 320 píxeles |
+| Confianza mínima | 70% |
+| FPS máximo | 1 FPS (throttleado para no sobrecargar) |
+
+**¿Por qué ONNX?** El formato ONNX permite correr el mismo modelo en GPU NVIDIA, GPU Intel, o CPU sin cambiar código. El sistema elige automáticamente el mejor backend disponible:
+```
+CUDA → TensorRT → OpenVINO → CPU
+```
+
+---
+
+## Arquitectura: los 6 nodos ROS 2
+
+Cada pieza del sistema es un nodo ROS 2 independiente que se comunica por tópicos.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PIPELINE DE VISIÓN                       │
+│                                                             │
+│  [Cámara IP/USB]                                            │
+│       ↓                                                     │
+│  [ip_camera_publisher]  ←── lee RTSP/MJPEG/USB             │
+│       ↓ /camera/image_raw                                   │
+│  [yolo_onnx_detector]   ←── inferencia IA (worker thread)  │
+│       ↓ /detections                                         │
+│  [vision_target_selector] ←── filtra y elige target        │
+│       ↓ /vision/target                                      │
+│       ├──→ [vision_brake_guard]  → frena el robot          │
+│       └──→ [vision_web_server]   → stream + overlay        │
+│                                                             │
+│  [fusion_node]  ←── YOLO + LiDAR = distancia 3D real      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Nodo 1: `ip_camera_publisher`
+**Archivo:** `src/vision_pipeline/vision_pipeline/ip_camera_publisher.py`
+
+Conecta con la cámara y publica imágenes en ROS 2.
+- Soporta cámara USB (`/dev/video0`) y cámara IP (RTSP, MJPEG, HTTP)
+- Maneja reconexiones automáticas si la cámara se desconecta
+- Thread reader desacoplado del publisher (no se pierden frames)
+- Publica en: `/camera/image_raw`
+
+### Nodo 2: `yolo_onnx_detector`
+**Archivo:** `src/vision_pipeline/vision_pipeline/yolo_onnx_detector.py`
+
+El corazón del sistema. Recibe imágenes y devuelve detecciones.
+
+Pasos internos:
+1. Recibe frame de `/camera/image_raw`
+2. Redimensiona a 320×320 con padding (letterbox)
+3. Normaliza píxeles a [0.0, 1.0]
+4. Envía al modelo ONNX en worker thread
+5. Postprocesa: NMS (supresión no máxima) para eliminar duplicados
+6. Filtra por confianza ≥ 0.70
+7. Publica en `/detections` y `/objeto_detectado` (debug)
+
+Tiene estadísticas EMA (media móvil) de FPS en tiempo real.
+
+### Nodo 3: `vision_target_selector`
+**Archivo:** `src/vision_pipeline/vision_pipeline/vision_target_selector.py`
+
+De todas las detecciones, elige la más relevante para el robot.
+- Filtra por etiqueta (configurable, por defecto acepta todas)
+- Filtra por confianza mínima
+- Detecta si la detección es "fresca" o expiró por timeout
+- Normaliza coordenadas de píxeles a [0.0, 1.0]
+- Publica en: `/vision/target` (mensaje custom `VisionTarget`)
+
+### Nodo 4: `vision_brake_guard`
+**Archivos:** `src/navegacion_gps/navegacion_gps/vision_brake_guard.py`
+**Lógica pura:** `vision_brake_guard_logic.py`
+
+Frena el robot de emergencia si detecta una persona.
+
+Máquina de estados:
+```
+idle ──(detección válida)──→ arming ──(hits consecutivos)──→ FRENO
+ ↑                                                              ↓
+ └─────────────────(cooldown expira)────────────────────────────┘
+```
+
+Parámetros configurables:
+- `trigger_labels` — qué clases detectar (por defecto: `person`)
+- `min_score` — confianza mínima para activar (ej: 0.75)
+- `min_area_norm` — tamaño mínimo del bbox (proxy de "está cerca")
+- `required_consecutive_hits` — cuántos frames seguidos antes de frenar
+- `retrigger_cooldown_s` — segundos de espera entre frenos
+
+**Solo activa si:** hay un goal activo de navegación o modo manual habilitado.
+
+### Nodo 5: `vision_web_server`
+**Archivo:** `src/vision_pipeline/vision_pipeline/vision_web_server.py`
+
+Servidor HTTP en puerto `8088`. Permite ver el video con detecciones desde el navegador.
+
+| Endpoint | Qué hace |
+|----------|----------|
+| `GET /` | Página HTML del dashboard |
+| `GET /stream.mjpg` | Video en vivo con bounding boxes dibujados |
+| `GET /snap.jpg` | Foto instantánea |
+| `GET /data` | JSON con estado actual (FPS, detecciones, cámara) |
+| `GET /health` | OK si el servidor está vivo |
+
+### Nodo 6: `fusion_node`
+**Archivo:** `src/lidar_camara/lidar_camara/fusion_node.py`
+
+Combina YOLO (2D, píxeles) con el LiDAR (3D, metros) para saber la distancia real a los objetos detectados.
+
+Algoritmo:
+1. YOLO da el centro horizontal del bbox en píxeles (`cx_px`)
+2. Se convierte a ángulo azimut usando el FOV de la cámara
+3. Se buscan puntos LiDAR en ese sector azimut (±tolerancia)
+4. La distancia mínima en ese sector = distancia real al objeto
+
+Publica:
+- `/fusion/targets` — JSON con lista de objetos + distancia en metros
+- `/fusion/brake_active` — true si hay obstáculo peligrosamente cerca
+- `/fusion/closest_obstacle_m` — distancia al obstáculo más cercano
+
+---
+
+## Mensaje custom: VisionTarget
+
+Definido en `src/interfaces/msg/VisionTarget.msg`
+
+```
+bool    fresh              # ¿Es reciente? (no expiró)
+bool    available          # ¿Hay target activo?
+float64 age_s              # Segundos desde última detección
+uint32  detection_count    # Total de detecciones acumuladas
+string  label              # Clase detectada (ej: "person")
+string  detection_id       # ID único de la detección
+float64 score              # Confianza del modelo (0.0 - 1.0)
+# Coordenadas en píxeles y normalizadas [0,1]
+```
+
+---
+
+## Tópicos ROS 2 completos
+
+```
+/camera/image_raw           ← sensor_msgs/Image
+/detections                 ← vision_msgs/Detection2DArray
+/objeto_detectado           ← std_msgs/String  (debug)
+/vision/target              ← interfaces/msg/VisionTarget
+/fusion/targets             ← std_msgs/String  (JSON)
+/fusion/brake_active        ← std_msgs/Bool
+/fusion/closest_obstacle_m  ← std_msgs/Float64
+```
+
+---
+
+## Cómo se lanza el sistema
+
+### Opción A: Robot con cámara USB (Raspberry Pi)
+```bash
+ros2 launch vision_pipeline vision_pipeline.launch.py
+```
+Lanza: `v4l2_camera` + `yolo_onnx_detector` + `vision_target_selector`
+
+### Opción B: PC con GPU + cámara IP (recomendado)
+```bash
+ros2 launch vision_pipeline vision_pc_gpu.launch.py
+```
+La PC procesa YOLO con GPU. La Raspberry solo consume `/vision/target`.
+
+### Opción C: Testing rápido
+```bash
+ros2 launch vision_pipeline ip_camera_ai_test.launch.py
+```
+
+### Opción D: Launch principal del robot (todo integrado)
+```bash
+ros2 launch navegacion_gps real_global_v2.launch.py \
+  use_vision_pc_gpu:=true \
+  use_lidar_camara_fusion:=true
+```
+
+Flags disponibles:
+- `use_vision_pipeline:=true` — pipeline básico (USB)
+- `use_vision_pc_gpu:=true` — pipeline con GPU (IP)
+- `use_lidar_camara_fusion:=true` — activa fusión LiDAR+YOLO
+
+---
+
+## Scripts de herramientas
+
+| Script | Cuándo usar |
+|--------|-------------|
+| `tools/launch_vision_pc_gpu.sh` | PC x86 con GPU. Requiere `STREAM_URL` y `MODEL_PATH` |
+| `tools/launch_vision_dashboard.sh` | Docker + USB. Requiere `VIDEO_DEVICE=/dev/video0` |
+| `tools/launch_vision_dashboard_ipcam.sh` | Docker + RTSP. Requiere `STREAM_URL` |
+
+---
+
+## Cockpit web (interfaz de usuario)
+
+**Ruta:** `cockpit/src/packages/nav2/modules/camera/`
+
+El cockpit React se conecta al `vision_web_server` y muestra:
+- Stream de video en vivo con bounding boxes superpuestos
+- Nivel de riesgo: normal / bajo / medio / alto
+- Zona de detección: izquierda / centro / derecha
+- Estadísticas en tiempo real: FPS, confianza promedio, cantidad de objetos
+- Control PTZ si la cámara es IP compatible
+
+Archivo de lógica: `service/impl/CameraVisionService.ts`
+Archivo de UI: `frontend/index.tsx`
+
+---
+
+## Configuración principal
+
+**Archivo:** `src/vision_pipeline/config/yolo_detector.yaml`
+
+```yaml
+image_topic:       /camera/image_raw
+detections_topic:  /detections
+debug_topic:       /objeto_detectado
+input_width:       320
+input_height:      320
+conf_threshold:    0.70
+nms_iou_threshold: 0.45
+max_detections:    20
+max_fps:           1.0
+execution_provider: auto   # auto | cuda | tensorrt | openvino | cpu
+```
+
+**Cámara USB:** `src/vision_pipeline/config/v4l2_camera_low_latency.yaml`
+```yaml
+video_device:    /dev/video0
+pixel_format:    YUYV
+output_encoding: bgr8
+image_size:      [640, 480]
+```
+
+---
+
+## Dependencias del sistema
+
+```
+Python:
+  onnxruntime / onnxruntime-gpu   → inferencia del modelo
+  opencv-python                   → procesamiento de imágenes
+  numpy                           → operaciones numéricas
+
+ROS 2 packages:
+  rclpy                           → cliente ROS 2 Python
+  vision_msgs                     → Detection2D, Detection2DArray
+  sensor_msgs                     → Image, CameraInfo
+  cv_bridge                       → OpenCV ↔ ROS Image
+  v4l2_camera                     → cámara USB
+
+Hardware (opcional pero recomendado):
+  GPU NVIDIA                      → CUDA / TensorRT (mucho más rápido)
+  CPU x86 4+ cores                → fallback sin GPU
+```
+
+---
+
+## Resumen en una frase
+
+> **La cámara captura video → YOLO detecta objetos → el selector elige el target más relevante → el brake guard frena si hay peligro → el cockpit muestra todo en tiempo real.**
+
+---
+
+*Generado: 2026-05-17 | Proyecto: ROS2_SALUS | Modelo: YOLOv11 Nano (yolo11n.onnx)*

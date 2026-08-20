@@ -40,6 +40,11 @@ _DUPLICATE_TOLERANCE_M = 1.0e-3
 _EPSILON = 1.0e-12
 
 
+def _longitude_delta_deg(origin_lon: float, point_lon: float) -> float:
+    """Diferencia de longitud por el arco corto, en [-180, 180]."""
+    return ((float(point_lon) - float(origin_lon) + 180.0) % 360.0) - 180.0
+
+
 def ring_to_local_m(ring: Ring, origin: Vertex) -> List[Vertex]:
     """Pasar un anillo lat/lon a metros locales planos contra un origen."""
     origin_lat = float(origin[0])
@@ -48,7 +53,7 @@ def ring_to_local_m(ring: Ring, origin: Vertex) -> List[Vertex]:
     )
     return [
         (
-            (float(lon) - float(origin[1])) * meters_per_deg_lon,
+            _longitude_delta_deg(origin[1], lon) * meters_per_deg_lon,
             (float(lat) - origin_lat) * _METERS_PER_DEG_LAT,
         )
         for lat, lon in ring

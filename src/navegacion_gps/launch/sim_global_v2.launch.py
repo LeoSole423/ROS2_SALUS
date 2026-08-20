@@ -263,13 +263,17 @@ def generate_launch_description():
             DeclareLaunchArgument("use_sim_time", default_value="True"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
-            DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
+            # Nav2 necesita que el simulador ya publique /clock, map -> odom y
+            # odom -> base_footprint. Con 3 s el lifecycle_manager podia
+            # configurar solo una parte de los nodos y quedar esperando para
+            # siempre, dejando al cockpit sin NavigateThroughPoses.
+            DeclareLaunchArgument("nav_start_delay_s", default_value="15.0"),
             DeclareLaunchArgument("enable_nav_trace", default_value="True"),
             DeclareLaunchArgument(
                 "nav_trace_output_root",
                 default_value="/ros2_ws/artifacts/nav_traces",
             ),
-            DeclareLaunchArgument("use_keepout", default_value="True"),
+            DeclareLaunchArgument("use_keepout", default_value="False"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
             DeclareLaunchArgument("invert_steer_from_cmd_vel", default_value="True"),
@@ -719,6 +723,15 @@ def generate_launch_description():
                         "nav_set_goal_service": "/nav_command_server/set_goal_ll",
                         "nav_cancel_goal_service": "/nav_command_server/cancel_goal",
                         "nav_telemetry_topic": "/nav_command_server/telemetry",
+                        # /fromLL ya devuelve coordenadas del frame global. El
+                        # nav_command_server las interpreta como map; si este
+                        # nodo usa su default odom, transforma otra vez y el
+                        # mission_path queda corrido varios metros respecto del
+                        # goal que recibe Nav2.
+                        "fromll_service": "/fromLL",
+                        "fromll_service_fallback": "/navsat_transform/fromLL",
+                        "fromll_frame": "map",
+                        "path_frame": "map",
                         "battery_state_topic": "/battery_state",
                         "battery_guard_topic": "/battery_mission_guard",
                         "low_battery_threshold_pct": 25.0,
@@ -796,7 +809,7 @@ def generate_launch_description():
                                 "coordinates_type": "cartesian",
                                 "robot_width": 1.0,
                                 "operation_width": 2.0,
-                                "min_turning_radius": 2.9,
+                                "min_turning_radius": 4.0,
                                 "default_headland_width": 0.0,
                             }
                         ],
@@ -968,13 +981,10 @@ def generate_launch_description():
                     # spawn y Nav2 realiza el acercamiento hasta la primera pasada.
                     # El perfil real conserva el preflight estricto de 5 m.
                     "coverage_start_max_distance_m": "50.0",
-                    # Medido contra el Smac de este perfil (minimum_turning_radius
-                    # 4.0 m) barriendo rumbos de pasada: partir la cabecera en dos
-                    # metas obliga a un tramo de radio minimo exacto, que la
-                    # busqueda no puede cerrar y resuelve con una vuelta completa
-                    # de 25 m. El giro entero como una sola meta reproduce el
-                    # nominal, tanto en U simple (14.4 -> 14.0/18.0 m) como en
-                    # omega (27.4 -> 27.9/29.1 m).
+                    # CAMPO ejecuta solo los extremos de pasada, que quedan en
+                    # el borde del poligono. Nav2 resuelve el enlace hacia
+                    # adelante; las guias exteriores pueden seguir en el
+                    # preview, pero no se envian ni disparan marcha atras.
                     "coverage_use_headland_guides": "false",
                 }.items(),
                 condition=IfCondition(launch_web_app),

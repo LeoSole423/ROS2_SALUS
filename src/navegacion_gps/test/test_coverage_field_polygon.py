@@ -152,6 +152,23 @@ def test_los_chequeos_corren_en_metros_no_en_grados() -> None:
     assert abs(abs(ring_signed_area_m2(local)) - 1600.0) < 5.0
 
 
+def test_un_lote_que_cruza_el_antimeridiano_sigue_siendo_local() -> None:
+    # 179.9998 y -179.9998 estan a ~45 m, no a casi 40.000 km. Si se resta
+    # longitud cruda, la validacion ve un poligono gigantesco y su cierre se
+    # cruza con el mundo entero.
+    dateline = [
+        (0.0, 179.9998),
+        (0.0, -179.9998),
+        (0.0003, -179.9998),
+        (0.0003, 179.9998),
+    ]
+    exterior, _, error = validate_coverage_field(dateline)
+    assert error == ""
+    assert exterior is not None
+    local = ring_to_local_m(dateline, dateline[0])
+    assert 40.0 < max(point[0] for point in local) < 50.0
+
+
 def test_helpers_de_geometria() -> None:
     local = ring_to_local_m(CUADRADO, CUADRADO[0])
     assert ring_is_simple(local) is True

@@ -1,0 +1,342 @@
+# Cockpit Simple SALUS-01 — Qué hace cada función
+**Documentación completa de la app web `cockpit_simple/`**
+
+---
+
+## ¿Qué es esto?
+
+`cockpit_simple` es una **aplicación web aislada** (React + TypeScript + Vite) para
+operar el robot **SALUS-01 / A-EYE 01** en modo simple. Es una versión reducida y
+autocontenida del cockpit modular grande (`cockpit-main`), pensada para:
+
+1. Mostrar un mapa satelital con la posición y ruta del robot.
+2. Ver el video de la cámara con las detecciones de YOLO dibujadas encima.
+3. Manejar el robot en modo **manual** (WASD) o **autónomo** (waypoints / destino).
+4. Ver telemetría (velocidad, dirección, batería, GPS, misión).
+
+Todo se comunica con el backend por **un único WebSocket** (`web_zone_server`,
+`ws://host:8766`, el mismo gateway que usa el cockpit original). Si el backend no
+está, la UI queda en estado "desconectado" y reintenta conectarse sola.
+
+```
+Backend ROS2 ──(WebSocket ws://…:8766)──► webZoneClient ──► useRobotState ──► App ──► Componentes
+    ▲                                                                              │
+    └──────────────── acciones (set_goal_ll, set_manual_cmd, brake…) ◄────────────┘
+```
+
+---
+
+## Arquitectura en 4 capas
+
+| Capa | Archivo | Rol |
+|------|---------|-----|
+| **Transporte** | `src/backend/webZoneClient.ts` | Abre/reintenta el WebSocket, serializa mensajes |
+| **Estado** | `src/hooks/useRobotState.ts` | Único punto de estado global; parsea mensajes y expone acciones |
+| **Contrato** | `src/types.ts` | Formas de datos (`RobotState`, `LatLng`, `CameraDetection`) |
+| **Vista** | `src/App.tsx` + `src/components/*` | Layout y componentes visuales, uno por archivo |
+
+Regla de oro: **el estado vive solo en `useRobotState`**. Los componentes solo
+reciben `robot` por props y llaman acciones (`robot.dispatchGoal(...)`, etc.).
+
+---
+
+# 1. `src/types.ts` — El contrato de datos
+
+No tiene funciones, define **tipos**. Los importantes:
+
+| Tipo | Qué representa |
+|------|----------------|
+| `RobotStatus` | Semáforo global: `'ok'` \| `'warning'` \| `'stopped'` |
+| `LatLng` | Un punto `{ lat, lng, yawDeg? }` |
+| `CameraDetection` | Una detección: `{ id, label, score, bbox }` con caja normalizada [0..1] |
+| `RobotState` | **El estado completo del robot** que consume toda la UI (conexión, telemetría, posición, misión, cámara, alertas) |
+
+---
+
+# 2. `src/backend/webZoneClient.ts` — El WebSocket
+
+Fábrica de un cliente WebSocket con reconexión automática. Funciones:
+
+| Función | Qué hace |
+|---------|----------|
+| `resolveWebZoneUrl()` | Devuelve la URL del gateway. Usa `VITE_WS_URL` si está; si no, arma `ws://host:8766`. |
+| `realBackendDefault()` | Host/puerto por defecto: puerto `VITE_WS_DEFAULT_PORT` (8766) y host `VITE_WS_REAL_HOST` o el hostname del navegador. |
+| `createWebZoneClient({onMessage, onStatus})` | **Fábrica principal.** Devuelve `{ connect, disconnect, send, close }`. Adentro maneja todo el ciclo de vida del socket. |
+
+Funciones internas de la fábrica:
+
+| Interna | Qué hace |
+|---------|----------|
+| `clearReconnect()` | Cancela el timer de reintento pendiente. |
+| `scheduleReconnect()` | Agenda reconexión en 1800 ms (solo si no fue desconexión manual). |
+| `send(op, payload)` | Serializa `{...payload, op, requestId, client_req_id}` a JSON y lo manda. Ignora si el socket no está abierto. Cada mensaje lleva un `requestId` único. |
+| `closeSocket()` | Cierra el socket y limpia sus handlers. |
+| `open()` | Abre el WebSocket. Al conectar hace el **handshake**: `set_control_lock {locked:false}` + `get_state`. Configura los callbacks `onopen/onmessage/onerror/onclose`. |
+| `heartbeat` (setInterval) | Manda `control_heartbeat` cada 1 s para mantener vivo el control. |
+
+Métodos expuestos:
+
+- **`connect(url)`** — (re)conecta a una URL; marca que ya no es desconexión manual.
+- **`disconnect()`** — corta y **deja de reintentar** (el operador apretó "Desconectar").
+- **`send(op, payload)`** — envía un comando.
+- **`close()`** — apaga todo (al desmontar la app): frena heartbeat, cierra socket.
+
+Detalle clave: `manualDisconnect` distingue "se cayó la red" (reintenta) de
+"el operador desconectó a mano" (no reintenta).
+
+---
+
+# 3. `src/hooks/useRobotState.ts` — El cerebro
+
+Es el archivo más grande (866 líneas). Es el **único hook de estado**: recibe los
+mensajes del WebSocket, los normaliza a `RobotState` y expone todas las acciones.
+
+## 3.1 Constantes de configuración
+
+| Constante | Valor | Para qué |
+|-----------|-------|----------|
+| `NOMINAL_SPEED_KMH` | 5 | Velocidad supuesta para calcular ETA si el robot está quieto |
+| `MIN_DETECTION_CONFIDENCE` | 0.7 | Umbral: descarta detecciones con < 70% de confianza |
+| `CAMERA_STALE_MS` | 2500 | Si no llega un frame en 2.5 s → cámara "sin señal" |
+| `DETECTION_STALE_MS` | 1500 | Si no llegan detecciones en 1.5 s → se ocultan |
+| `ACTION_ERROR_TTL_MS` | 6000 | Un error de acción se muestra como alerta durante 6 s |
+| `DEFAULT_MAP_POSITION` | Córdoba (-31.42, -64.19) | Centro inicial del mapa |
+
+## 3.2 Helpers de parsing (limpian datos crudos del backend)
+
+| Función | Qué hace |
+|---------|----------|
+| `parseHostPort(url)` | Extrae host y puerto de una URL; si falla, usa defaults. |
+| `isRecord(v)` / `readRecord(v)` | Chequean si algo es un objeto plano y lo devuelven (o `null`). |
+| `asNumber(v, fallback)` | Convierte a número; si no es finito, devuelve el fallback. |
+| `isUsableLatLng(lat, lng)` | Valida coordenadas reales (dentro de rango y no `0,0`). |
+| `sanitizeSelection(sel, max)` | Limpia índices de waypoints seleccionados (únicos, en rango, ordenados). |
+| `waypointToWire(point)` | Convierte `LatLng` al formato del backend `{lat, lon, yaw_deg?}`. |
+| `messagePayload(message)` | Aplana `message.payload` sobre el mensaje raíz. |
+| `normalizeBackendAlert(raw, i)` | Convierte una alerta cruda a `{id, level, text}` (mapea severidad a info/warning/critical). |
+| `gpsFromStatus(raw)` | Interpreta el estado del GPS → `{fixed, label, rtk}`. Detecta "no_fix", "waiting", "rtk". |
+| `isExplicitFalse(v)` | `true` si el valor es literalmente false/0/"no" (para distinguir "falso" de "ausente"). |
+| `driveTelemetryFromPayload(payload)` | Extrae velocidad (m/s→km/h) y ángulo de dirección (±30°) de varios formatos posibles de telemetría. Respeta flags `available`/`fresh`/`valid`. |
+| `routeFromMission(raw)` | Saca la lista de puntos de la ruta que calculó el backend (para dibujar la línea sólida). |
+| `missionMetaFromBackend(raw, current)` | Deriva metadatos de misión (activa/pausada, índice actual, cantidad de waypoints). |
+| `parseDetections(raw)` | Convierte detecciones crudas a `CameraDetection[]`: normaliza bbox (soporta `[l,t,r,b]` o `{x,y,w,h}`), filtra por confianza y traduce clase/label. |
+
+## 3.3 Geometría de la misión
+
+| Función | Qué hace |
+|---------|----------|
+| `metersBetween(a, b)` | Distancia en metros entre dos coordenadas (fórmula de Haversine). |
+| `routeLengthMeters(points)` | Largo total de una polilínea sumando tramos. |
+| `remainingRouteMeters(pos, points)` | **Distancia que falta:** proyecta la posición actual sobre el tramo más cercano y suma lo que resta hasta el final. Hace que la barra de progreso avance suave. |
+| `computeMission(raw)` | Arma el objeto `mission` para la UI: progreso %, metros restantes, ETA en minutos, waypoint actual/total. |
+
+## 3.4 Semáforo y alertas
+
+| Función | Qué hace |
+|---------|----------|
+| `getStatus(raw)` | Calcula el semáforo: `stopped` si no hay backend, `warning` si hay lock / sin GPS / batería < 20%, `ok` si todo bien. |
+| `getStatusLabel(raw, status)` | Texto legible del estado ("Conectando…", "Esperando GPS", "Listo para operar", …). |
+| `getAutomaticAlerts(raw)` | Genera alertas automáticas (sin conexión, controles bloqueados, GPS buscando, batería baja). |
+
+`ACK_LABELS` — diccionario que traduce las confirmaciones (ACK) del backend a
+texto para el operador. Solo se muestran las relevantes; heartbeat/get_state/lock
+se consideran "ruido" y se ignoran.
+
+## 3.5 `useRobotState()` — el hook en sí
+
+Devuelve un objeto `RobotState & RobotActions` (estado + acciones). Por dentro:
+
+- **`useEffect` de conexión:** crea el `webZoneClient` y define los callbacks:
+  - `onStatus(...)` — actualiza flags de conexión; al desconectar, **limpia la
+    telemetría vieja** para no mostrar datos falsos.
+  - `onMessage(...)` — enruta por `op`:
+    - `camera_frame` → arma un `data:image/...;base64` y lo guarda como frame.
+    - `camera_detections` → parsea y guarda detecciones.
+    - `ack` → confirma o propaga el error de la última acción.
+    - `state` / `nav_telemetry` / `robot_pose` / `nav_alerts` / `drive_telemetry`
+      → actualiza posición, GPS, batería, velocidad, dirección, ruta, misión, alertas.
+  - Auto-conecta al arrancar y arranca un `ticker` de 1 s (para refrescar "hace X ms").
+- **`useMemo` derivado:** calcula lo derivado del estado crudo: `status`,
+  `statusLabel`, `mission`, `cameraConnected`, `detectionsActive`, y la lista
+  combinada de `alerts` (errores de acción + automáticas + del backend).
+
+### Acciones expuestas (lo que llaman los botones de la UI)
+
+| Acción | Qué hace |
+|--------|----------|
+| `connect()` / `disconnect()` | Conectar / desconectar del backend. |
+| `controlsLocked()` (interna) | Si los controles están bloqueados, avisa y bloquea la acción. |
+| `setManualMode(enabled)` | Cambia a manual/autónomo; en manual manda un comando cero inicial. |
+| `sendManualCommand(linearX, angularZ, brake?)` | Envía un comando de manejo manual (`set_manual_cmd`). |
+| `increaseSpeed()` / `decreaseSpeed()` | Ajustan la velocidad objetivo ±0.1 m/s (rango 0–0.8). |
+| `setTargetSpeed(v)` | Fija la velocidad objetivo (clamp 0–0.8, pasos de 0.05). |
+| `addWaypoint(p)` | Agrega un punto de ruta. |
+| `moveWaypoint(i, p)` | Mueve un waypoint conservando su yaw. |
+| `toggleWaypointSelection(i)` | Selecciona/deselecciona un waypoint. |
+| `removeWaypoint(i)` / `removeLastWaypoint()` / `removeSelectedWaypoints()` / `clearWaypoints()` | Borran waypoints (uno, el último, los seleccionados, o todos). |
+| `dispatchQueuedGoal()` | Envía **todos** los waypoints en cola como un destino (`set_goal_ll`). |
+| `dispatchGoal(point)` | Envía **un** destino único (click en el mapa). Arma una ruta de 2 puntos para la barra de progreso. |
+| `startRoute()` | Inicia una ruta con ≥2 waypoints (`set_route_ll`). |
+| `pauseRoute()` | Frena y marca la misión como pausada (`brake`). |
+| `cancelRoute()` | Cancela ruta y destino y frena (`cancel_route` + `cancel_goal` + `brake`). |
+| `panCamera(angleDeg)` | Mueve la cámara PTZ (`camera_pan`). |
+| `toggleCameraZoom()` | Alterna el zoom de la cámara (`camera_zoom_toggle`). |
+
+Al final quita del objeto los campos internos (`lastFrameMs`, `missionMeta`, …) y
+devuelve `{...estadoExpuesto, ...derivado, ...acciones}`.
+
+---
+
+# 4. `src/App.tsx` — El layout
+
+Componente raíz. Arma la pantalla y coordina los modos de interacción.
+
+| Elemento | Qué hace |
+|----------|----------|
+| `robot = useRobotState()` | Trae todo el estado y las acciones. |
+| `mapMode` (`idle`\|`addWaypoint`\|`goal`) | Qué pasa al hacer click en el mapa. |
+| `cameraPrimary` | Swap del área grande: mapa ↔ cámara. |
+| `showIntro` | Muestra la animación de intro al cargar. |
+| `handleMapClick(point)` | En modo `goal` manda destino; en `addWaypoint` agrega punto. |
+| `toggleSwap()` | Intercambia mapa y cámara. |
+| `useEffect` de teclado | Tecla **"E"** alterna mapa/cámara (ignora si escribís en un input). |
+
+Estructura visual: `TopBar` (arriba) → `main` con `IconRail` + `NavPanel` +
+área grande (mapa o cámara) + columna derecha (mini-vista, `MissionStatus`,
+`DetectionsPanel`+`CameraPTZ` si la cámara es primaria, `TelemetryPanel`) →
+`StatusBar` (abajo).
+
+---
+
+# 5. `src/components/` — Componentes visuales
+
+### `TopBar.tsx`
+Barra superior con el logo A-EYE y **chips de estado**: conexión, misión activa,
+cámara en vivo, número de alertas, batería. Colorea cada chip según el estado.
+
+### `StatusBar.tsx`
+Barra inferior (solo en pantallas grandes): estado operativo, URL del servidor,
+modo (manual/autónomo) y salud del sistema (Bueno/Regular/Crítico).
+
+### `IconRail.tsx`
+Riel vertical de íconos (Navegación, Telemetría, Cámara, Ajustes, Misiones).
+**Decorativo** — hoy solo resalta el primero, no cambia de vista.
+
+### `NavPanel.tsx`
+Panel izquierdo de **Navegación / Control**. Secciones colapsables:
+- **Conexión** — botón Conectar/Desconectar.
+- **Modo de control** — toggle Autónomo/Manual.
+- **Puntos de ruta** — lista de waypoints con agregar (desde el mapa) / borrar.
+- **Control manual** (si modo manual) — inserta `<ManualControl>`.
+- **Acciones de navegación** (si autónomo) — Enviar destino / Iniciar ruta /
+  Pausar / Cancelar (con `ConfirmDialog`).
+- Muestra el estado de la última acción o el aviso de "controles bloqueados".
+- `ActionRow` (subcomponente) — fila de botón de acción reutilizable con estados
+  activo/deshabilitado/peligro.
+
+### `MissionStatus.tsx`
+Tarjeta colapsable con el **estado de la misión**: nombre, badge (Activa/Pausada),
+barra de progreso %, waypoint actual/total, distancia restante y ETA. Si no hay
+misión, muestra "Sin misión activa".
+
+### `TelemetryPanel.tsx`
+Panel de **telemetría**. Contiene:
+- `gaugePoint(angle, radius)` / `angleForValue(v)` / `arcPath(radius)` — matemática
+  del velocímetro (posiciona ticks, números y aguja sobre un semicírculo).
+- `SpeedometerGauge({valueKmh})` — dibuja el velocímetro SVG (arco con gradiente,
+  ticks cada 0.5 km/h, aguja).
+- `LinearGauge({...})` — barra lineal (usada para velocidad m/s y ángulo de dirección).
+- `TelemetryPanel` — arma velocímetro + barras. En modo manual agrega un slider de
+  **velocidad objetivo** (0–0.8 m/s) que llama `robot.setTargetSpeed`.
+
+### `MapView.tsx`
+El **mapa satelital** (React-Leaflet, tiles de Esri). Funciones:
+- `toLatLng(p)` — `LatLng` → tupla `[lat, lng]` que espera Leaflet.
+- `normalizeHeading(deg)` — normaliza el rumbo a ±180°.
+- `robotIcon(headingDeg)` — ícono de flecha que **rota con el rumbo** del robot.
+- `destinationIcon()` — pin de bandera "DESTINO".
+- `waypointIcon(n)` — pin numerado de waypoint.
+- `MapBinder` — capta clicks del mapa (si el modo lo permite) y expone la instancia
+  Leaflet.
+- `SatelliteFallback` — dibujo SVG de fondo (calles, edificios, árboles) por si los
+  tiles no cargan.
+- `MapView` — arma todo: dibuja la **ruta del backend** (línea sólida amarilla) o,
+  si no hay, la **ruta planeada** (línea punteada) desde los waypoints; pone el
+  marcador del robot, waypoints/destino; controles de zoom, centrar y capas. Tiene
+  variante `full` (área grande) y `mini` (columna derecha). Un `ResizeObserver`
+  fuerza a Leaflet a recalcular tamaño cuando se hace swap.
+
+### `CameraPanel.tsx`
+El **video de la cámara** con las detecciones dibujadas:
+- `detectionDisplayLabel(label)` — traduce la clase YOLO a español (person→Persona,
+  car→Auto, …).
+- `CameraFeed` — muestra el frame (o "Sin señal"), dibuja las cajas de detección
+  encima y una etiqueta con el objeto principal / "Sin persona".
+- `CameraPanel` — dos variantes: `stage` (cámara ocupando el área grande, con botón
+  de volver al mapa) y `panel` (mini en la columna derecha, con botón de swap).
+
+### `CameraPTZ.tsx`
+Control **PTZ** (pan/tilt/zoom) de la cámara. Geometría: dos elipses concéntricas
+con 8 botones de dirección (N/S/E/O + diagonales) que llaman `onPan(angle)`, y un
+botón central de **Zoom** (`onZoomToggle`). `NODES` define cada dirección con su
+ángulo (convención N=0, antihorario) y su posición en la elipse.
+
+### `DetectionsPanel.tsx`
+Panel de **análisis de detecciones**. Funciones:
+- `classifyZone(det)` — según el centro X de la caja: Izquierda / Centro / Derecha.
+- `displayLabel(label)` — traduce la clase a español.
+- `riskForZone(det, zone)` — asigna riesgo: **alto** si es objeto relevante en el
+  centro, medio en el centro, bajo a los costados.
+- `riskRank` / `riskLabel` — ordinal y texto del riesgo.
+- `Row` — fila etiqueta/valor.
+- `DetectionsPanel` — ordena las detecciones por riesgo y confianza, muestra el
+  objeto principal, tipo, confianza, zona, "última actualización" y la lista de
+  detecciones activas con barras de confianza.
+
+### `ManualControl.tsx`
+El **control manual WASD**. Lógica:
+- Mapea flechas → WASD (`ARROW_TO_WASD`).
+- `isTypingTarget` — no captura teclas si estás escribiendo en un input.
+- `recompute()` — según las teclas presionadas calcula `linear` (W/S) y `angular`
+  (A/D) y manda comandos repetidos cada 120 ms (`REPEAT_MS`).
+- `startBrake()` / `endBrake()` — **Espacio** o el botón "Parar" frenan (`brake=true`).
+- `useEffect` — engancha `keydown`/`keyup`; se limpia y desactiva si `disabled`.
+- Dibuja las teclas WASD (se iluminan al presionar) y el botón "Parar".
+
+### `ConfirmDialog.tsx`
+Modal genérico de **confirmación** (título, mensaje, botones confirmar/cancelar,
+tono normal o peligro). Lo usa `NavPanel` para "Cancelar ruta".
+
+### `IntroAnimation.tsx`
+La **animación de intro A-EYE** al cargar: un ojo que mira, parpadea y escanea,
+sobre el fondo de circuito; al terminar hace fade y llama `onDone()` para revelar
+el cockpit. `ei/eo/eio` son funciones de easing; `mp` mapea/interpola valores en el
+tiempo. Port del HTML original "A-EYE Animation.html".
+
+### `AeyeBrandMark.tsx`
+El **logo animado del ojo** en la TopBar: el iris sigue el mouse (con clamp para no
+salirse). `commit()` aplica el frame vía `requestAnimationFrame`.
+
+### `AeyeCircuitBackground.tsx`
+El **fondo animado de circuito** (canvas): segmentos, pulsos de luz que recorren
+las líneas y partículas. Puramente decorativo.
+
+---
+
+# 6. `src/main.tsx` — Punto de entrada
+
+Monta `<App/>` en el DOM con React 18 (`createRoot`) dentro de `StrictMode`,
+e importa el CSS de Leaflet y el `index.css` global.
+
+---
+
+## Resumen del flujo completo
+
+1. **`main.tsx`** monta `App`.
+2. **`App`** llama `useRobotState()`, que crea el `webZoneClient` y se conecta.
+3. El **backend** manda `state`/`camera_frame`/`detections`/`ack` por WebSocket.
+4. **`useRobotState`** normaliza todo a `RobotState` y lo deriva (semáforo, misión, alertas).
+5. Los **componentes** reciben `robot` y muestran mapa, cámara, telemetría, misión.
+6. El operador aprieta un botón → se llama una **acción** (`dispatchGoal`, `startRoute`,
+   `sendManualCommand`, …) → `webZoneClient.send(op, payload)` → **backend**.
+7. El backend responde con un **ACK** → se muestra "Destino enviado" o el error.

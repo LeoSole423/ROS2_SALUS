@@ -11,6 +11,11 @@ import ast
 import pathlib
 
 FUENTE = pathlib.Path(__file__).resolve().parents[1] / "navegacion_gps" / "route_executor.py"
+FUENTE_F2C = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "navegacion_gps"
+    / "coverage_fields2cover.py"
+)
 
 # Todo lo que planifica cobertura. Si aparece fuera de los metodos de Campo, es
 # que se filtro a otra modalidad.
@@ -24,6 +29,7 @@ SIMBOLOS_DE_COBERTURA = {
     # Planificador agricola
     "Fields2CoverPlanner",
     "Fields2CoverError",
+    "replace_turns_with_flexible_headlands",
     "_fields2cover_planner",
     "_generate_coverage_plan_fields2cover",
     "_fill_fields2cover_response",
@@ -33,6 +39,7 @@ SIMBOLOS_DE_COBERTURA = {
 METODOS_DE_CAMPO = {
     "_validate_generate_coverage_request",
     "_on_generate_coverage_plan",
+    "_on_generate_coverage_plan_impl",
     "_coverage_no_go_polygons",
     "_coverage_warmup",
     "_fields2cover_planner",
@@ -179,3 +186,68 @@ def test_el_modulo_de_fields2cover_no_lo_importa_nadie_mas() -> None:
         and "coverage_fields2cover" in archivo.read_text()
     ]
     assert not ofensores, f"modulos ajenos a Campo importan Fields2Cover: {ofensores}"
+
+
+def test_route_executor_no_importa_cobertura_al_cargar_el_nodo() -> None:
+    """Ruta, Patrol y goals comparten proceso con Campo pero no sus imports."""
+    arbol = ast.parse(FUENTE.read_text())
+    imports_de_modulo = [
+        nodo.module
+        for nodo in arbol.body
+        if isinstance(nodo, ast.ImportFrom)
+        and isinstance(nodo.module, str)
+        and nodo.module.startswith("navegacion_gps.coverage_")
+    ]
+    assert not imports_de_modulo, (
+        "route_executor carga cobertura al importar el nodo: "
+        f"{imports_de_modulo}. Los imports tienen que vivir en handlers de Campo."
+    )
+
+
+def test_warmup_y_plan_serializan_lifecycle_del_coverage_server() -> None:
+    """CONFIGURE/ACTIVATE no admite dos transiciones simultaneas."""
+    arbol = ast.parse(FUENTE_F2C.read_text())
+    metodos = _metodos(arbol)
+    for nombre in ("_warmup", "plan"):
+        protegido = any(
+            isinstance(nodo, (ast.With, ast.AsyncWith))
+            and any(
+                isinstance(item.context_expr, ast.Attribute)
+                and isinstance(item.context_expr.value, ast.Name)
+                and item.context_expr.value.id == "self"
+                and item.context_expr.attr == "_server_lock"
+                for item in nodo.items
+            )
+            for nodo in ast.walk(metodos[nombre])
+        )
+        assert protegido, f"{nombre} puede competir por el lifecycle de Fields2Cover"
+
+
+def test_cliente_fields2cover_no_hereda_el_remapeo_del_route_executor() -> None:
+    """El nodo auxiliar debe conservar un nombre propio y parametros aislados."""
+    arbol = ast.parse(FUENTE_F2C.read_text())
+    llamadas = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "rclpy"
+        and nodo.func.attr == "create_node"
+    ]
+    assert len(llamadas) == 1
+    opcion = next(
+        (
+            keyword.value
+            for keyword in llamadas[0].keywords
+            if keyword.arg == "use_global_arguments"
+        ),
+        None,
+    )
+    assert isinstance(opcion, ast.Constant) and opcion.value is False
+
+
+def test_callback_de_cobertura_tiene_barrera_contra_excepciones() -> None:
+    """rclpy deja morir el nodo si una callback propaga una excepcion."""
+    metodo = _metodos(ast.parse(FUENTE.read_text()))["_on_generate_coverage_plan"]
+    assert any(isinstance(nodo, ast.Try) for nodo in ast.walk(metodo))

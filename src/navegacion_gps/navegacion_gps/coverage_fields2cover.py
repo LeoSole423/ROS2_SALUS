@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import rclpy
@@ -78,6 +78,7 @@ class Fields2CoverPlan:
 
     waypoints: List[CoverageBodyWaypoint] = field(default_factory=list)
     swath_count: int = 0
+    lane_spacing_m: float = 0.0
     work_length_m: float = 0.0
     transition_length_m: float = 0.0
     route_type: str = ""
@@ -111,6 +112,52 @@ def _sample_segment(start: Point, end: Point, spacing_m: float) -> List[Point]:
         )
         for index in range(steps + 1)
     ]
+
+
+def _lane_spacing_from_swaths(swaths: Sequence[Any]) -> float:
+    """Separacion nominal entre las lineas paralelas de trabajo.
+
+    Se ordenan los offsets geometricos en vez de usar el orden de visita. Asi
+    el reporte sigue dando el ancho entre surcos cuando ``SNAKE`` saltea filas
+    o una exclusion parte una misma linea en dos swaths.
+    """
+    swath_list = list(swaths)
+    if len(swath_list) < 2:
+        return 0.0
+
+    reference = None
+    for swath in swath_list:
+        dx = float(swath.end.x) - float(swath.start.x)
+        dy = float(swath.end.y) - float(swath.start.y)
+        length = math.hypot(dx, dy)
+        if length > 1.0e-9:
+            reference = (-dy / length, dx / length)
+            break
+    if reference is None:
+        return 0.0
+
+    offsets = sorted(
+        (
+            (0.5 * (float(swath.start.x) + float(swath.end.x)) * reference[0])
+            + (0.5 * (float(swath.start.y) + float(swath.end.y)) * reference[1])
+        )
+        for swath in swath_list
+    )
+    unique_offsets: List[float] = []
+    for offset in offsets:
+        if not unique_offsets or abs(offset - unique_offsets[-1]) > 1.0e-6:
+            unique_offsets.append(float(offset))
+    gaps = sorted(
+        unique_offsets[index + 1] - unique_offsets[index]
+        for index in range(len(unique_offsets) - 1)
+        if unique_offsets[index + 1] - unique_offsets[index] > 1.0e-6
+    )
+    if not gaps:
+        return 0.0
+    middle = len(gaps) // 2
+    if len(gaps) % 2:
+        return float(gaps[middle])
+    return float(0.5 * (gaps[middle - 1] + gaps[middle]))
 
 
 def fields2cover_disponible() -> bool:
@@ -152,7 +199,10 @@ def plan_to_body_waypoints(
     if not swaths:
         raise Fields2CoverError("Fields2Cover no devolvio ninguna pasada")
 
-    plan = Fields2CoverPlan(swath_count=len(swaths))
+    plan = Fields2CoverPlan(
+        swath_count=len(swaths),
+        lane_spacing_m=_lane_spacing_from_swaths(swaths),
+    )
     waypoints: List[CoverageBodyWaypoint] = []
 
     for index, swath in enumerate(swaths):
@@ -194,12 +244,307 @@ def plan_to_body_waypoints(
                         phase=TRANSITION_PHASE,
                         row_index=int(index),
                         is_key=False,
-                        is_guide=False,
+                        # La curva no es una meta de trabajo, pero si una guia
+                        # obligatoria: sin ella el ejecutor une dos extremos de
+                        # pasada con una recta y no sigue el preview de F2C.
+                        is_guide=True,
                     )
                 )
 
     plan.waypoints = waypoints
     return plan
+
+
+# Tramo recto que despeja el implemento antes y despues de los dos arcos.
+DEFAULT_HEADLAND_LEAD_M = 0.5
+
+# Distancia por debajo de la cual dos puntos son el mismo y no se agrega guia.
+_EPSILON_M = 1.0e-6
+
+
+def _direction_from_yaw(yaw_deg: float) -> Point:
+    """Versor a partir de un rumbo en grados."""
+    radianes = math.radians(float(yaw_deg))
+    return (math.cos(radianes), math.sin(radianes))
+
+
+def _unit(desde: Point, hasta: Point) -> Optional[Point]:
+    """Versor de ``desde`` a ``hasta``, o None si son el mismo punto."""
+    dx = float(hasta[0]) - float(desde[0])
+    dy = float(hasta[1]) - float(desde[1])
+    largo = math.hypot(dx, dy)
+    if largo <= _EPSILON_M:
+        return None
+    return (dx / largo, dy / largo)
+
+
+def _work_runs(
+    waypoints: Sequence[CoverageBodyWaypoint],
+) -> List[List[CoverageBodyWaypoint]]:
+    """Tramos contiguos de trabajo, en orden de visita.
+
+    Se agrupa por contiguidad y no por ``row_index`` a proposito: el orden de la
+    lista ES el orden de recorrido, y agrupar por indice mezclaria dos visitas a
+    la misma pasada si alguna vez las hubiera.
+    """
+    runs: List[List[CoverageBodyWaypoint]] = []
+    actual: List[CoverageBodyWaypoint] = []
+    for waypoint in waypoints:
+        if str(waypoint.phase) == WORK_PHASE:
+            actual.append(waypoint)
+            continue
+        if actual:
+            runs.append(actual)
+            actual = []
+    if actual:
+        runs.append(actual)
+    return runs
+
+
+def _exit_direction(run: Sequence[CoverageBodyWaypoint]) -> Point:
+    """Direccion con la que se abandona la pasada."""
+    ultimo = run[-1]
+    fin = (float(ultimo.forward_m), float(ultimo.left_m))
+    for previo in reversed(run[:-1]):
+        versor = _unit((float(previo.forward_m), float(previo.left_m)), fin)
+        if versor is not None:
+            return versor
+    return _direction_from_yaw(ultimo.yaw_delta_deg)
+
+
+def _entry_direction(run: Sequence[CoverageBodyWaypoint]) -> Point:
+    """Direccion con la que se entra a la pasada."""
+    primero = run[0]
+    inicio = (float(primero.forward_m), float(primero.left_m))
+    for siguiente in run[1:]:
+        versor = _unit(inicio, (float(siguiente.forward_m), float(siguiente.left_m)))
+        if versor is not None:
+            return versor
+    return _direction_from_yaw(primero.yaw_delta_deg)
+
+
+# Cabecera de tres puntos. Cuando las pasadas quedan mas juntas que el diametro
+# de giro (2R), NO existe ninguna curva hacia adelante que lleve del final de un
+# surco al inicio del siguiente: Fields2Cover resuelve eso con una omega, que se
+# come 7.3 m de cabecera y dibuja los petalos. Retrocediendo, la misma
+# transicion entra en R metros de cabecera.
+#
+# La maniobra, con R el radio y d la separacion entre pasadas:
+#
+#   1. salir derecho del surco `lead` metros          (despeja el implemento)
+#   2. arco de 90 grados hacia el surco siguiente
+#   3. marcha atras recta de L = 2R - d metros
+#   4. otro arco de 90 grados, que deja el rumbo invertido
+#   5. entrar derecho al surco siguiente `lead` metros
+#
+# L sale de cerrar la geometria: los dos arcos desplazan 2R de costado, y la
+# reversa descuenta lo que sobra hasta la separacion real. Si d >= 2R la cuenta
+# da L <= 0, que es justo el caso en que el giro hacia adelante SI existe y no
+# hace falta retroceder.
+REVERSE_ARC_DEG = 90.0
+
+
+def _rotate(vector: Point, degrees: float) -> Point:
+    """Rotar un versor en el plano."""
+    radianes = math.radians(float(degrees))
+    coseno = math.cos(radianes)
+    seno = math.sin(radianes)
+    return (
+        (vector[0] * coseno) - (vector[1] * seno),
+        (vector[0] * seno) + (vector[1] * coseno),
+    )
+
+
+def reverse_leg_length_m(min_turning_radius_m: float, lane_spacing_m: float) -> float:
+    """Metros de marcha atras que pide la cabecera de tres puntos.
+
+    Cero cuando las pasadas estan mas separadas que el diametro de giro: ahi el
+    giro hacia adelante existe y no hay nada que retroceder.
+    """
+    radio = max(0.0, float(min_turning_radius_m))
+    separacion = abs(float(lane_spacing_m))
+    return max(0.0, (2.0 * radio) - separacion)
+
+
+def _three_point_turn(
+    fin: Point,
+    salida: Point,
+    inicio: Point,
+    *,
+    radio_m: float,
+    lead_m: float,
+) -> Optional[Tuple[List[Tuple[Point, Point, float]], float]]:
+    """Vertices de la cabecera de tres puntos, o None si no hace falta.
+
+    Devuelve ``[(punto, versor_de_rumbo, marcha_atras_m), ...]`` y el largo
+    recorrido. La marcha atras viaja en el vertice donde hay que hacerla.
+    """
+    normal = (-salida[1], salida[0])
+    hacia = (inicio[0] - fin[0], inicio[1] - fin[1])
+    lateral = (hacia[0] * normal[0]) + (hacia[1] * normal[1])
+    separacion = abs(lateral)
+    reversa = reverse_leg_length_m(radio_m, separacion)
+    if reversa <= _EPSILON_M:
+        return None
+
+    # Se dobla hacia donde esta el surco siguiente.
+    sentido = 1.0 if lateral >= 0.0 else -1.0
+    giro = (sentido * normal[0], sentido * normal[1])
+
+    salida_arranque = (
+        fin[0] + (salida[0] * lead_m),
+        fin[1] + (salida[1] * lead_m),
+    )
+    # Fin del primer arco: R adelante y R al costado, con el rumbo ya girado 90.
+    pivote = (
+        salida_arranque[0] + (radio_m * salida[0]) + (radio_m * giro[0]),
+        salida_arranque[1] + (radio_m * salida[1]) + (radio_m * giro[1]),
+    )
+    rumbo_pivote = giro
+    tras_reversa = (
+        pivote[0] - (reversa * rumbo_pivote[0]),
+        pivote[1] - (reversa * rumbo_pivote[1]),
+    )
+    # Fin del segundo arco: R hacia atras del eje del surco y R mas al costado.
+    reentrada = (
+        tras_reversa[0] - (radio_m * salida[0]) + (radio_m * giro[0]),
+        tras_reversa[1] - (radio_m * salida[1]) + (radio_m * giro[1]),
+    )
+    rumbo_reentrada = (-salida[0], -salida[1])
+
+    # Dos guias y nada mas. Las otras dos que salian de la construccion no
+    # aportan y una hacia dano:
+    #
+    #   salida_arranque  el vehiculo ya viene con ese rumbo al terminar el
+    #                    surco, asi que pedirle que pase por ahi no agrega nada.
+    #   tras_reversa     queda DETRAS del pivote. Si la marcha atras no llega a
+    #                    correr, hacia adelante solo se llega dando un lazo: son
+    #                    los circulos que aparecian en el preview.
+    #
+    # Afuera del lote la precision no importa, asi que cuantos menos puntos haya
+    # que clavar, menos maniobra. El pivote se conserva porque ahi va la marcha
+    # atras; la reentrada, porque alinea el vehiculo con el surco siguiente.
+    vertices = [
+        (pivote, rumbo_pivote, float(reversa)),
+        (reentrada, rumbo_reentrada, 0.0),
+    ]
+    # Largo real: los arcos son cuartos de circunferencia, no cuerdas.
+    arcos = 2.0 * (math.pi * radio_m / 2.0)
+    recorrido = (2.0 * lead_m) + arcos + reversa
+    recorrido += math.hypot(
+        inicio[0] - reentrada[0] - (salida[0] * -lead_m),
+        inicio[1] - reentrada[1] - (salida[1] * -lead_m),
+    )
+    return vertices, recorrido
+
+
+def replace_turns_with_flexible_headlands(
+    plan: Fields2CoverPlan,
+    margin_m: float,
+    *,
+    min_turning_radius_m: float = 0.0,
+) -> Fields2CoverPlan:
+    """Cambiar los giros de Fields2Cover por transiciones exteriores simples.
+
+    Fields2Cover resuelve la cabecera con curvas Dubins: cuando la separacion
+    entre pasadas es menor que dos veces el radio minimo —2.0 m de ancho con 15%
+    de solape dan 1.7 m, contra 4 m de radio— la unica solucion posible es una
+    omega, y el preview se llena de petalos gigantes fuera del lote. Al operador
+    no le importa por donde pasa el vehiculo afuera del lote: le importa que los
+    surcos se recorran exactos. Asi que el surco se deja tal cual y solo se
+    reemplaza la cabecera por tres tramos rectos:
+
+        salir derecho por el eje de la pasada -> desplazarse afuera ->
+        reentrar derecho por el eje de la siguiente
+
+    Los dos vertices de ese recorrido quedan como guias no-key: el ejecutor las
+    respeta como puntos de paso, pero Nav2 planifica libremente entre ellas, que
+    es exactamente la flexibilidad que se busca afuera del lote. Los waypoints
+    de trabajo no se tocan.
+
+    ``margin_m`` es el tramo recto que despeja el implemento antes y despues
+    de los arcos (ver ``DEFAULT_HEADLAND_LEAD_M``).
+
+    La funcion es pura e idempotente: no toca el plan que recibe y aplicarla dos
+    veces da lo mismo, porque vuelve a derivar las guias de los surcos, que son
+    los que nunca cambian.
+
+    Nota de alcance: el tramo exterior se traza recto entre las dos guias. En un
+    lote muy concavo ese tramo podria rozar el poligono; se acepta a proposito,
+    porque el recorte de zonas no-go corre despues y es el que decide por donde
+    no se puede pasar.
+    """
+    margen = max(0.0, float(margin_m))
+    radio = max(0.0, float(min_turning_radius_m))
+    runs = _work_runs(plan.waypoints)
+    if not runs:
+        return replace(plan, waypoints=list(plan.waypoints))
+
+    waypoints: List[CoverageBodyWaypoint] = []
+    transicion_m = 0.0
+    for indice, run in enumerate(runs):
+        waypoints.extend(run)
+        if indice + 1 >= len(runs):
+            continue
+
+        siguiente = runs[indice + 1]
+        salida = _exit_direction(run)
+        entrada = _entry_direction(siguiente)
+        fin = (float(run[-1].forward_m), float(run[-1].left_m))
+        inicio = (float(siguiente[0].forward_m), float(siguiente[0].left_m))
+
+        tres_puntos = (
+            _three_point_turn(fin, salida, inicio, radio_m=radio, lead_m=margen)
+            if radio > 0.0
+            else None
+        )
+        if tres_puntos is not None:
+            vertices = tres_puntos[0]
+        else:
+            # Separacion mayor que el diametro de giro, o reversa apagada: el
+            # giro hacia adelante existe y alcanza con salir, correrse y entrar.
+            vertices = [
+                (
+                    (fin[0] + (salida[0] * margen), fin[1] + (salida[1] * margen)),
+                    salida,
+                    0.0,
+                ),
+                (
+                    (
+                        inicio[0] - (entrada[0] * margen),
+                        inicio[1] - (entrada[1] * margen),
+                    ),
+                    entrada,
+                    0.0,
+                ),
+            ]
+
+        row_index = int(run[-1].row_index)
+        previo = fin
+        for punto, versor, reversa_m in vertices:
+            largo = math.hypot(punto[0] - previo[0], punto[1] - previo[1])
+            hasta_inicio = math.hypot(punto[0] - inicio[0], punto[1] - inicio[1])
+            if largo <= _EPSILON_M or hasta_inicio <= _EPSILON_M:
+                # Con margen nulo la guia cae encima de un extremo de surco, y un
+                # waypoint repetido es una meta de largo cero aguas abajo.
+                continue
+            transicion_m += largo
+            previo = punto
+            waypoints.append(
+                CoverageBodyWaypoint(
+                    forward_m=float(punto[0]),
+                    left_m=float(punto[1]),
+                    yaw_delta_deg=float(math.degrees(math.atan2(versor[1], versor[0]))),
+                    phase=TRANSITION_PHASE,
+                    row_index=row_index,
+                    is_key=False,
+                    is_guide=True,
+                    backup_m=float(reversa_m),
+                )
+            )
+        transicion_m += math.hypot(inicio[0] - previo[0], inicio[1] - previo[1])
+
+    return replace(plan, waypoints=waypoints, transition_length_m=float(transicion_m))
 
 
 class Fields2CoverPlanner:
@@ -222,13 +567,23 @@ class Fields2CoverPlanner:
                 "antes de lanzar, o coverage_planner:=legacy"
             )
         self._logger = logger
-        self._node = rclpy.create_node(node_name)
+        # Este cliente vive dentro del proceso route_executor, cuyo launch
+        # agrega ``__node:=route_executor``. Si hereda los argumentos globales,
+        # el helper tambien se renombra /route_executor y sus servicios de
+        # parametros compiten con los del nodo real (respuestas vacias al azar).
+        self._node = rclpy.create_node(node_name, use_global_arguments=False)
         self._action = ActionClient(self._node, ComputeCoveragePath, action_name)
         self._parameters = self._node.create_client(SetParameters, parameter_service)
         self._change_state = self._node.create_client(ChangeState, change_state_service)
         # Ultimos parametros fisicos aplicados de verdad, para no reciclar el
         # servidor en cada pedido.
         self._applied: Dict[str, float] = {}
+        # Warmup, previews de dos clientes y cambios de parametros comparten un
+        # unico Coverage Server lifecycle. Las transiciones no son idempotentes:
+        # dos CONFIGURE concurrentes dejan a uno rechazado aunque el otro haya
+        # funcionado. Serializar tambien la accion evita reciclar el robot
+        # mientras otro pedido todavia esta calculando con esos parametros.
+        self._server_lock = threading.RLock()
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(
@@ -247,12 +602,13 @@ class Fields2CoverPlanner:
     def _warmup(self) -> None:
         """Dejar el Coverage Server activo, si es que hay uno."""
         try:
-            if self.available(timeout_s=10.0):
-                return
-            self._cycle_server(10.0)
-            # Los parametros del vehiculo todavia no se saben —dependen del
-            # pedido—, asi que el primero que llegue va a reciclar igual.
-            self._applied = {}
+            with self._server_lock:
+                if self.available(timeout_s=10.0):
+                    return
+                self._cycle_server(10.0)
+                # Los parametros del vehiculo todavia no se saben —dependen del
+                # pedido—, asi que el primero que llegue va a reciclar igual.
+                self._applied = {}
             if self._logger is not None:
                 self._logger.info("Coverage Server activado desde el arranque")
         except Exception as exc:  # pragma: no cover - depende del entorno
@@ -361,7 +717,7 @@ class Fields2CoverPlanner:
         future.add_done_callback(lambda _: evento.set())
         return bool(evento.wait(timeout=float(timeout_s)))
 
-    def plan(
+    def _plan_locked(
         self,
         *,
         polygon_body: Sequence[Point],
@@ -465,3 +821,40 @@ class Fields2CoverPlanner:
         plan.route_type = str(route_type)
         plan.path_type = str(path_type)
         return plan
+
+    def plan(
+        self,
+        *,
+        polygon_body: Sequence[Point],
+        exclusions_body: Sequence[Sequence[Point]] = (),
+        cutter_width_m: float,
+        robot_width_m: float,
+        overlap_ratio: float,
+        min_turning_radius_m: float,
+        waypoint_spacing_m: float,
+        swath_angle_deg: Optional[float] = None,
+        route_type: str = "BOUSTROPHEDON",
+        path_type: str = "DUBIN",
+        path_continuity: str = "CONTINUOUS",
+        turn_point_distance_m: float = 0.5,
+        headland_width_m: float = 0.0,
+        server_timeout_s: float = 30.0,
+    ) -> Fields2CoverPlan:
+        """Planificar sin competir con warmup ni con otro pedido de Campo."""
+        with self._server_lock:
+            return self._plan_locked(
+                polygon_body=polygon_body,
+                exclusions_body=exclusions_body,
+                cutter_width_m=cutter_width_m,
+                robot_width_m=robot_width_m,
+                overlap_ratio=overlap_ratio,
+                min_turning_radius_m=min_turning_radius_m,
+                waypoint_spacing_m=waypoint_spacing_m,
+                swath_angle_deg=swath_angle_deg,
+                route_type=route_type,
+                path_type=path_type,
+                path_continuity=path_continuity,
+                turn_point_distance_m=turn_point_distance_m,
+                headland_width_m=headland_width_m,
+                server_timeout_s=server_timeout_s,
+            )

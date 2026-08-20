@@ -880,6 +880,13 @@ def generate_launch_description():
                         "nav_set_goal_service": "/nav_command_server/set_goal_ll",
                         "nav_cancel_goal_service": "/nav_command_server/cancel_goal",
                         "nav_telemetry_topic": "/nav_command_server/telemetry",
+                        # Mismo contrato que nav_command_server: /fromLL entrega
+                        # puntos en map. Etiquetarlos como odom aplicaria un
+                        # segundo odom->map al mission_path de Ruta/CAMPO.
+                        "fromll_service": "/fromLL",
+                        "fromll_service_fallback": "/navsat_transform/fromLL",
+                        "fromll_frame": "map",
+                        "path_frame": "map",
                         "set_route_service": "/route_executor/set_route_ll",
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",

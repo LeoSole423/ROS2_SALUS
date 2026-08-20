@@ -100,6 +100,8 @@ ros2 launch navegacion_gps real_global_v2.launch.py
 
 ## Limitaciones actuales
 - El tab `topics` de `cockpit` todavía no tiene stream ROS detallado desde SALUS.
-- `rtk_sources` y `rtk_source_state` dependen de que la cadena RTK publique esos datos en `sensores_web`.
+- `rtk_sources` sale de `rtk_sources.yaml` (catálogo que `web_zone_server` lee y escribe), así que el modal
+  RTK del cockpit lista/agrega/edita/borra antenas aunque `rtk_source_manager` no esté corriendo; el estado de
+  conexión (`rtk_source_state.connected`, `rtcm_age_s`) sí depende de que esa cadena esté viva.
 - El battery percentage no existe hoy como señal canónica en este bridge; `cockpit` lo verá como `0`.
 - La configuración exacta de MediaMTX vive fuera de este monorepo; este documento cubre el contrato `cockpit <-> SALUS`, no el despliegue multimedia completo.

@@ -11,8 +11,9 @@ from action_msgs.msg import GoalStatus
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geographic_msgs.msg import GeoPoint
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist
-from nav2_msgs.action import BackUp, FollowWaypoints, NavigateThroughPoses
+from nav2_msgs.action import BackUp, FollowPath, FollowWaypoints, NavigateThroughPoses
 from nav2_msgs.msg import CollisionMonitorState
+from nav_msgs.msg import Path
 from rcl_interfaces.msg import Log
 from rclpy.action import ActionClient
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
@@ -38,6 +39,8 @@ from interfaces.srv import (
 
 NAV_FAILURE_HINT_PRIORITY = {
     "NO_VALID_PATH": 100,
+    "ACTION_SERVER_ACK_TIMEOUT": 98,
+    "TF_EXTRAPOLATION": 95,
     "SMOOTHED_PATH_COLLISION": 90,
     "CONTROLLER_COLLISION": 80,
     "RECOVERY_OFF_GRID": 70,
@@ -48,6 +51,8 @@ NAV_FAILURE_HINT_PRIORITY = {
 
 NAV_FAILURE_HINT_SUMMARIES = {
     "NO_VALID_PATH": "no se encontró una ruta válida; probablemente está bloqueada por obstáculos/costmap",
+    "ACTION_SERVER_ACK_TIMEOUT": "Nav2 no recibió a tiempo la confirmación de un action server interno",
+    "TF_EXTRAPOLATION": "Nav2 no pudo transformar la pose por un desfase transitorio de TF",
     "SMOOTHED_PATH_COLLISION": "la ruta suavizada quedó en colisión",
     "CONTROLLER_COLLISION": "Nav2 detectó una posible colisión durante el movimiento",
     "RECOVERY_OFF_GRID": "la recuperación saldría del costmap",
@@ -117,6 +122,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("get_state_service", "/nav_command_server/get_state")
         self.declare_parameter("follow_waypoints_action", "follow_waypoints")
         self.declare_parameter("navigate_through_poses_action", "navigate_through_poses")
+        self.declare_parameter("follow_path_action", "follow_path")
         self.declare_parameter("backup_action", "backup")
         self.declare_parameter("loop_segment_size", 2)
         self.declare_parameter("waypoint_reached_tolerance_m", 1.2)
@@ -238,6 +244,7 @@ class NavCommandServerNode(Node):
         self.navigate_through_poses_action = str(
             self.get_parameter("navigate_through_poses_action").value
         )
+        self.follow_path_action = str(self.get_parameter("follow_path_action").value)
         self.backup_action = str(self.get_parameter("backup_action").value)
         self.loop_segment_size = max(2, int(self.get_parameter("loop_segment_size").value))
         self.waypoint_reached_tolerance_m = max(
@@ -317,6 +324,12 @@ class NavCommandServerNode(Node):
             self,
             NavigateThroughPoses,
             self.navigate_through_poses_action,
+            callback_group=self._client_group,
+        )
+        self._follow_path_client = ActionClient(
+            self,
+            FollowPath,
+            self.follow_path_action,
             callback_group=self._client_group,
         )
         self._backup_client = ActionClient(
@@ -740,6 +753,21 @@ class NavCommandServerNode(Node):
             or "failed to generate a valid path" in text
         ):
             return "NO_VALID_PATH", NAV_FAILURE_HINT_SUMMARIES["NO_VALID_PATH"]
+        if "timed out while waiting for action server to acknowledge goal request" in text:
+            return (
+                "ACTION_SERVER_ACK_TIMEOUT",
+                NAV_FAILURE_HINT_SUMMARIES["ACTION_SERVER_ACK_TIMEOUT"],
+            )
+        if (
+            "lookup would require extrapolation" in text
+            or "extrapolation into the future" in text
+            or "unable to transform robot pose into global plan's frame" in text
+            or "exception in transformpose" in text
+        ):
+            return (
+                "TF_EXTRAPOLATION",
+                NAV_FAILURE_HINT_SUMMARIES["TF_EXTRAPOLATION"],
+            )
         if "smoothed path leads to a collision" in text:
             return (
                 "SMOOTHED_PATH_COLLISION",
@@ -1929,6 +1957,73 @@ class NavCommandServerNode(Node):
         self._publish_telemetry(force=True)
         return True, "goal accepted"
 
+    def _send_follow_exact_path_goal(
+        self,
+        poses: Sequence[PoseStamped],
+        reason: str,
+        details: Optional[Dict[str, Any]] = None,
+        suppress_success_brake: bool = False,
+    ) -> Tuple[bool, str]:
+        """Sigue la polilinea recibida sin planificar atajos entre sus puntos.
+
+        Se usa exclusivamente para CAMPO. Las otras misiones siguen usando las
+        acciones Nav2 de alto nivel y por lo tanto conservan sus recuperaciones
+        y su planificador global.
+        """
+        poses_list = list(poses)
+        if len(poses_list) < 2:
+            return False, "exact path requires at least two poses"
+        if not self._follow_path_client.wait_for_server(timeout_sec=2.0):
+            return False, "FollowPath action server not available"
+
+        path = Path()
+        path.header.frame_id = self.map_frame
+        path.header.stamp = self.get_clock().now().to_msg()
+        path.poses = poses_list
+        for pose in path.poses:
+            pose.header.frame_id = self.map_frame
+            pose.header.stamp = path.header.stamp
+
+        goal = FollowPath.Goal()
+        goal.path = path
+        future = self._follow_path_client.send_goal_async(goal)
+        goal_handle = self._wait_for_future(future, timeout_sec=5.0)
+        if goal_handle is None or not goal_handle.accepted:
+            return False, "FollowPath goal rejected"
+
+        with self._lock:
+            self._current_goal_handle = goal_handle
+            self._loop_waypoint_poses = poses_list
+            self._loop_enabled = False
+            self._suppress_success_brake = bool(suppress_success_brake)
+            self._is_navigating = True
+            self._auto_mode = "point_to_point"
+            self._active_action = "follow_path"
+            self._set_failure_locked("", "")
+            NavCommandServerNode._set_nav_result_locked(
+                self,
+                int(GoalStatus.STATUS_EXECUTING),
+                "FollowPath goal accepted",
+                increment_event=True,
+            )
+
+        goal_handle.get_result_async().add_done_callback(
+            partial(self._on_nav_action_result_done, "FollowPath")
+        )
+        self._publish_event(
+            DiagnosticStatus.OK,
+            "nav_command_server",
+            "GOAL_ACCEPTED",
+            "FollowPath exact coverage segment accepted",
+            details={
+                "waypoints": len(poses_list),
+                "reason": reason,
+                **dict(details or {}),
+            },
+        )
+        self._publish_telemetry(force=True)
+        return True, "goal accepted"
+
     def _send_nav_goal_for_poses(
         self,
         poses: Sequence[PoseStamped],
@@ -1936,8 +2031,16 @@ class NavCommandServerNode(Node):
         reason: str,
         details: Optional[Dict[str, Any]] = None,
         suppress_success_brake: bool = False,
+        follow_exact_path: bool = False,
     ) -> Tuple[bool, str]:
         poses_list = list(poses)
+        if follow_exact_path and len(poses_list) > 1:
+            return self._send_follow_exact_path_goal(
+                poses=poses_list,
+                reason=reason,
+                details=details,
+                suppress_success_brake=suppress_success_brake,
+            )
         if len(poses_list) > 1:
             return self._send_navigate_through_poses_goal(
                 poses=poses_list,
@@ -1959,6 +2062,7 @@ class NavCommandServerNode(Node):
         waypoints: Sequence[Tuple[float, float, float]],
         loop_enabled: bool,
         suppress_success_brake: bool = False,
+        follow_exact_path: bool = False,
     ) -> Tuple[bool, str]:
         if len(waypoints) == 0:
             return False, "at least one waypoint is required"
@@ -1987,6 +2091,7 @@ class NavCommandServerNode(Node):
                 "waypoints": len(waypoints),
                 "loop": bool(loop_enabled),
                 "suppress_success_brake": bool(suppress_success_brake),
+                "follow_exact_path": bool(follow_exact_path),
             },
         )
         normalized_waypoints = list(waypoints)
@@ -1994,7 +2099,13 @@ class NavCommandServerNode(Node):
         with self._lock:
             robot_pose = self._last_robot_pose
 
-        if loop_enabled:
+        if follow_exact_path:
+            # El primer punto de una pasada exacta puede coincidir con el robot
+            # despues de la aproximacion Nav2. No se lo puede descartar: el
+            # controlador necesita esa pose cercana para recortar el Path a su
+            # ventana local; sin ella ve un plan vacio y aborta.
+            pass
+        elif loop_enabled:
             normalized_waypoints, dropped_loop_closure = (
                 self._drop_duplicate_loop_closure_waypoint(
                     normalized_waypoints,
@@ -2090,6 +2201,7 @@ class NavCommandServerNode(Node):
             loop_enabled=loop_enabled,
             reason="set_goal_service",
             suppress_success_brake=suppress_success_brake,
+            follow_exact_path=bool(follow_exact_path),
         )
         if not ok:
             with self._lock:
@@ -2165,6 +2277,7 @@ class NavCommandServerNode(Node):
             else:
                 self._is_navigating = False
                 self._auto_mode = "idle"
+                self._active_action = "idle"
                 if auto_mode == "loop":
                     self._clear_loop_config_locked()
                     if (status != GoalStatus.STATUS_SUCCEEDED) and (not manual_enabled):
@@ -2482,13 +2595,20 @@ class NavCommandServerNode(Node):
             response.error = parse_err
             return response
 
-        ok, err = self.send_nav2_goals(
-            waypoints=waypoints,
-            loop_enabled=loop_enabled,
-            suppress_success_brake=bool(
-                getattr(request, "suppress_success_brake", False)
-            ),
-        )
+        try:
+            ok, err = self.send_nav2_goals(
+                waypoints=waypoints,
+                loop_enabled=loop_enabled,
+                suppress_success_brake=bool(
+                    getattr(request, "suppress_success_brake", False)
+                ),
+                follow_exact_path=bool(getattr(request, "follow_exact_path", False)),
+            )
+        except Exception as exc:  # los callbacks de servicio nunca propagan
+            self.get_logger().error(f"SetNavGoalLL callback failed: {exc}")
+            response.ok = False
+            response.error = "internal navigation goal error"
+            return response
         response.ok = bool(ok)
         response.error = "" if ok else str(err)
         if not response.ok:

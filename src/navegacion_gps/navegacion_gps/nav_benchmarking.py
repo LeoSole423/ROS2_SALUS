@@ -228,6 +228,9 @@ def offset_lat_lon(
 ) -> tuple[float, float]:
     lat = float(lat_deg) + float(north_m) / 111_320.0
     lon = float(lon_deg) + float(east_m) / meters_per_deg_lon(lat_deg)
+    # Mantener la representacion geografica canonica al cruzar el
+    # antimeridiano. La inversa (ll_to_body) toma el arco corto.
+    lon = ((lon + 180.0) % 360.0) - 180.0
     return float(lat), float(lon)
 
 

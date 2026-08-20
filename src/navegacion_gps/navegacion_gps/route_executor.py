@@ -12,8 +12,10 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geographic_msgs.msg import GeoPoint
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import Point, PoseStamped, Quaternion
+from nav2_msgs.action import BackUp
 from nav2_msgs.srv import ClearEntireCostmap
+from rclpy.action import ActionClient
 from nav_msgs.msg import Path
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
@@ -43,16 +45,6 @@ from interfaces.srv import (
     SetNavigationProfile,
     SetRouteMissionLL,
 )
-from navegacion_gps.coverage_field_polygon import validate_coverage_field
-from navegacion_gps.coverage_fields2cover import Fields2CoverError
-from navegacion_gps.coverage_fields2cover import Fields2CoverPlanner
-from navegacion_gps.coverage_fields2cover import WORK_PHASE
-from navegacion_gps.coverage_nogo import clip_plan_to_nogo
-from navegacion_gps.coverage_nogo_zones import ll_to_body
-from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
-from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
-from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
-from navegacion_gps.coverage_waypoint_core import resolve_row_visit_order
 from navegacion_gps.nav_benchmarking import body_relative_offsets_to_north_east
 from navegacion_gps.nav_benchmarking import offset_lat_lon
 
@@ -63,6 +55,8 @@ BLOCKED_STATE_RETRYING = "BLOCKED_RETRYING"
 BLOCKED_STATE_NEEDS_OPERATOR = "BLOCKED_NEEDS_OPERATOR"
 WAYPOINT_ROLE_NORMAL = "normal"
 WAYPOINT_ROLE_HOME = "home"
+WAYPOINT_ROLE_COVERAGE = "coverage"
+WAYPOINT_ROLE_COVERAGE_TRANSIT = "coverage_transit"
 PATROL_PHASE_IDLE = "idle"
 PATROL_PHASE_DEPART_HOME = "depart_home"
 PATROL_PHASE_LOOP_MAIN = "loop_main"
@@ -72,9 +66,14 @@ PATROL_PHASE_PARKED_HOME = "parked_home"
 NAVIGATION_PROFILE_URBAN = "urban"
 NAVIGATION_PROFILE_RURAL = "rural"
 NAVIGATION_PROFILES = {NAVIGATION_PROFILE_URBAN, NAVIGATION_PROFILE_RURAL}
+# Se mantiene local para no importar el modulo agricola al arrancar Ruta,
+# Patrol o goals. Es el mismo vocabulario que emite Fields2Cover.
+WORK_PHASE = "row"
 
 BLOCKING_FAILURE_CODES = {
     "NO_VALID_PATH",
+    "ACTION_SERVER_ACK_TIMEOUT",
+    "TF_EXTRAPOLATION",
     "CONTROLLER_COLLISION",
     "COLLISION_STOP_ACTIVE",
     "SMOOTHED_PATH_COLLISION",
@@ -85,6 +84,8 @@ BLOCKING_FAILURE_CODES = {
 
 BLOCKING_REASON_TEXT = {
     "NO_VALID_PATH": "no valid path found",
+    "ACTION_SERVER_ACK_TIMEOUT": "internal Nav2 action server acknowledgement timed out",
+    "TF_EXTRAPOLATION": "transient TF extrapolation while transforming robot pose",
     "CONTROLLER_COLLISION": "controller predicted or detected collision",
     "COLLISION_STOP_ACTIVE": "collision monitor stop persisted",
     "SMOOTHED_PATH_COLLISION": "smoothed path leads to collision",
@@ -108,6 +109,8 @@ class RouteAction:
     brake_pct: int = 100
     profile: str = ""
     label: str = ""
+    # Metros de marcha atras de coverage_backup. Solo lo usa Campo.
+    distance_m: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -201,6 +204,8 @@ def _serialize_route_actions(actions: Sequence[RouteAction]) -> str:
             item["brake_pct"] = int(action.brake_pct)
         elif action.action_type == "set_navigation_profile":
             item["profile"] = str(action.profile)
+        elif action.action_type == "coverage_backup":
+            item["distance_m"] = float(action.distance_m)
         if action.label:
             item["label"] = str(action.label)
         payload.append(item)
@@ -258,6 +263,27 @@ def _parse_route_action_json(action_json: str, index: int) -> Tuple[Optional[str
                 )
             )
             continue
+        if action_type == "coverage_backup":
+            # La marcha atras de la cabecera de tres puntos de Campo. El tope de
+            # 20 m es holgado: la maniobra pide 2R menos la separacion entre
+            # pasadas, o sea menos de dos diametros de giro.
+            try:
+                distance_m = float(item.get("distance_m", 0.0))
+            except (TypeError, ValueError):
+                return None, f"invalid coverage_backup action at waypoint {index}"
+            if (not np.isfinite(distance_m)) or distance_m <= 0.0 or distance_m > 20.0:
+                return None, (
+                    f"coverage_backup distance_m at waypoint {index} must be > 0 "
+                    "and <= 20"
+                )
+            actions.append(
+                RouteAction(
+                    action_type="coverage_backup",
+                    distance_m=float(distance_m),
+                    label=label[:80],
+                )
+            )
+            continue
         return None, f"unsupported waypoint action type: {action_type or '<empty>'}"
     return _serialize_route_actions(actions), ""
 
@@ -293,6 +319,7 @@ def _actions_from_json(action_json: str) -> List[RouteAction]:
                 brake_pct=int(item.get("brake_pct", 100)),
                 profile=str(item.get("profile", "") or ""),
                 label=str(item.get("label", "") or ""),
+                distance_m=float(item.get("distance_m", 0.0)),
             )
         )
     return actions
@@ -310,7 +337,12 @@ def _parse_waypoint_roles(
     home_count = 0
     for idx, raw in enumerate(waypoint_roles):
         role = str(raw or WAYPOINT_ROLE_NORMAL).strip().lower()
-        if role not in (WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_HOME):
+        if role not in (
+            WAYPOINT_ROLE_NORMAL,
+            WAYPOINT_ROLE_HOME,
+            WAYPOINT_ROLE_COVERAGE,
+            WAYPOINT_ROLE_COVERAGE_TRANSIT,
+        ):
             return None, f"unsupported waypoint role at index {idx}: {role or '<empty>'}"
         if role == WAYPOINT_ROLE_HOME:
             home_count += 1
@@ -686,7 +718,7 @@ def _split_home_waypoint(
             continue
         patrol_waypoints.append(waypoint)
         patrol_actions.append(action_json)
-        patrol_roles.append(WAYPOINT_ROLE_NORMAL)
+        patrol_roles.append(role or WAYPOINT_ROLE_NORMAL)
 
     if not patrol_waypoints:
         return [], [], [], home_waypoint, "at least one non-HOME waypoint is required"
@@ -762,6 +794,96 @@ def expand_route_waypoints_with_actions(
     return expanded, expanded_actions, expanded_key_flags
 
 
+def expand_route_waypoint_roles(
+    base_waypoints: Sequence[RouteWaypoint],
+    base_roles: Sequence[str],
+    *,
+    leg_spacing_m: float,
+    loop: bool,
+) -> List[str]:
+    """Propaga roles sin convertir las cabeceras en seguimiento estricto."""
+    base = list(base_waypoints)
+    roles = [str(role or WAYPOINT_ROLE_NORMAL).strip().lower() for role in base_roles]
+    if len(roles) != len(base):
+        roles = [WAYPOINT_ROLE_NORMAL for _ in base]
+    if len(base) <= 1:
+        return roles
+
+    spacing = max(1.0, float(leg_spacing_m))
+    expanded_roles = [roles[0]]
+    segment_count = len(base) if loop else len(base) - 1
+    for idx in range(segment_count):
+        next_index = (idx + 1) % len(base)
+        start = base[idx]
+        end = base[next_index]
+        distance_m = _distance_m(start.lat, start.lon, end.lat, end.lon)
+        split_count = max(1, int(math.ceil(distance_m / spacing)))
+        segment_role = (
+            "coverage"
+            if roles[idx] == "coverage" and roles[next_index] == "coverage"
+            else "coverage_transit"
+        )
+        expanded_roles.extend([segment_role] * max(0, split_count - 1))
+        if idx + 1 < len(base):
+            expanded_roles.append(roles[idx + 1])
+    return expanded_roles
+
+
+def coverage_full_row_leg_spacing_m(
+    minimum_m: float,
+    field_length_m: float,
+    max_turn_separation_m: float = 0.0,
+) -> float:
+    """Espaciado que evita metas sinteticas dentro de una fila completa."""
+    return float(
+        max(
+            float(minimum_m),
+            float(field_length_m),
+            float(max_turn_separation_m),
+        )
+        + 1.0
+    )
+
+
+def should_follow_exact_coverage_chunk(
+    mission_follow_exact_path: bool,
+    chunk_roles: Sequence[str],
+) -> bool:
+    """Identifica una pasada de trabajo completa, sin cabecera mezclada."""
+    return bool(
+        mission_follow_exact_path
+        and len(chunk_roles) > 1
+        and all(str(role).strip().lower() == WAYPOINT_ROLE_COVERAGE for role in chunk_roles)
+    )
+
+
+def needs_exact_path_approach(
+    *,
+    follow_exact_path: bool,
+    resume_exact_at_start: bool,
+    robot_pose: Optional[Tuple[float, float]],
+    first_waypoint: RouteWaypoint,
+    reached_tolerance_m: float,
+) -> bool:
+    """True when a coverage row must be approached before being executed.
+
+    This deliberately applies to every row, not just the route's first row:
+    the preceding headland transition can leave the robot farther than the
+    controller's local path search window from the next row start.
+    """
+    return bool(
+        follow_exact_path
+        and not resume_exact_at_start
+        and robot_pose is not None
+        and _distance_m(
+            float(robot_pose[0]),
+            float(robot_pose[1]),
+            float(first_waypoint.lat),
+            float(first_waypoint.lon),
+        ) > float(reached_tolerance_m)
+    )
+
+
 def drop_duplicate_loop_closure(
     base_waypoints: Sequence[RouteWaypoint],
     *,
@@ -808,6 +930,7 @@ def prepare_route_waypoints(
     action_jsons: Optional[Sequence[str]] = None,
     waypoint_roles: Optional[Sequence[str]] = None,
     allow_segment_join: bool = True,
+    force_first_waypoint: bool = False,
 ) -> Tuple[Optional[PreparedRouteMission], str]:
     route = list(base_waypoints)
     source_indices = list(range(len(route)))
@@ -920,8 +1043,9 @@ def prepare_route_waypoints(
         )
 
     start_index = 0
-    while start_index < (len(route) - 1) and distances_m[start_index] <= tolerance_m:
-        start_index += 1
+    if not force_first_waypoint:
+        while start_index < (len(route) - 1) and distances_m[start_index] <= tolerance_m:
+            start_index += 1
 
     segment_note = ""
     # El enganche a un tramo del medio descarta las metas anteriores. Sirve para
@@ -980,6 +1104,8 @@ def skip_reached_chunk_start(
     robot_lon: Optional[float],
     waypoint_reached_tolerance_m: float,
     protected_indices: Optional[Set[int]] = None,
+    loose_indices: Optional[Set[int]] = None,
+    loose_tolerance_m: Optional[float] = None,
 ) -> Tuple[Optional[int], int]:
     route_list = list(route)
     if not route_list:
@@ -987,6 +1113,10 @@ def skip_reached_chunk_start(
 
     total = len(route_list)
     protected = {int(index) for index in (protected_indices or set())}
+    # Las guias de cabecera son transito afuera del lote: darlas por alcanzadas
+    # antes evita que el vehiculo frene y corrija donde la precision no importa.
+    # Los surcos no entran aca y conservan su tolerancia.
+    loose = {int(index) for index in (loose_indices or set())}
     requested_start = max(0, int(start_index))
     if (not loop) and requested_start >= total:
         return None, 0
@@ -1013,7 +1143,10 @@ def skip_reached_chunk_start(
             route_list[current].lat,
             route_list[current].lon,
         )
-        if distance_m > tolerance_m:
+        limite_m = tolerance_m
+        if current in loose and loose_tolerance_m is not None:
+            limite_m = max(tolerance_m, float(loose_tolerance_m))
+        if distance_m > limite_m:
             break
         next_index = current + 1
         if loop:
@@ -1379,13 +1512,22 @@ class RouteExecutorNode(Node):
         self.declare_parameter("min_leg_spacing_m", 5.0)
         self.declare_parameter("min_chunk_span_m", 20.0)
         self.declare_parameter("min_chunk_max_waypoints", 2)
-        self.declare_parameter("max_route_input_waypoints", 200)
+        # Campo conserva las guias de cada arco de cabecera. Con 200 puntos se
+        # truncaban globalmente: en un lote de 40 m quedaban unas pocas guias
+        # por giro y la polilinea pasaba a tener radios de 2 m aunque
+        # Fields2Cover hubiese calculado 4 m. Este limite admite la curva
+        # muestreada a 1 m sin afectar la semantica de Ruta o Patrol.
+        self.declare_parameter("max_route_input_waypoints", 800)
         self.declare_parameter("coverage_max_rows", 100)
         self.declare_parameter("coverage_max_key_waypoints", 200)
         self.declare_parameter("coverage_max_sampled_waypoints", 2000)
         self.declare_parameter("coverage_max_field_dimension_m", 500.0)
         self.declare_parameter("coverage_max_turning_radius_m", 100.0)
-        self.declare_parameter("coverage_planner_min_turning_radius_m", 4.0)
+        # 2.9 y no 4.0: con la cabecera de tres puntos el giro ya no depende de
+        # que quepa una curva hacia adelante, asi que el piso puede bajar al
+        # radio que el operador realmente usa. El vehiculo hace 2.02 m con el
+        # limite operativo de direccion, o sea que 2.9 deja margen.
+        self.declare_parameter("coverage_planner_min_turning_radius_m", 2.9)
         self.declare_parameter("coverage_allow_headland_conflicts", False)
         # Apagado: la cobertura recorre las pasadas de a una, desde la del
         # vehiculo hacia el otro borde. Prenderlo deja que el planificador
@@ -1394,11 +1536,11 @@ class RouteExecutorNode(Node):
         self.declare_parameter("coverage_allow_row_skipping", False)
         self.declare_parameter("coverage_min_waypoint_spacing_m", 0.5)
         self.declare_parameter("coverage_topology_audit_spacing_m", 0.5)
-        # Zonas no-go dibujadas en el cockpit. El planificador las recorta del
-        # trazado; el filtro keepout del costmap es independiente y puede estar
-        # apagado (lo esta en los perfiles reales), asi que este recorte es la
-        # unica proteccion que tiene el trabajo de cobertura.
-        self.declare_parameter("coverage_nogo_enabled", True)
+        # Desactivado por ahora: el rodeo poligonal genera quiebres rigidos que
+        # un Ackermann no puede seguir con precision. El editor y el codigo de
+        # zonas se conservan para rehacerlo con curvas factibles, pero CAMPO no
+        # debe deformar sus filas con esta implementacion.
+        self.declare_parameter("coverage_nogo_enabled", False)
         self.declare_parameter("zones_get_state_service", "/zones_manager/get_state")
         self.declare_parameter("zones_refresh_period_s", 2.0)
         self.declare_parameter("zones_max_age_s", 15.0)
@@ -1438,13 +1580,17 @@ class RouteExecutorNode(Node):
             "coverage_f2c_change_state_service", "/coverage_server/change_state"
         )
         self.declare_parameter("coverage_f2c_timeout_s", 30.0)
-        # SNAKE y no BOUSTROPHEDON: el boustrophedon recorre pasadas vecinas y
-        # a 1.65 m de separacion con radio 2.9 m no entra un giro valido.
-        # Medido sobre un octogono de 50 m: BOUSTROPHEDON deja giros de 0.32 m
-        # de radio —el vehiculo no los puede hacer— y SNAKE da 2.90 m exactos,
-        # ningun punto por debajo. Se paga en recorrido: 244.8 m de giros contra
-        # 468.4 m, pero los primeros no son ejecutables.
-        self.declare_parameter("coverage_f2c_route_type", "SNAKE")
+        # BOUSTROPHEDON: pasada por pasada, en orden, que es como se trabaja un
+        # lote. Estuvo en SNAKE mientras los giros los resolvia Fields2Cover:
+        # medido sobre un octogono de 50 m, BOUSTROPHEDON dejaba giros de 0.32 m
+        # de radio —inejecutables— porque a 1.65 m de separacion no entra
+        # ninguna curva hacia adelante, y saltear pasadas era la unica forma de
+        # agrandar el giro. Ese motivo ya no existe: la cabecera de tres puntos
+        # descarta los giros de Fields2Cover y arma la transicion retrocediendo,
+        # asi que el route_type ahora solo elige el ORDEN de las pasadas. Se lee
+        # fresco en cada pedido: se puede volver a SNAKE con `ros2 param set`
+        # sin recompilar ni relanzar.
+        self.declare_parameter("coverage_f2c_route_type", "BOUSTROPHEDON")
         # DUBIN y no REEDS_SHEPP: Reeds-Shepp usa marcha atras y mete cuspides
         # en las cabeceras. Para una cortadora eso no se quiere.
         self.declare_parameter("coverage_f2c_path_type", "DUBIN")
@@ -1456,7 +1602,21 @@ class RouteExecutorNode(Node):
         self.declare_parameter("coverage_f2c_headland_width_m", 0.0)
         # Paso de muestreo de los giros. El default de Fields2Cover es
         # 0.1 m y solo infla el conteo de waypoints.
-        self.declare_parameter("coverage_f2c_turn_point_distance_m", 0.5)
+        # Con R=4 m, 1 m entre puntos de arco da una flecha menor a 3.2 cm:
+        # suficiente para conservar visual y geometricamente la cabecera, sin
+        # convertir cada giro en cientos de metas.
+        self.declare_parameter("coverage_f2c_turn_point_distance_m", 1.0)
+        # Cabecera flexible. Con la separacion entre pasadas por debajo de dos
+        # radios minimos —1.7 m contra 4 m en el caso tipico de Campo— la unica
+        # curva Dubins posible es una omega, y el lote termina rodeado de
+        # petalos enormes. Con esto prendido los surcos quedan intactos y cada
+        # giro se reemplaza por salir derecho, correrse afuera y reentrar
+        # derecho. Se apaga para volver a los arcos crudos de Fields2Cover.
+        self.declare_parameter("coverage_f2c_flexible_turns", True)
+        # Tramo recto antes y despues de los arcos de la cabecera de tres
+        # puntos. Con 0.5 m y radio 4 m, el pivote queda 4.5 m mas alla del
+        # extremo del surco y 4 m al costado; no altera ningun punto de trabajo.
+        self.declare_parameter("coverage_f2c_turn_lead_m", 0.5)
         # Orientacion de las pasadas, en grados del marco del lote. NaN deja que
         # Fields2Cover busque el angulo que minimiza el objetivo (BRUTE_FORCE).
         # Fijarlo importa porque la guarda de aproximacion compara el rumbo del
@@ -1473,6 +1633,22 @@ class RouteExecutorNode(Node):
         # lote normal con una exclusion se rechazaba de entrada.
         self.declare_parameter("coverage_f2c_max_sampled_waypoints", 10000)
         self.declare_parameter("route_waypoint_reached_tolerance_m", 1.2)
+        # Los extremos de surco necesitan bastante mas precision que una ruta
+        # normal. Con 1.2 m de tolerancia y pasadas separadas 1.7 m, Nav2 puede
+        # terminar una fila casi encima de la siguiente y arrancar el giro
+        # antes de llegar al borde. La tolerancia de Ruta/Patrol sigue intacta.
+        self.declare_parameter("coverage_row_reached_tolerance_m", 0.35)
+        # Las guias de cabecera son transito afuera del lote: no son metas de
+        # trabajo y exigirles precision hace que el vehiculo frene y corrija
+        # donde no importa. Con esta tolerancia el ejecutor las da por
+        # alcanzadas antes y sigue. No toca la tolerancia de los surcos, que
+        # es lo unico que tiene que salir exacto.
+        self.declare_parameter("coverage_transit_reached_tolerance_m", 3.0)
+        # Marcha atras de la cabecera de tres puntos, via el behavior server
+        # de Nav2. Solo la usa Campo: ni Ruta ni Patrol emiten esta accion.
+        self.declare_parameter("coverage_backup_action", "backup")
+        self.declare_parameter("coverage_backup_speed_mps", 0.3)
+        self.declare_parameter("coverage_backup_timeout_s", 45.0)
         self.declare_parameter("route_segment_start_tolerance_m", 5.0)
         self.declare_parameter("blocked_retry_max_attempts", 3)
         self.declare_parameter("blocked_retry_wait_s", 5.0)
@@ -1499,6 +1675,7 @@ class RouteExecutorNode(Node):
         )
         self.declare_parameter("local_costmap_node", "/local_costmap/local_costmap")
         self.declare_parameter("global_costmap_node", "/global_costmap/global_costmap")
+        self.declare_parameter("controller_server_node", "/controller_server")
         self.declare_parameter("scan_ground_filter_node", "/scan_ground_filter")
         self.declare_parameter("urban_local_inflation_radius", 1.4)
         self.declare_parameter("urban_global_inflation_radius", 1.5)
@@ -1672,6 +1849,29 @@ class RouteExecutorNode(Node):
         self.route_waypoint_reached_tolerance_m = max(
             0.05, float(self.get_parameter("route_waypoint_reached_tolerance_m").value)
         )
+        self.coverage_row_reached_tolerance_m = min(
+            self.route_waypoint_reached_tolerance_m,
+            max(
+                0.05,
+                float(
+                    self.get_parameter("coverage_row_reached_tolerance_m").value
+                ),
+            ),
+        )
+        self.coverage_transit_reached_tolerance_m = max(
+            self.route_waypoint_reached_tolerance_m,
+            float(self.get_parameter("coverage_transit_reached_tolerance_m").value),
+        )
+        self.coverage_backup_action = str(
+            self.get_parameter("coverage_backup_action").value
+        )
+        self.coverage_backup_speed_mps = max(
+            0.05, float(self.get_parameter("coverage_backup_speed_mps").value)
+        )
+        self.coverage_backup_timeout_s = max(
+            1.0, float(self.get_parameter("coverage_backup_timeout_s").value)
+        )
+        self._backup_client: Optional[ActionClient] = None
         self.route_segment_start_tolerance_m = max(
             self.route_waypoint_reached_tolerance_m,
             float(self.get_parameter("route_segment_start_tolerance_m").value),
@@ -1718,6 +1918,9 @@ class RouteExecutorNode(Node):
         )
         self.local_costmap_node = str(self.get_parameter("local_costmap_node").value)
         self.global_costmap_node = str(self.get_parameter("global_costmap_node").value)
+        self.controller_server_node = str(
+            self.get_parameter("controller_server_node").value
+        )
         self.scan_ground_filter_node = str(
             self.get_parameter("scan_ground_filter_node").value
         )
@@ -1783,6 +1986,12 @@ class RouteExecutorNode(Node):
         self._mission_active = False
         self._mission_paused = False
         self._mission_loop = False
+        self._mission_follow_exact_path = False
+        # La primera pasada CAMPO puede estar lejos del robot. Primero se llega
+        # a su inicio con Nav2; luego se reenvia el mismo chunk al seguidor
+        # exacto, sin que el recorte de metas alcanzadas elimine ese inicio.
+        self._coverage_approach_pending = False
+        self._coverage_exact_resume_index = -1
         self._mission_status = "idle"
         self._leg_spacing_m = float(self.default_leg_spacing_m)
         self._chunk_span_m = float(self.default_chunk_span_m)
@@ -1810,6 +2019,9 @@ class RouteExecutorNode(Node):
         self._action_waypoint_index = 0
         self._action_type = ""
         self._action_until: Optional[float] = None
+        # Ultima tolerancia que este nodo aplico al goal checker de Nav2.
+        # ``None`` obliga a fijar el valor estricto al iniciar el primer CAMPO.
+        self._coverage_goal_tolerance_applied_m: Optional[float] = None
         self._battery_pct: Optional[float] = None
         self._battery_guard_seen = False
         self._low_battery_active = False
@@ -1855,7 +2067,7 @@ class RouteExecutorNode(Node):
         # del lanzamiento sin configurar— y eso tarda mas que el timeout del
         # cockpit. Hacerlo aca es la diferencia entre que el primer preview de
         # la sesion ande o falle.
-        self._fields2cover: Optional[Fields2CoverPlanner] = None
+        self._fields2cover: Optional[Any] = None
         # Se agenda, no se hace: el arranque del nodo no puede depender de que
         # un servidor de cobertura conteste, y asi el planificador agricola
         # sigue apareciendo solo dentro de metodos de Campo.
@@ -1910,6 +2122,11 @@ class RouteExecutorNode(Node):
         self._global_costmap_parameters = self.create_client(
             SetParameters,
             f"{self.global_costmap_node.rstrip('/')}/set_parameters",
+            callback_group=self._client_group,
+        )
+        self._controller_server_parameters = self.create_client(
+            SetParameters,
+            f"{self.controller_server_node.rstrip('/')}/set_parameters",
             callback_group=self._client_group,
         )
         self._scan_ground_filter_parameters = self.create_client(
@@ -2101,6 +2318,47 @@ class RouteExecutorNode(Node):
         ]
         if failures:
             return False, f"{label} costmap rejected profile: {'; '.join(failures)}"
+        return True, ""
+
+    def _set_coverage_goal_tolerance(self, tolerance_m: float) -> Tuple[bool, str]:
+        """Cambiar la tolerancia real de Nav2 solo al cruzar fila/cabecera."""
+        desired_m = max(0.05, float(tolerance_m))
+        applied_m = getattr(self, "_coverage_goal_tolerance_applied_m", None)
+        if applied_m is not None and math.isclose(
+            float(applied_m), desired_m, rel_tol=0.0, abs_tol=1.0e-9
+        ):
+            return True, ""
+
+        client = self._controller_server_parameters
+        if not client.wait_for_service(timeout_sec=min(self.request_timeout_s, 2.0)):
+            return False, "controller_server parameter service unavailable"
+        try:
+            request = SetParameters.Request()
+            request.parameters = [
+                Parameter(
+                    name="general_goal_checker.xy_goal_tolerance",
+                    value=desired_m,
+                ).to_parameter_msg(),
+            ]
+            response = self._wait_for_future(
+                client.call_async(request), self.request_timeout_s
+            )
+        except Exception as exc:
+            return False, f"goal checker tolerance update failed: {exc}"
+        if response is None:
+            return False, "goal checker tolerance update timed out"
+        failures = [
+            str(getattr(result, "reason", "parameter rejected"))
+            for result in list(response.results)
+            if not bool(getattr(result, "successful", False))
+        ]
+        if failures:
+            return False, f"controller_server rejected goal tolerance: {'; '.join(failures)}"
+        self._coverage_goal_tolerance_applied_m = desired_m
+        self.get_logger().info(
+            "Coverage goal tolerance applied "
+            f"(general_goal_checker.xy_goal_tolerance={desired_m:.2f}m)"
+        )
         return True, ""
 
     def _set_scan_ground_filter_parameters(
@@ -2539,7 +2797,11 @@ class RouteExecutorNode(Node):
                 "reanchor_match_distance_m": f"{resolution.match_distance_m:.3f}",
             },
         )
-        self._clear_costmaps_for_retry()
+        # Un timeout de confirmacion entre actions internos no describe un mapa
+        # obstruido. Limpiar ambos costmaps agrega carga justo cuando Nav2 viene
+        # de perder el deadline; se reenvia el mismo tramo sin esa operacion.
+        if reason_code != "ACTION_SERVER_ACK_TIMEOUT":
+            self._clear_costmaps_for_retry()
         ok, err = self._send_chunk(start_index=start_index)
 
         with self._lock:
@@ -2655,6 +2917,7 @@ class RouteExecutorNode(Node):
         meters_per_deg_lon = meters_per_deg_lat * cos_lat
         out_lat = float(lat) + float(north_m) / meters_per_deg_lat
         out_lon = float(lon) + float(east_m) / meters_per_deg_lon
+        out_lon = ((out_lon + 180.0) % 360.0) - 180.0
         return out_lat, out_lon
 
     def _project_geographic_yaw_to_fromll(
@@ -3094,6 +3357,9 @@ class RouteExecutorNode(Node):
         self._mission_active = False
         self._mission_paused = False
         self._mission_loop = False
+        self._mission_follow_exact_path = False
+        self._coverage_approach_pending = False
+        self._coverage_exact_resume_index = -1
         self._mission_status = str(status)
         self._mission_note = ""
         self._current_start_index = 0
@@ -3132,6 +3398,25 @@ class RouteExecutorNode(Node):
             or "failed to generate a valid path" in normalized
         ):
             return "NO_VALID_PATH", self._blocking_reason_text("NO_VALID_PATH", text)
+        if (
+            "timed out while waiting for action server to acknowledge goal request" in normalized
+            or "no recibió a tiempo la confirmación de un action server interno" in normalized
+        ):
+            return (
+                "ACTION_SERVER_ACK_TIMEOUT",
+                self._blocking_reason_text("ACTION_SERVER_ACK_TIMEOUT", text),
+            )
+        if (
+            "lookup would require extrapolation" in normalized
+            or "extrapolation into the future" in normalized
+            or "unable to transform robot pose into global plan's frame" in normalized
+            or "exception in transformpose" in normalized
+            or "desfase transitorio de tf" in normalized
+        ):
+            return (
+                "TF_EXTRAPOLATION",
+                self._blocking_reason_text("TF_EXTRAPOLATION", text),
+            )
         if "smoothed path" in normalized and "collision" in normalized:
             return (
                 "SMOOTHED_PATH_COLLISION",
@@ -3522,12 +3807,20 @@ class RouteExecutorNode(Node):
         with self._lock:
             route = list(self._route_expanded)
             action_jsons = list(self._route_action_jsons)
+            waypoint_roles = list(self._route_waypoint_roles)
             key_flags = list(self._route_key_waypoint_flags)
             input_indices = list(self._route_input_indices)
             loop_enabled = bool(self._mission_loop)
+            follow_exact_path = bool(self._mission_follow_exact_path)
+            resume_exact_at_start = int(self._coverage_exact_resume_index) == int(
+                start_index
+            )
             chunk_span_m = float(self._chunk_span_m)
             chunk_max_waypoints = int(self._chunk_max_waypoints)
             robot_pose = self._last_robot_pose
+
+            if resume_exact_at_start:
+                self._coverage_exact_resume_index = -1
 
         action_indices = {
             idx for idx, action_json in enumerate(action_jsons) if str(action_json or "")
@@ -3538,19 +3831,35 @@ class RouteExecutorNode(Node):
         synthetic_indices = {
             idx for idx, is_key in enumerate(key_flags) if idx < len(route) and not bool(is_key)
         }
-        resolved_start_index, skipped_start_waypoints = skip_reached_chunk_start(
-            route,
-            start_index=start_index,
-            loop=loop_enabled,
-            robot_lat=None if robot_pose is None else float(robot_pose[0]),
-            robot_lon=None if robot_pose is None else float(robot_pose[1]),
-            waypoint_reached_tolerance_m=self.route_waypoint_reached_tolerance_m,
-            protected_indices=action_indices,
-        )
+        if resume_exact_at_start:
+            resolved_start_index, skipped_start_waypoints = int(start_index), 0
+        else:
+            reached_tolerance_m = (
+                self.coverage_row_reached_tolerance_m
+                if follow_exact_path
+                else self.route_waypoint_reached_tolerance_m
+            )
+            resolved_start_index, skipped_start_waypoints = skip_reached_chunk_start(
+                route,
+                start_index=start_index,
+                loop=loop_enabled,
+                robot_lat=None if robot_pose is None else float(robot_pose[0]),
+                robot_lon=None if robot_pose is None else float(robot_pose[1]),
+                waypoint_reached_tolerance_m=reached_tolerance_m,
+                protected_indices=action_indices,
+                loose_indices={
+                    idx
+                    for idx, role in enumerate(waypoint_roles)
+                    if str(role).strip().lower() == WAYPOINT_ROLE_COVERAGE_TRANSIT
+                },
+                loose_tolerance_m=self.coverage_transit_reached_tolerance_m,
+            )
         if resolved_start_index is None:
             return False, "empty route chunk"
         synthetic_resolved_start_index, skipped_synthetic_waypoints = (
-            skip_passed_synthetic_chunk_start(
+            (int(resolved_start_index), 0)
+            if resume_exact_at_start
+            else skip_passed_synthetic_chunk_start(
                 route,
                 start_index=resolved_start_index,
                 loop=loop_enabled,
@@ -3603,6 +3912,53 @@ class RouteExecutorNode(Node):
         if not chunk:
             return False, "empty route chunk"
 
+        if len(waypoint_roles) == len(route):
+            chunk_roles = [
+                waypoint_roles[(resolved_start_index + offset) % len(route)]
+                for offset in range(len(chunk))
+            ]
+        else:
+            chunk_roles = [WAYPOINT_ROLE_NORMAL for _ in chunk]
+        # Cobertura se ejecuta como una cadena de waypoints cortos. Un path
+        # largo (FollowPath o NavigateThroughPoses) permite que Nav2 pode o
+        # recalcule referencias intermedias: en simulacion el ultimo surco
+        # termino a 5.9 m de la linea aunque el action dijo success. Un solo
+        # waypoint por accion conserva cada referencia; las filas quedan
+        # formadas por segmentos colineales y las cabeceras recorren sus guias
+        # exteriores con la tolerancia normal de Nav2.
+        coverage_waypoint_chunk = bool(
+            self._mission_follow_exact_path
+            and any(
+                str(role).strip().lower()
+                in (WAYPOINT_ROLE_COVERAGE, WAYPOINT_ROLE_COVERAGE_TRANSIT)
+                for role in chunk_roles
+            )
+        )
+        if self._mission_follow_exact_path:
+            target_role = str(chunk_roles[0]).strip().lower()
+            desired_tolerance_m = (
+                self.coverage_transit_reached_tolerance_m
+                if target_role == WAYPOINT_ROLE_COVERAGE_TRANSIT
+                else self.coverage_row_reached_tolerance_m
+            )
+            tolerance_ok, tolerance_error = self._set_coverage_goal_tolerance(
+                desired_tolerance_m
+            )
+            if not tolerance_ok:
+                return False, tolerance_error
+        elif getattr(self, "_coverage_goal_tolerance_applied_m", None) is not None:
+            # Una Ruta o Patrol que reemplace/cancele CAMPO nunca puede heredar
+            # los 3 m flexibles de una cabecera exterior.
+            tolerance_ok, tolerance_error = self._set_coverage_goal_tolerance(
+                self.route_waypoint_reached_tolerance_m
+            )
+            if not tolerance_ok:
+                return False, tolerance_error
+        follow_exact_path = False
+        dispatch_chunk = [chunk[0]] if coverage_waypoint_chunk else chunk
+        if coverage_waypoint_chunk:
+            end_index = int(resolved_start_index)
+
         with self._lock:
             self._chunk_id += 1
             chunk_id = int(self._chunk_id)
@@ -3622,7 +3978,7 @@ class RouteExecutorNode(Node):
                 "start_index": int(resolved_start_index),
                 "target_index": int(end_index),
                 "target_input_index": target_input_index,
-                "waypoint_count": len(chunk),
+                "waypoint_count": len(dispatch_chunk),
                 "synthetic_count": sum(
                     1
                     for index in range(resolved_start_index, min(len(key_flags), end_index + 1))
@@ -3632,15 +3988,16 @@ class RouteExecutorNode(Node):
         )
 
         request = SetNavGoalLL.Request()
-        request.lats = [float(entry.lat) for entry in chunk]
-        request.lons = [float(entry.lon) for entry in chunk]
-        request.yaws_deg = [float(entry.yaw_deg) for entry in chunk]
+        request.lats = [float(entry.lat) for entry in dispatch_chunk]
+        request.lons = [float(entry.lon) for entry in dispatch_chunk]
+        request.yaws_deg = [float(entry.yaw_deg) for entry in dispatch_chunk]
         request.loop = False
         request.suppress_success_brake = should_suppress_chunk_success_brake(
             current_target_index=end_index,
             route_size=len(route),
             loop=loop_enabled,
         )
+        request.follow_exact_path = bool(follow_exact_path)
         request.lat = float(request.lats[0])
         request.lon = float(request.lons[0])
         request.yaw_deg = float(request.yaws_deg[0])
@@ -3663,7 +4020,10 @@ class RouteExecutorNode(Node):
             return False, str(response.error)
 
         with self._lock:
-            self._active_chunk = chunk
+            # Cobertura se despacha siempre por waypoint; no queda una
+            # aproximacion FollowPath pendiente que pueda reinyectar un tramo.
+            self._coverage_approach_pending = False
+            self._active_chunk = dispatch_chunk
             self._awaiting_chunk_result = True
             self._mission_status = self._status_with_note_locked(
                 f"route active ({self._current_start_index + 1}->{self._current_target_index + 1})"
@@ -3697,6 +4057,56 @@ class RouteExecutorNode(Node):
         self._awaiting_chunk_result = False
         self._active_chunk = []
         self._mission_status = self._status_with_note_locked("route completed")
+
+    def _run_coverage_backup(self, distance_m: float) -> Tuple[bool, str]:
+        """Retroceder en la cabecera usando el behavior server de Nav2.
+
+        Esta es la unica marcha atras del sistema y vive entera aca: el planner
+        global sigue en DUBIN y el controlador con ``allow_reversing`` en false,
+        asi que Ruta, Patrol y los goals sueltos no pueden retroceder ni por
+        accidente. La reversa es una maniobra puntual, acotada y pedida a mano.
+
+        Se espera con ``_wait_for_future``, que sondea sin spinear: el executor
+        del nodo tiene varios hilos y spinear adentro de una callback esperando
+        otra callback es exactamente lo que se va a timeout cuando hay trafico.
+
+        Devuelve ``(ok, error)``. Nunca lanza: el llamador corre adentro de una
+        callback de rclpy y una excepcion ahi mata el nodo entero.
+        """
+        try:
+            if self._backup_client is None:
+                self._backup_client = ActionClient(
+                    self, BackUp, self.coverage_backup_action
+                )
+            timeout_s = max(1.0, float(self.coverage_backup_timeout_s))
+            if not self._backup_client.wait_for_server(
+                timeout_sec=min(5.0, timeout_s)
+            ):
+                return False, "el behavior server de Nav2 no expone backup"
+
+            goal = BackUp.Goal()
+            goal.target = Point(x=float(abs(distance_m)), y=0.0, z=0.0)
+            goal.speed = float(self.coverage_backup_speed_mps)
+            goal.time_allowance = Duration(
+                seconds=float(timeout_s)
+            ).to_msg()
+
+            handle = self._wait_for_future(
+                self._backup_client.send_goal_async(goal), timeout_s
+            )
+            if handle is None:
+                return False, "timeout esperando que Nav2 acepte la marcha atras"
+            if not handle.accepted:
+                return False, "Nav2 rechazo la marcha atras"
+            envuelto = self._wait_for_future(handle.get_result_async(), timeout_s)
+            if envuelto is None:
+                return False, "timeout ejecutando la marcha atras"
+            status = int(getattr(envuelto, "status", 0))
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                return False, f"la marcha atras termino con status {status}"
+            return True, ""
+        except Exception as exc:  # pragma: no cover - red de seguridad
+            return False, f"fallo inesperado en la marcha atras: {exc}"
 
     def _run_waypoint_actions_then_continue(
         self,
@@ -3770,6 +4180,64 @@ class RouteExecutorNode(Node):
                         "profile": action.profile,
                     },
                 )
+                continue
+            if action.action_type == "coverage_backup":
+                distancia_m = max(0.0, float(action.distance_m))
+                with self._lock:
+                    if (
+                        not self._mission_active
+                        or self._mission_paused
+                        or int(self._current_target_index) != int(waypoint_index)
+                    ):
+                        self._action_active = False
+                        self._action_until = None
+                        return
+                    self._action_active = True
+                    self._action_waypoint_index = int(waypoint_index)
+                    self._action_type = str(action.action_type)
+                    self._action_until = None
+                    self._mission_status = self._status_with_note_locked(
+                        f"route action coverage_backup ({distancia_m:.2f}m)"
+                    )
+                self._publish_route_event(
+                    DiagnosticStatus.OK,
+                    "ROUTE_WAYPOINT_ACTION_STARTED",
+                    "Route waypoint action started",
+                    details={
+                        "waypoint_index": int(waypoint_index),
+                        "action_type": action.action_type,
+                        "distance_m": f"{distancia_m:.3f}",
+                    },
+                )
+                ok, error = self._run_coverage_backup(distancia_m)
+                if not ok:
+                    # No se aborta la mision: la cabecera es transito afuera del
+                    # lote. Si la marcha atras no salio, el vehiculo sigue al
+                    # proximo waypoint y Nav2 resuelve como puede; abortar
+                    # dejaria el lote a medio cubrir por una maniobra auxiliar.
+                    self._publish_route_event(
+                        DiagnosticStatus.WARN,
+                        "COVERAGE_BACKUP_FAILED",
+                        "Coverage headland backup failed",
+                        details={
+                            "waypoint_index": int(waypoint_index),
+                            "distance_m": f"{distancia_m:.3f}",
+                            "error": str(error),
+                        },
+                    )
+                    self.get_logger().warning(
+                        f"coverage backup failed at waypoint {waypoint_index}: {error}"
+                    )
+                else:
+                    self._publish_route_event(
+                        DiagnosticStatus.OK,
+                        "COVERAGE_BACKUP_DONE",
+                        "Coverage headland backup done",
+                        details={
+                            "waypoint_index": int(waypoint_index),
+                            "distance_m": f"{distancia_m:.3f}",
+                        },
+                    )
                 continue
             if action.action_type != "brake_hold":
                 continue
@@ -3984,11 +4452,20 @@ class RouteExecutorNode(Node):
                     }
                 if 0 <= action_waypoint_index < len(self._route_action_jsons):
                     action_json = str(self._route_action_jsons[action_waypoint_index] or "")
-                next_start_index = next_chunk_start_index(
-                    current_target_index=self._current_target_index,
-                    route_size=expanded_count,
-                    loop=loop_enabled,
-                )
+                if bool(getattr(self, "_coverage_approach_pending", False)):
+                    # La meta de aproximacion fue el primer punto de la
+                    # pasada. Hay que conservarlo como inicio del FollowPath:
+                    # si se avanzara al siguiente indice, el controlador veria
+                    # toda la pasada fuera de su ventana local otra vez.
+                    self._coverage_approach_pending = False
+                    self._coverage_exact_resume_index = int(start_index)
+                    next_start_index = int(start_index)
+                else:
+                    next_start_index = next_chunk_start_index(
+                        current_target_index=self._current_target_index,
+                        route_size=expanded_count,
+                        loop=loop_enabled,
+                    )
                 reached_end = next_start_index >= expanded_count
                 should_run_action = bool(action_json) and not self._action_active
                 exit_waypoint_reached = bool(
@@ -4290,6 +4767,12 @@ class RouteExecutorNode(Node):
         self,
         request: GenerateCoveragePlanLL.Request,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
+        # Importes deliberadamente locales: el proceso que atiende Ruta o
+        # Patrol no debe cargar ningun modulo de Campo solo por arrancar.
+        from navegacion_gps.coverage_field_polygon import validate_coverage_field
+        from navegacion_gps.coverage_waypoint_core import headland_turn_length_m
+        from navegacion_gps.coverage_waypoint_core import resolve_row_visit_order
+
         values = {
             "start_lat": float(request.start_lat),
             "start_lon": float(request.start_lon),
@@ -4584,6 +5067,8 @@ class RouteExecutorNode(Node):
         peor. Lo que no se hace es ocultarlo, por eso la nota viaja hasta la
         respuesta del preview y el cockpit puede bloquear el arranque.
         """
+        from navegacion_gps.coverage_nogo_zones import polygons_from_geojson
+
         if not self.coverage_nogo_enabled:
             return [], 0.0, ""
 
@@ -4625,8 +5110,11 @@ class RouteExecutorNode(Node):
     def _body_lengths_by_phase(waypoints: Sequence[Any]) -> Tuple[float, float]:
         """Largo de trabajo y de transiciones de la poligonal, en metros.
 
-        Un tramo cuenta como trabajo cuando sus dos extremos son de la misma
-        pasada; todo lo demas —rodeos incluidos— es transicion.
+        Los enlaces entre una pasada y el primer/ultimo punto del rodeo siguen
+        siendo trabajo: esos puntos caen justo en el borde de la zona. Solo el
+        contorno ``nogo_detour`` es transicion. Sin esa excepcion, una pasada
+        muestreada solo en sus extremos quedaba con cero metros de trabajo al
+        cruzar una zona central.
         """
         trabajo = 0.0
         transicion = 0.0
@@ -4637,10 +5125,11 @@ class RouteExecutorNode(Node):
                     float(actual.forward_m) - float(anterior.forward_m),
                     float(actual.left_m) - float(anterior.left_m),
                 )
+                fases = {str(anterior.phase), str(actual.phase)}
                 mismo_tramo = (
-                    str(anterior.phase) == WORK_PHASE
-                    and str(actual.phase) == WORK_PHASE
-                    and int(anterior.row_index) == int(actual.row_index)
+                    int(anterior.row_index) == int(actual.row_index)
+                    and WORK_PHASE in fases
+                    and fases <= {WORK_PHASE, "nogo_detour"}
                 )
                 if mismo_tramo:
                     trabajo += largo
@@ -4669,9 +5158,11 @@ class RouteExecutorNode(Node):
                 f"coverage_planner=fields2cover no disponible: {exc}"
             )
 
-    def _fields2cover_planner(self) -> Fields2CoverPlanner:
+    def _fields2cover_planner(self) -> Any:
         """Cliente del Coverage Server, creado al primer uso."""
         if self._fields2cover is None:
+            from navegacion_gps.coverage_fields2cover import Fields2CoverPlanner
+
             self._fields2cover = Fields2CoverPlanner(
                 action_name=self.coverage_f2c_action,
                 parameter_service=self.coverage_f2c_parameter_service,
@@ -4693,6 +5184,13 @@ class RouteExecutorNode(Node):
         callback de rclpy mata el nodo y se llevaria puestas la ruta y la
         patrulla, que no tienen nada que ver con cobertura.
         """
+        from navegacion_gps.coverage_fields2cover import Fields2CoverError
+        from navegacion_gps.coverage_fields2cover import (
+            replace_turns_with_flexible_headlands,
+        )
+        from navegacion_gps.coverage_nogo import clip_plan_to_nogo
+        from navegacion_gps.coverage_nogo_zones import ll_to_body
+
         polygon_ll = values.get("coverage_polygon")
         if not polygon_ll:
             response.ok = False
@@ -4717,6 +5215,13 @@ class RouteExecutorNode(Node):
                 )
                 for lat, lon in ring
             ]
+
+        # Fresco en cada pedido, como el resto de los parametros de forma de
+        # giro: es un valor que se tunea probando. Es un tramo lineal, no un
+        # multiplo del radio; con 0.5 m y R=4 el pivote queda 4.5 m afuera.
+        margen_cabecera_m = max(
+            0.0, float(self.get_parameter("coverage_f2c_turn_lead_m").value)
+        )
 
         try:
             plan = self._fields2cover_planner().plan(
@@ -4750,6 +5255,19 @@ class RouteExecutorNode(Node):
                 headland_width_m=self.coverage_f2c_headland_width_m,
                 server_timeout_s=self.coverage_f2c_timeout_s,
             )
+            # Antes del recorte de zonas: lo que se recorta tiene que ser el
+            # plan que se va a ejecutar, no los arcos que este paso descarta.
+            # Dentro del mismo try porque nada de Campo puede escapar de la
+            # callback.
+            if bool(self.get_parameter("coverage_f2c_flexible_turns").value):
+                plan = replace_turns_with_flexible_headlands(
+                    plan,
+                    margin_m=margen_cabecera_m,
+                    # Con el radio, la cabecera arma el giro de tres puntos
+                    # cuando las pasadas quedan mas juntas que el diametro de
+                    # giro. Sin el, se queda en la transicion recta de siempre.
+                    min_turning_radius_m=float(values["min_turning_radius_m"]),
+                )
         except Fields2CoverError as exc:
             self.get_logger().warning(f"fields2cover coverage failed: {exc}")
             response.ok = False
@@ -4788,6 +5306,7 @@ class RouteExecutorNode(Node):
                     no_go_polygons,
                     margin_m=no_go_margin_m,
                     bounds=bounds,
+                    field_boundary=cuerpo,
                 )
             except ValueError as exc:
                 response.ok = False
@@ -4853,6 +5372,7 @@ class RouteExecutorNode(Node):
                     "phase": str(point.phase),
                     "row_index": int(point.row_index),
                     "key": bool(point.is_key),
+                    "backup_m": float(getattr(point, "backup_m", 0.0)),
                 }
             )
 
@@ -4887,12 +5407,112 @@ class RouteExecutorNode(Node):
         response.key_lats = [float(i["lat"]) for i in key_waypoints]
         response.key_lons = [float(i["lon"]) for i in key_waypoints]
         response.key_yaws_deg = [float(i["yaw_deg"]) for i in key_waypoints]
-        response.route_lats = list(response.key_lats)
-        response.route_lons = list(response.key_lons)
-        response.route_yaws_deg = list(response.key_yaws_deg)
-        response.route_key_flags = [True] * len(key_waypoints)
+        # La polilinea de preview incluye los arcos de Fields2Cover. Mandar
+        # solo sus extremos hacia Nav2 los reemplazaba por diagonales, de modo
+        # que el robot nunca recorria lo que el cockpit dibujaba. Los puntos
+        # interiores de una pasada recta no hacen falta; las poses de giro si:
+        # son guias no-key y conservan cada transicion planificada.
+        route_waypoints = [
+            item
+            for item in geographic
+            if bool(item["key"]) or str(item["phase"]) == "turn"
+        ]
+        if len(route_waypoints) < 2:
+            response.ok = False
+            response.error = "Fields2Cover no devolvio una ruta ejecutable"
+            return response
+
+        # SetRouteMissionLL tiene un limite propio. Un preview de 43 m con
+        # detalle de 0.5 m puede tener mas de 800 muestras solo en cabeceras;
+        # enviarlas todas hace que el preview parezca correcto pero que START
+        # falle despues con "waypoint count exceeds limit". Se conservan todas
+        # las metas key y se eligen guias de giro uniformemente, en orden. El
+        # cockpit dibuja esta misma lista, no el muestreo denso, asi que lo que
+        # ve el operador es exactamente lo que recibe route_executor.
+        route_limit = max(
+            2,
+            int(
+                getattr(
+                    self,
+                    "max_route_input_waypoints",
+                    self.coverage_max_key_waypoints,
+                )
+            ),
+        )
+        if len(route_waypoints) > route_limit:
+            key_indices = [
+                index
+                for index, item in enumerate(route_waypoints)
+                if bool(item["key"])
+            ]
+            if len(key_indices) > route_limit:
+                response.ok = False
+                response.error = (
+                    f"Fields2Cover necesita {len(key_indices)} metas key, sobre el "
+                    f"limite de ruta {route_limit}; achica el lote, subi el ancho "
+                    "de corte o baja el solape"
+                )
+                return response
+            # El vertice de la marcha atras es obligatorio: si se decima, la
+            # cabecera de tres puntos queda a medias y el vehiculo intenta un
+            # giro que su radio no permite. Cuenta como key para el presupuesto.
+            key_indices = sorted(
+                set(key_indices)
+                | {
+                    index
+                    for index, item in enumerate(route_waypoints)
+                    if float(item.get("backup_m", 0.0)) > 0.0
+                }
+            )
+            guide_indices = [
+                index
+                for index, item in enumerate(route_waypoints)
+                if index not in set(key_indices)
+            ]
+            guide_budget = route_limit - len(key_indices)
+            selected_indices = set(key_indices)
+            if guide_budget >= len(guide_indices):
+                selected_indices.update(guide_indices)
+            elif guide_budget == 1:
+                selected_indices.add(guide_indices[len(guide_indices) // 2])
+            elif guide_budget > 1:
+                last = len(guide_indices) - 1
+                selected_indices.update(
+                    guide_indices[
+                        round(position * last / (guide_budget - 1))
+                    ]
+                    for position in range(guide_budget)
+                )
+            route_waypoints = [
+                item
+                for index, item in enumerate(route_waypoints)
+                if index in selected_indices
+            ]
+        response.route_lats = [float(i["lat"]) for i in route_waypoints]
+        response.route_lons = [float(i["lon"]) for i in route_waypoints]
+        response.route_yaws_deg = [float(i["yaw_deg"]) for i in route_waypoints]
+        response.route_key_flags = [bool(i["key"]) for i in route_waypoints]
+        # Acciones por waypoint. Hoy la unica es la marcha atras de la cabecera
+        # de tres puntos; el resto viaja vacio. Se manda siempre el arreglo
+        # completo para que el indice coincida con el de los waypoints.
+        response.route_action_jsons = [
+            json.dumps(
+                [
+                    {
+                        "type": "coverage_backup",
+                        "distance_m": round(float(i["backup_m"]), 3),
+                        "label": "cabecera 3 puntos",
+                    }
+                ],
+                separators=(",", ":"),
+            )
+            if float(i.get("backup_m", 0.0)) > 0.0
+            else ""
+            for i in route_waypoints
+        ]
 
         response.row_count = int(plan.swath_count)
+        response.lane_spacing_m = float(plan.lane_spacing_m)
         response.estimated_path_length_m = float(plan.total_length_m)
         response.field_mode = str(values["field_mode"])
         response.route_start_lat = float(values["route_start_lat"])
@@ -4914,7 +5534,14 @@ class RouteExecutorNode(Node):
         response.planner_min_turning_radius_m = float(
             self.coverage_planner_min_turning_radius_m
         )
-        response.recommended_leg_spacing_m = float(self.min_leg_spacing_m)
+        # Los extremos de pasada ya son las referencias obligatorias. Partir
+        # una fila de 40 m cada 5 m hacia que Nav2 finalizara y recalculara ocho
+        # paths cortos, acumulando error de rumbo. Un espaciado mayor al largo
+        # del lote deja cada fila como un unico tramo, sin tocar sus extremos.
+        response.recommended_leg_spacing_m = coverage_full_row_leg_spacing_m(
+            self.min_leg_spacing_m,
+            float(values["field_length_m"]),
+        )
         response.recommended_chunk_span_m = float(self.default_chunk_span_m)
         response.recommended_chunk_max_waypoints = int(
             self.default_chunk_max_waypoints
@@ -4930,11 +5557,15 @@ class RouteExecutorNode(Node):
         response.error = ""
         return response
 
-    def _on_generate_coverage_plan(
+    def _on_generate_coverage_plan_impl(
         self,
         request: GenerateCoveragePlanLL.Request,
         response: GenerateCoveragePlanLL.Response,
     ) -> GenerateCoveragePlanLL.Response:
+        # El import del planificador propio tambien queda dentro del handler de
+        # Campo: Ruta, Patrol y goals no cargan su geometria ni sus dependencias.
+        from navegacion_gps.coverage_waypoint_core import build_lawnmower_waypoints
+
         values, error = self._validate_generate_coverage_request(request)
         if values is None:
             response.ok = False
@@ -5152,13 +5783,10 @@ class RouteExecutorNode(Node):
         response.centerline_length_m = float(values["centerline_length_m"])
 
         max_turn_separation = max(plan.turn_separations_m, default=0.0)
-        response.recommended_leg_spacing_m = float(
-            max(
-                float(self.min_leg_spacing_m),
-                float(values["field_length_m"]),
-                float(max_turn_separation),
-            )
-            + 1.0
+        response.recommended_leg_spacing_m = coverage_full_row_leg_spacing_m(
+            self.min_leg_spacing_m,
+            float(values["field_length_m"]),
+            float(max_turn_separation),
         )
         response.recommended_chunk_span_m = float(
             max(self.min_chunk_span_m, 60.0)
@@ -5169,6 +5797,26 @@ class RouteExecutorNode(Node):
         response.ok = True
         response.error = ""
         return response
+
+    def _on_generate_coverage_plan(
+        self,
+        request: GenerateCoveragePlanLL.Request,
+        response: GenerateCoveragePlanLL.Response,
+    ) -> GenerateCoveragePlanLL.Response:
+        """Barrera final: una callback ROS nunca puede propagar una excepcion.
+
+        La rama Fields2Cover ya traduce sus fallas para dar un diagnostico mas
+        preciso. Esta envoltura cubre tambien validacion, planner propio y una
+        regresion futura antes de que rclpy destruya el proceso que comparte
+        Ruta, Patrol y Campo.
+        """
+        try:
+            return self._on_generate_coverage_plan_impl(request, response)
+        except Exception as exc:  # pragma: no cover - ultima barrera de rclpy
+            self.get_logger().error(f"coverage callback crashed: {exc}")
+            response.ok = False
+            response.error = f"coverage generation failed unexpectedly: {exc}"
+            return response
 
     def _validate_set_route_request(
         self, request: SetRouteMissionLL.Request
@@ -5468,6 +6116,9 @@ class RouteExecutorNode(Node):
             allow_segment_join=not bool(
                 getattr(request, "start_from_first_waypoint", False)
             ),
+            force_first_waypoint=bool(
+                getattr(request, "start_from_first_waypoint", False)
+            ),
         )
         if prepared is None:
             response.ok = False
@@ -5508,6 +6159,18 @@ class RouteExecutorNode(Node):
             loop=loop_enabled,
             base_key_flags=prepared_key_flags,
         )
+        expanded_roles = expand_route_waypoint_roles(
+            prepared.waypoints,
+            prepared.waypoint_roles,
+            leg_spacing_m=leg_spacing_m,
+            loop=loop_enabled,
+        )
+        if len(expanded_roles) != len(expanded):
+            response.ok = False
+            response.error = "waypoint roles could not be mapped to expanded route"
+            response.input_waypoint_count = 0
+            response.expanded_waypoint_count = 0
+            return response
 
         with self._lock:
             had_mission = self._mission_active or self._mission_paused
@@ -5530,7 +6193,7 @@ class RouteExecutorNode(Node):
             )
             self._route_expanded = list(expanded)
             self._route_action_jsons = list(expanded_action_jsons)
-            self._route_waypoint_roles = [WAYPOINT_ROLE_NORMAL for _ in expanded]
+            self._route_waypoint_roles = list(expanded_roles)
             self._route_key_waypoint_flags = list(expanded_key_flags)
             key_source_indices = [
                 int(source_index)
@@ -5555,6 +6218,10 @@ class RouteExecutorNode(Node):
             self._mission_active = True
             self._mission_paused = False
             self._mission_loop = bool(loop_enabled)
+            self._mission_follow_exact_path = any(
+                str(role).strip().lower().startswith("coverage")
+                for role in waypoint_roles
+            )
             self._mission_note = mission_note
             self._mission_status = self._status_with_note_locked("route starting")
             self._leg_spacing_m = float(leg_spacing_m)
@@ -5744,6 +6411,15 @@ class RouteExecutorNode(Node):
         self, _request: CancelRouteMission.Request, response: CancelRouteMission.Response
     ) -> CancelRouteMission.Response:
         cancel_ok, cancel_err = self._cancel_nav_goal()
+        if getattr(self, "_coverage_goal_tolerance_applied_m", None) is not None:
+            tolerance_ok, tolerance_err = self._set_coverage_goal_tolerance(
+                self.route_waypoint_reached_tolerance_m
+            )
+            if not tolerance_ok:
+                self.get_logger().warning(
+                    "Could not restore strict goal tolerance while cancelling route: "
+                    f"{tolerance_err}"
+                )
         self._publish_route_event(
             DiagnosticStatus.WARN,
             "ROUTE_MISSION_CANCELLED",

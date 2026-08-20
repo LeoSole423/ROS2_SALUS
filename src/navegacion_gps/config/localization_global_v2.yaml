@@ -37,7 +37,12 @@ ekf_filter_node_map:
 
     # Todo el filtro se resuelve en 2D: ignora z, roll y pitch.
     two_d_mode: true
-    transform_time_offset: 0.0
+    # El controlador pide la pose con el timestamp corriente, mientras este
+    # filtro publica map -> odom a 30 Hz. Sin un pequeno fechado a futuro queda
+    # una ventana de ~33 ms donde tf2 puede pedir una transformacion posterior
+    # a la ultima publicada y abortar FollowPath/FollowWaypoints. 100 ms cubren
+    # jitter de scheduling sin cambiar la pose estimada.
+    transform_time_offset: 0.1
     transform_timeout: 0.0
     print_diagnostics: true
 

@@ -32,6 +32,11 @@ NO_GO_ZONE_TYPE = "no_go"
 _METERS_PER_DEG_LAT = 111_320.0
 
 
+def _longitude_delta_deg(origin_lon: float, point_lon: float) -> float:
+    """Diferencia por el antimeridiano usando el arco corto."""
+    return ((float(point_lon) - float(origin_lon) + 180.0) % 360.0) - 180.0
+
+
 class NoGoZonesResult:
     """Zonas listas para el planificador, con el motivo si no se pudieron leer."""
 
@@ -74,7 +79,7 @@ def ll_to_body(
         1.0e-6, abs(math.cos(math.radians(float(origin_lat))))
     )
     north_m = (float(lat) - float(origin_lat)) * _METERS_PER_DEG_LAT
-    east_m = (float(lon) - float(origin_lon)) * meters_per_deg_lon
+    east_m = _longitude_delta_deg(origin_lon, lon) * meters_per_deg_lon
 
     yaw_rad = math.radians(float(origin_yaw_deg))
     cos_yaw = math.cos(yaw_rad)

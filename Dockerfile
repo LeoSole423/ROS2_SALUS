@@ -53,6 +53,16 @@ RUN apt-get update \
     ros-${ROS_DISTRO}-mavros \
     ros-${ROS_DISTRO}-mavros-extras
 
+# La imagen base puede traer Navigation2 actualizado pero una version anterior
+# de diagnostic_updater sin la biblioteca C++ que lifecycle_manager carga en
+# tiempo de ejecucion. En ese estado Nav2 inicia sus procesos pero todos quedan
+# "unconfigured" y no publica NavigateThroughPoses. Forzar la actualizacion
+# del paquete y verificar el artefacto convierte ese fallo silencioso en un
+# build reproducible.
+RUN apt-get update \
+  && apt-get install -y --only-upgrade ros-${ROS_DISTRO}-diagnostic-updater \
+  && test -f /opt/ros/${ROS_DISTRO}/lib/libdiagnostic_updater.so
+
 # Gazebo/ros_gz puede quedar fuera en ARM64 si la base tiene conflictos de
 # dependencias. En la Jetson nos interesa priorizar el stack real del robot.
 RUN arch="$(dpkg --print-architecture)" && \
@@ -102,7 +112,7 @@ RUN python3 -m pip install --upgrade pip \
     onvif-zeep \
     pyserial==3.5 \
     pymavlink==2.4.43 \
-    pytest>=8.0
+    "pytest>=8.0,<9"
 
 RUN rosdep init || true \
   && rosdep update

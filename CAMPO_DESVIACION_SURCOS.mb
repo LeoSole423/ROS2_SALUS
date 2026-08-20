@@ -1,0 +1,417 @@
+# CAMPO — la desviación en los surcos NO es el goal checker: es la paridad del retículo de Smac
+
+Segunda opinión técnica sobre la corrida `e581144b0a02` (20260820_002406), hecha en
+modo read-only sobre la traza preservada, el YAML capturado en la corrida, el
+keepout mask y el código. **No se modificó ningún archivo.**
+
+Conclusión corta: la hipótesis de que `PositionGoalChecker` causa la "S" de la
+primera fila está **refutada**. La causa real es una interacción entre
+`angle_quantization_bins: 64`, `minimum_turning_radius: 2.9` y `resolution: 0.25`
+que parte el retículo angular de Smac Hybrid en dos clases de paridad disjuntas.
+Afecta a las 6 filas, no a la primera. El arreglo es una línea por perfil.
+
+---
+
+## 0. TL;DR para el que va a tocar el código
+
+| Qué | Valor |
+|---|---|
+| Causa raíz | `angle_quantization_bins: 64` con R=2.9 y res=0.25 → paso de giro de 2 bins → retículo angular partido en pares/impares |
+| Arreglo | `angle_quantization_bins: 64` → **48** en los 4 perfiles rolling |
+| Qué revertir | `SimpleGoalChecker`/`stateful:false` en los 4 perfiles, y `coverage_entry_yaw_tolerance_rad: 0.05` en `route_executor.py` |
+| Riesgo del arreglo | Bajo. Mejora la resolución angular efectiva de 11.25° a 7.50°. No toca tolerancias, reversa ni giro en el lugar. |
+| Riesgo de NO revertir | Órbita indefinida del vehículo en la entrada del surco (ver §6) |
+
+---
+
+## 1. Los tres hechos que rompen el planteo original
+
+### Hecho 1 — la primera fila no es la peor
+
+Desviación lateral máxima del **plan** respecto de la recta inicio→fin:
+
+| plan | fila | largo | desv. máx | error de rumbo inicial |
+|---|---|---|---|---|
+| 0002 | 1 | 18.25 m | **0.780 m** | 7.602° |
+| 0004 | 2 | 21.50 m | **0.943 m** | 5.577° |
+| 0007 | 3 | 25.25 m | 0.210 m | 3.713° |
+| 0010 | 4 | 28.75 m | 0.475 m | 3.483° |
+| 0012 | 5 | 32.00 m | 0.221 m | 4.977° |
+| 0014 | 6 | 35.25 m | **1.360 m** | 5.968° |
+
+Las filas 2 y 6 se desvían **más** que la 1, con **menos** error de rumbo. La
+premisa "las filas posteriores salen bien" no se sostiene en la geometría
+planificada, y el error de rumbo **anticorrelaciona** con la desviación.
+
+### Hecho 2 — la forma no es una S, es un triángulo simétrico
+
+Perfil lateral de `plan_0002.json` (dx respecto de X=18.375):
+
+```
+0.00 0.00 0.06 0.11 0.17 0.22 0.28 0.33 0.39 0.45 0.50 0.56 0.61 0.67 0.72 0.78
+0.78 0.72 0.67 0.61 0.56 0.50 0.45 0.39 0.33 0.28 0.22 0.17 0.14 0.12 0.10 0.08
+0.06 0.04 0.02 0.00
+```
+
+Rampas perfectamente rectas, vértice al **47 %** del tramo. El primer segmento va
+a **90.000° exactos** (o sea, sobre la fila): el plan arranca alineado y recién
+después se aparta. Una corrección de rumbo decae en el primer metro; esto se va
+hasta la mitad del surco y vuelve.
+
+### Hecho 3 — el histograma de rumbos parte las filas en dos grupos limpios
+
+Rumbos de segmento ponderados por longitud:
+
+- **p02 / p04 / p14**: 55–68 % del largo en rumbos **84.375° / 95.625°** (bins
+  impares). El rumbo de la fila (90° o −90°, bin **par**) aparece solo 1.14 m, que
+  son exactamente las dos primitivas de arco de ida y vuelta.
+- **p07 / p10 / p12**: **85–89 % del largo exactamente sobre el rumbo de la fila**
+  (bin par).
+
+Binario y sin zona gris.
+
+---
+
+## 2. La causa raíz, con la fórmula
+
+Nav2 `SmacPlannerHybrid` (`HybridMotionTable::initDubin`) elige el incremento de
+la tabla de movimiento con:
+
+```
+increments = ceil( 2·asin(√2 / (2·R_celdas)) / bin_size )
+```
+
+El `√2` es el requisito de que la primitiva salga de la celda actual. Con
+`R = 2.9 m` y `resolution = 0.25` → `R_celdas = 11.6`:
+
+```
+bins= 32  bin=11.250°  ángulo mínimo requerido=6.990°  increments=1  paso=11.25°  gcd(1,32)=1 → 1 clase
+bins= 48  bin= 7.500°  ángulo mínimo requerido=6.990°  increments=1  paso= 7.50°  gcd(1,48)=1 → 1 clase
+bins= 64  bin= 5.625°  ángulo mínimo requerido=6.990°  increments=2  paso=11.25°  gcd(2,64)=2 → 2 clases  <-- ACTUAL
+bins= 72  bin= 5.000°  ángulo mínimo requerido=6.990°  increments=2  paso=10.00°  gcd(2,72)=2 → 2 clases
+```
+
+Con 64 bins cada primitiva gira **2 bins = 11.25°**. Desde un bin impar solo se
+alcanzan bins impares. **El rumbo de la fila (90° = bin 16, −90° = bin 48) es
+par.** Si el yaw de arranque cae en la clase impar, Smac **no puede representar la
+recta del surco**: lo más barato que sabe dibujar es un único triángulo — salirse a
+5.625°, volver a 5.625°.
+
+`change_penalty: 1.8` y `non_straight_penalty: 1.15` empujan a minimizar la
+cantidad de cambios de dirección, por eso sale **un** triángulo grande y no un
+zigzag fino. Eso es exactamente lo que se ve.
+
+### Verificación numérica (todo medido, nada asumido)
+
+- Cuerda medida entre nodos del plan: **0.5685 m**. Predicha `2·2.9·sin(5.625°)` =
+  **0.5685 m**. ✅
+- Salto de rumbo medido en la transición: **11.25° exactos** = 2 bins. ✅
+- Amplitud predicha `(L/2)·tan(5.625°)`:
+
+  | plan | L | predicho | observado | ratio |
+  |---|---|---|---|---|
+  | p02 | 18.25 | 0.90 m | 0.78 m | 0.87 |
+  | p04 | 21.50 | 1.06 m | 0.94 m | 0.89 |
+  | p14 | 35.25 | 1.74 m | 1.36 m | 0.78 |
+
+  El déficit lo explica la cola analítica de Dubins, que acorta la última pierna.
+- **La amplitud escala con el largo del surco, no con el error de rumbo.** Por eso
+  la fila 6 (35 m) es la peor de todas.
+- `smooth_path: false` y **no hay nodo de smoother en el BT** de la corrida
+  (`ComputePathThroughPoses → FollowPath`, sin `SmoothPath`): el retículo crudo
+  llega tal cual a RPP. Verificado sobre
+  `context/navigate_through_poses_trace.xml`.
+
+---
+
+## 3. El disparador: qué decide la paridad
+
+El yaw con el que el robot llega al waypoint es lo que define en qué clase cae el
+arranque. Recuperándolo desde
+`initial_heading_error_deg = |rumbo del primer segmento − yaw|`
+(`nav_trace_recorder.py:137`):
+
+| plan | yaw cand. A → bin | yaw cand. B → bin | bin de la fila | desv. |
+|---|---|---|---|---|
+| p02 | 82.398 → 15 **impar** | 97.602 → 17 **impar** | 16 par | 0.78 |
+| p04 | −118.082 → 43 **impar** | −106.928 → 45 **impar** | 48 par | 0.94 |
+| p07 | 103.160 → 18 par | 110.586 → 20 par | 16 par | 0.21 |
+| p10 | −121.608 → 42 par | −114.642 → 44 par | 48 par | 0.47 |
+| p12 | 101.896 → 18 par | 111.850 → 20 par | 16 par | 0.22 |
+| p14 | −118.473 → 43 **impar** | −106.537 → 45 **impar** | 48 par | 1.36 |
+
+**Correlación 6/6.** Los dos candidatos de signo dan la misma paridad, así que la
+ambigüedad de signo no afecta la conclusión.
+
+El goal checker es la **moneda al aire** que define en qué clase cae el arranque.
+No es la causa de la desviación, y arreglar la moneda no arregla el retículo.
+
+---
+
+## 4. Por qué `PositionGoalChecker` NO explica la S
+
+Refutado por cuatro vías independientes:
+
+1. **Magnitud.** Corregir 7.602° con R=2.9 m da una excursión lateral de
+   `R·(1−cos 7.602°)` = **0.0255 m**. Lo observado es 0.78 m — **30 veces más**.
+2. **Forma.** El vértice está al 47 % del tramo. Una corrección de rumbo decae en
+   el primer metro.
+3. **Arranque.** El primer segmento del plan va a 90.000° exactos: el plan empieza
+   alineado.
+4. **Correlación invertida.** p14 tiene menos error de rumbo (5.97°) y casi el
+   doble de desviación (1.36 m).
+
+⚠️ El comentario en `route_executor.py:1648-1652` ya afirma esta causalidad como
+establecida ("*el primer surco arrancó con 7.6 grados de error y Smac dibujó una S
+de 0.78 m*"). Según los datos, **no lo está**. Ese comentario hay que corregirlo o
+borrarlo junto con el cambio.
+
+---
+
+## 5. Hipótesis descartadas (y un riesgo latente que sí importa)
+
+### Costmap / inflación de zonas no-go — descartada para este caso
+
+`keepout_mask.pgm` (3000×3000, `mode: scale`, origin −150/−150, res 0.1): solo
+**4259 celdas no libres**, bbox **X [19.75 – 26.45], Y [28.25 – 35.75]**.
+
+En contra de la hipótesis:
+- La panza de la fila 1 apunta hacia **+X, o sea hacia la zona**. Una inflación
+  empujaría en sentido contrario.
+- El vértice está en Y≈24.6, **fuera** del rango Y de la zona.
+- Una rampa recta de exactamente 1 bin no es la firma de un gradiente de costo.
+
+### ⚠️ Riesgo latente real, aparte de este bug
+
+`inflation_radius: 1.5` en el costmap global contra filas separadas **1.70–1.75 m**:
+el halo de una zona no-go cubre el ancho completo de un surco. Hoy no explica esta
+corrida, pero con más zonas o zonas más cerca de las filas va a morder. Vale
+anotarlo como deuda.
+
+### Seguimiento de RPP — no evaluable con esta traza
+
+`lookahead 3.0–4.5 m` sobre un triángulo de 18 m recorta las esquinas, así que la
+rosa y el plan no van a coincidir. Pero **no se puede cuantificar**:
+
+- `timeline.jsonl` **no guarda pose del robot**.
+- `cross_track_error_m` de `ROUTE_PROGRESS_SAMPLE` se calcula con
+  `start_index == target_index` (`route_executor.py:615-660`), o sea que degenera a
+  distancia al objetivo. Sus máximos de 24–35 m son eso, no error lateral. **No lo
+  uses como métrica de desviación.**
+
+Esto es un hueco de instrumentación que hay que tapar antes de medir nada (ver §8).
+
+---
+
+## 6. Por qué `SimpleGoalChecker + stateful:false` es peligroso acá
+
+Con `use_rotate_to_heading: false` y `allow_reversing: false`, RPP **no tiene
+ningún mecanismo para corregir yaw en la meta**.
+
+Si el robot llega con XY ≤ 0.35 m pero 4° de yaw, el checker no acepta y RPP sigue
+persiguiendo la carrot. La única forma de cambiar rumbo es manejando: **orbitar la
+meta con radio ≈2 m**.
+
+`stateful: false` lo agrava: al re-chequear XY en cada ciclo, salir de la
+tolerancia obliga a volver a entrar.
+
+`SimpleProgressChecker` no lo corta (pide 0.1 m en 5 s; orbitando se mueve). El
+modo de falla es **órbita indefinida**, no abort limpio.
+
+Y la órbita ocurre en la entrada del surco, con filas a 1.70 m: un radio de 2.9 m
+**barre los surcos vecinos**.
+
+### Sobre los 0.05 rad
+
+Es las dos cosas a la vez, y por eso no sirve:
+
+- **Demasiado flojo para arreglar el bug.** El umbral de snapping de bin es
+  `π/64` = **0.049087 rad (2.8125°)**. `0.05 rad = 2.8648°` **cae fuera**. Un
+  arribo justo en la tolerancia sigue snapeando al bin impar y sigue produciendo
+  el triángulo. Falla por 1.9 %.
+- **Demasiado estricto para el vehículo.** 2.86° sin giro en el lugar ni reversa
+  está en el piso de ruido del error de rumbo en régimen de RPP.
+
+---
+
+## 7. El cambio a hacer
+
+### 7.1 Aplicar: una línea por perfil
+
+```yaml
+angle_quantization_bins: 64   →   48
+```
+
+| archivo | línea |
+|---|---|
+| `src/navegacion_gps/config/nav2_global_v2_sim_rolling_params.yaml` | 87 |
+| `src/navegacion_gps/config/nav2_global_v2_sim_rolling_wifi_params.yaml` | 90 |
+| `src/navegacion_gps/config/nav2_global_v2_real_rolling_params.yaml` | 133 |
+| `src/navegacion_gps/config/nav2_global_v2_real_rolling_wifi_params.yaml` | 133 |
+
+Por qué es el cambio correcto:
+
+- Con 48 bins, `increments = 1` → **una sola clase de paridad**. Cualquier yaw de
+  arranque puede alcanzar el rumbo de la fila. **Arregla las 6 filas**, no solo la
+  primera.
+- **Mejora la resolución efectiva**: hoy el paso de giro real es 11.25°; con 48
+  bins pasa a 7.50°. No se pierde nada en las cabeceras.
+- No toca tolerancias, ni reversa, ni giro en el lugar, ni Ruta/Patrulla.
+- Revierte solo.
+
+`32` es la alternativa conservadora (paso 11.25°, idéntico al de hoy). **No usar
+72**: vuelve a partir la paridad.
+
+### 7.2 Revertir: lo que ya está en el worktree y no corresponde
+
+Los cuatro perfiles ya están cambiados a `SimpleGoalChecker` + `stateful: false`
+(sim:187-188, real:188-189, y los dos wifi). Revertir a `PositionGoalChecker`.
+
+`route_executor.py:1654`: `coverage_entry_yaw_tolerance_rad: 0.05` — revertir,
+junto con el comentario de las líneas 1648-1652 que afirma la causalidad
+refutada.
+
+Si igual se quiere conservar una exigencia de yaw en el waypoint 0, tiene que ser
+**< 0.049 rad** para que sirva de algo, y entonces hace falta un mecanismo de
+aproximación que la pueda cumplir sin orbitar. No es este cambio.
+
+### 7.3 Verificar aparte
+
+El YAML capturado en la corrida (`context/nav2_global_v2_sim_rolling_params.yaml`)
+dice `xy_goal_tolerance: 1.2` y `stateful: true`. El override a 0.35 se aplica en
+runtime por `set_parameters` (`route_executor.py:2381`), pero **no hay ningún
+evento en la traza que confirme que se aplicó en esta corrida**. Conviene loguear
+ese apply como evento de traza.
+
+---
+
+## 8. Prueba reproducible
+
+### 8.1 Chequeo barato, sin simulador (hacelo primero)
+
+Banco que instancie el planner con ambos valores de bins sobre un costmap vacío,
+start `(0, 0, θ)` con θ en `{0°, 2°, 4°, 6°, 8°}`, goal `(0, 18.25, 0°)`, y mida la
+desviación lateral máxima.
+
+- Con **64 bins**: debe saltar entre ~0.02 m y ~0.90 m según θ.
+- Con **48 bins**: debe quedar plano en ~0.02 m.
+
+Esto aísla la causa raíz de todo lo demás en segundos, sin Gazebo.
+
+### 8.2 A/B en simulación
+
+A = `bins: 64` (actual), B = `bins: 48`. Misma misión de 63 waypoints, mismo lote.
+
+**Instrumentación previa — hace falta, hoy no está:** grabar rosbag de `/plan`,
+`/odometry/global` y `/tf` durante la misión. Sin pose del robot en la traza, la
+desviación real no es medible.
+
+Métricas por fila (planes 2, 4, 7, 10, 12, 14):
+
+1. **Error de rumbo al terminar el waypoint 0** → ya lo da
+   `plans/plan_000N.json:initial_heading_error_deg`. Reportar además el bin y su
+   paridad (tabla de §3). *Criterio: en B la paridad deja de importar.*
+2. **Desviación lateral máxima del plan** → distancia perpendicular de cada punto
+   de `plan_000N.json` a la recta inicio→fin. *Criterio: B < 0.25 m en las 6
+   filas; A reproduce 0.78 / 0.94 / 1.36.*
+3. **Desviación lateral real** → proyectar `/odometry/global` sobre la recta del
+   surco entre waypoints, mismo intervalo temporal que el plan. *Criterio:
+   B < 0.35 m.*
+4. **Filas 2 y 3** → mismas dos métricas. Es el control que distingue las
+   hipótesis: si la causa fuera el goal checker, B no debería cambiar nada donde el
+   error de rumbo ya era chico. Si es la paridad, **la fila 6 tiene que mejorar de
+   1.36 m a < 0.25 m** — esa es la predicción más fuerte y más falsable.
+
+---
+
+## 9. Cómo reproducir el análisis
+
+La traza vive **dentro del contenedor** (`/ros2_ws/artifacts/` no está montado en
+el host; se pierde si se recrea el contenedor — conviene copiarla afuera).
+
+```bash
+# geometría de todos los planes
+docker exec -i ros2_salus python3 - <<'EOF'
+import json,glob,os,math
+for f in sorted(glob.glob("/ros2_ws/artifacts/nav_traces/20260820_002406_e581144b0a02/plans/*.json")):
+    d=json.load(open(f)); p=d["points"]
+    print("%s len=%8.3f hdgerr=%8.3f turn20=%8.2f maxstep=%7.2f start=(%8.3f,%8.3f) end=(%8.3f,%8.3f)" % (
+        os.path.basename(f), d["length_m"], d["initial_heading_error_deg"],
+        d["turn_first_20m_deg"], d["max_heading_step_deg"], p[0][0],p[0][1],p[-1][0],p[-1][1]))
+EOF
+
+# histograma de rumbos por longitud, con paridad de bin
+docker exec -i ros2_salus python3 - <<'EOF'
+import json,math,collections
+base="/ros2_ws/artifacts/nav_traces/20260820_002406_e581144b0a02/plans/"
+for pid in (2,4,7,10,12,14):
+    d=json.load(open(base+"plan_%04d.json"%pid)); p=d["points"]
+    hist=collections.defaultdict(float)
+    for i in range(len(p)-1):
+        dx=p[i+1][0]-p[i][0]; dy=p[i+1][1]-p[i][1]
+        hist[round(math.degrees(math.atan2(dy,dx)),2)]+=math.hypot(dx,dy)
+    tot=sum(hist.values())
+    print("plan %02d"%pid)
+    for b,L in sorted(hist.items(), key=lambda t:-t[1])[:4]:
+        i=(b%360)/5.625
+        print("   %8.3f  bin=%6.2f  %6.2f m (%4.1f%%)"%(b,i,L,100*L/tot))
+EOF
+```
+
+```bash
+# fórmula del incremento de la tabla de movimiento
+python3 -c "
+import math
+for bins in (32,48,64,72):
+    Rc=2.9/0.25; bs=360.0/bins
+    need=math.degrees(2*math.asin(math.sqrt(2)/(2*Rc)))
+    inc=math.ceil(need/bs)
+    print('bins=%3d bin=%6.3f req=%6.3f inc=%d clases=%d paso=%6.3f'%(
+        bins,bs,need,inc,math.gcd(inc,bins),inc*bs))
+"
+
+# contenido del keepout mask
+python3 - <<'EOF'
+f=open("src/navegacion_gps/config/keepout_mask.pgm",'rb'); f.read(17)
+data=f.read(); w=h=3000
+xs=[];ys=[]
+for i,v in enumerate(data):
+    if v!=255:
+        r,c=i//w,i%w
+        xs.append(-150.0+(c+0.5)*0.1); ys.append(-150.0+(h-1-r+0.5)*0.1)
+print("celdas no libres:",len(xs))
+print("bbox X [%.2f, %.2f]  Y [%.2f, %.2f]"%(min(xs),max(xs),min(ys),max(ys)))
+EOF
+```
+
+---
+
+## 10. Estado de verificación
+
+**Verificado** contra archivos, traza y configuración real:
+
+- La fórmula de incrementos, contrastada contra la cuerda (0.5685 m) y el salto de
+  rumbo (11.25°) medidos en los planes.
+- La correlación de paridad 6/6.
+- La fórmula de amplitud `(L/2)·tan(5.625°)`.
+- El contenido del keepout mask.
+- La ausencia de smoother en el BT.
+- El umbral de snapping `π/64 = 0.049087 rad`.
+
+**No verificado**, y hay que decirlo como tal:
+
+- La contribución de RPP al error final (falta pose del robot en la traza).
+- Si el override de tolerancia a 0.35 m se aplicó realmente en esta corrida.
+- El comportamiento con 48 bins — es una **predicción**, no un resultado.
+
+---
+
+## 11. Nota de contexto
+
+Al momento de este análisis, Gazebo quedó sin publicar `/clock` ni sensores y Nav2
+esperando el TF `map`. **Es un problema de startup separado**, no tiene relación
+con la desviación de los surcos. Todo lo de arriba sale de la traza preservada.
+
+El worktree está sucio y hay trabajo sin commitear en varias branches. No
+sobrescribir cambios locales. Ignorar `cockpit-main/`; el cockpit válido es
+`cockpit/`.

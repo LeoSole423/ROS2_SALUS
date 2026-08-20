@@ -23,6 +23,8 @@ from navegacion_gps.route_executor import (
     NAVIGATION_PROFILE_URBAN,
     PatrolMissionProfile,
     RouteExecutorNode,
+    WAYPOINT_ROLE_COVERAGE,
+    WAYPOINT_ROLE_COVERAGE_TRANSIT,
     WAYPOINT_ROLE_HOME,
     WAYPOINT_ROLE_NORMAL,
     RouteWaypoint,
@@ -34,14 +36,18 @@ from navegacion_gps.route_executor import (
     _split_home_waypoint,
     _yaw_to_quaternion,
     build_chunk_waypoints,
+    coverage_full_row_leg_spacing_m,
     drop_duplicate_loop_closure,
     expand_route_waypoints,
     expand_route_waypoints_with_actions,
+    expand_route_waypoint_roles,
     expanded_input_indices,
     next_chunk_start_index,
+    needs_exact_path_approach,
     prepare_route_waypoints,
     resolve_blocked_retry_start,
     route_progress,
+    should_follow_exact_coverage_chunk,
     skip_passed_synthetic_chunk_start,
     skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
@@ -66,11 +72,13 @@ def _fake_coverage_node() -> RouteExecutorNode:
     node.coverage_max_sampled_waypoints = 2000
     node.coverage_max_field_dimension_m = 500.0
     node.coverage_max_turning_radius_m = 100.0
+    node.coverage_planner = "legacy"
     node.coverage_planner_min_turning_radius_m = 4.0
     node.coverage_allow_headland_conflicts = True
     node.coverage_allow_row_skipping = False
     node.coverage_min_waypoint_spacing_m = 0.5
     node.coverage_topology_audit_spacing_m = 0.5
+    node.coverage_nogo_enabled = False
     node.min_leg_spacing_m = 5.0
     node.min_chunk_span_m = 20.0
     node.min_chunk_max_waypoints = 2
@@ -126,6 +134,26 @@ def test_generate_coverage_plan_returns_preview_and_key_waypoints() -> None:
     assert result.recommended_leg_spacing_m == pytest.approx(21.0)
 
 
+def test_generate_coverage_plan_no_propaga_una_excepcion_del_callback() -> None:
+    # rclpy deja morir el nodo si una callback propaga. Se prueba la barrera
+    # externa y no un tipo de error particular para cubrir regresiones futuras
+    # en validacion, no-go o cualquiera de los dos planners.
+    node = _fake_coverage_node()
+    mensajes = []
+    node._on_generate_coverage_plan_impl = lambda *_args: (_ for _ in ()).throw(
+        RuntimeError("falla de prueba")
+    )
+    node.get_logger = lambda: SimpleNamespace(error=mensajes.append)
+
+    result = node._on_generate_coverage_plan(
+        _coverage_request(), GenerateCoveragePlanLL.Response()
+    )
+
+    assert result.ok is False
+    assert "unexpectedly" in result.error
+    assert mensajes and "falla de prueba" in mensajes[0]
+
+
 def test_generate_coverage_plan_insets_field_corner_in_both_axes() -> None:
     node = _fake_coverage_node()
     request = _coverage_request()
@@ -158,7 +186,7 @@ def test_generate_coverage_plan_rejects_radius_below_planner_minimum(
         raise AssertionError("generator must not run")
 
     monkeypatch.setattr(
-        "navegacion_gps.route_executor.build_lawnmower_waypoints",
+        "navegacion_gps.coverage_waypoint_core.build_lawnmower_waypoints",
         fail_if_called,
     )
 
@@ -176,16 +204,16 @@ def test_generate_coverage_plan_audits_coarse_preview_at_fixed_spacing(
     monkeypatch,
 ) -> None:
     node = _fake_coverage_node()
-    from navegacion_gps import route_executor as route_executor_module
+    from navegacion_gps import coverage_waypoint_core
 
-    real_builder = route_executor_module.build_lawnmower_waypoints
+    real_builder = coverage_waypoint_core.build_lawnmower_waypoints
     spacings = []
 
     def capture_spacing(**kwargs):
         spacings.append(float(kwargs["waypoint_spacing_m"]))
         return real_builder(**kwargs)
 
-    monkeypatch.setattr(route_executor_module, "build_lawnmower_waypoints", capture_spacing)
+    monkeypatch.setattr(coverage_waypoint_core, "build_lawnmower_waypoints", capture_spacing)
 
     result = node._on_generate_coverage_plan(
         _coverage_request(waypoint_spacing_m=2.0),
@@ -241,7 +269,7 @@ def test_generate_coverage_plan_rejects_excessive_rows_before_build(monkeypatch)
         raise AssertionError("generator must not run")
 
     monkeypatch.setattr(
-        "navegacion_gps.route_executor.build_lawnmower_waypoints",
+        "navegacion_gps.coverage_waypoint_core.build_lawnmower_waypoints",
         fail_if_called,
     )
     response = node._on_generate_coverage_plan(
@@ -269,7 +297,7 @@ def test_generate_coverage_plan_rejects_large_preview_before_build(monkeypatch) 
         raise AssertionError("generator must not run")
 
     monkeypatch.setattr(
-        "navegacion_gps.route_executor.build_lawnmower_waypoints",
+        "navegacion_gps.coverage_waypoint_core.build_lawnmower_waypoints",
         fail_if_called,
     )
     response = node._on_generate_coverage_plan(
@@ -599,6 +627,19 @@ def test_expand_route_waypoints_handles_loop_closure_without_duplicating_start()
     assert expanded.count(base[0]) == 1
 
 
+def test_campo_uses_each_complete_row_without_short_synthetic_goals():
+    spacing_m = coverage_full_row_leg_spacing_m(5.0, 40.0)
+    base = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=40.0 / 111_320.0, yaw_deg=0.0),
+    ]
+
+    expanded = expand_route_waypoints(base, leg_spacing_m=spacing_m, loop=False)
+
+    assert spacing_m == pytest.approx(41.0)
+    assert expanded == base
+
+
 def test_route_action_jsons_accept_brake_hold_and_navigation_profile():
     actions, err = _parse_route_action_jsons(
         [
@@ -813,6 +854,15 @@ def test_waypoint_roles_accept_single_home():
     assert roles == [WAYPOINT_ROLE_NORMAL, WAYPOINT_ROLE_HOME]
 
 
+def test_waypoint_roles_accept_coverage_and_headland_transit():
+    roles, err = _parse_waypoint_roles(
+        [WAYPOINT_ROLE_COVERAGE, WAYPOINT_ROLE_COVERAGE_TRANSIT], 2
+    )
+
+    assert err == ""
+    assert roles == [WAYPOINT_ROLE_COVERAGE, WAYPOINT_ROLE_COVERAGE_TRANSIT]
+
+
 def test_split_home_waypoint_excludes_home_from_patrol_route():
     patrol, actions, roles, home, err = _split_home_waypoint(
         [
@@ -915,6 +965,104 @@ def test_expand_route_waypoints_preserves_non_key_headland_guide():
     assert expanded == base
     assert actions == ["", "", ""]
     assert key_flags == [True, False, True]
+
+
+def test_expanded_roles_keep_row_precise_and_headland_as_transit():
+    base = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.001, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0001, lon=0.0011, yaw_deg=90.0),
+        RouteWaypoint(lat=0.0001, lon=0.0, yaw_deg=180.0),
+    ]
+
+    roles = expand_route_waypoint_roles(
+        base,
+        ["coverage", "coverage", "coverage_transit", "coverage"],
+        leg_spacing_m=30.0,
+        loop=False,
+    )
+
+    # La primera pasada se interpola pero sigue siendo exacta. El segmento que
+    # toca la guía es tránsito; el extremo de la próxima pasada vuelve a
+    # conservar su rol coverage para el siguiente chunk.
+    assert roles[0] == "coverage"
+    assert "coverage" in roles[1:4]
+    first_transit = roles.index("coverage_transit")
+    assert roles[first_transit] == "coverage_transit"
+    assert roles[-1] == "coverage"
+    assert "coverage_transit" in roles[first_transit:-1]
+
+
+def test_only_complete_coverage_row_uses_exact_path_follower():
+    assert should_follow_exact_coverage_chunk(True, ["coverage", "coverage"])
+    assert not should_follow_exact_coverage_chunk(
+        True, ["coverage", "coverage_transit", "coverage"]
+    )
+    assert not should_follow_exact_coverage_chunk(False, ["coverage", "coverage"])
+
+
+def test_coverage_goal_tolerance_changes_only_when_role_changes():
+    requests = []
+
+    class ReadyFuture:
+        def done(self):
+            return True
+
+        def result(self):
+            return SimpleNamespace(
+                results=[SimpleNamespace(successful=True, reason="")]
+            )
+
+    class ParameterClient:
+        @staticmethod
+        def wait_for_service(timeout_sec):
+            return timeout_sec > 0.0
+
+        @staticmethod
+        def call_async(request):
+            requests.append(request)
+            return ReadyFuture()
+
+    node = object.__new__(RouteExecutorNode)
+    node._controller_server_parameters = ParameterClient()
+    node._coverage_goal_tolerance_applied_m = None
+    node.request_timeout_s = 2.0
+    node.get_logger = lambda: SimpleNamespace(info=lambda _message: None)
+    node._wait_for_future = lambda future, _timeout_s: future.result()
+
+    assert node._set_coverage_goal_tolerance(0.35) == (True, "")
+    assert node._set_coverage_goal_tolerance(0.35) == (True, "")
+    assert node._set_coverage_goal_tolerance(3.0) == (True, "")
+    assert node._set_coverage_goal_tolerance(3.0) == (True, "")
+    assert node._set_coverage_goal_tolerance(0.35) == (True, "")
+
+    applied = [
+        request.parameters[0].value.double_value for request in requests
+    ]
+    assert applied == pytest.approx([0.35, 3.0, 0.35])
+
+
+def test_every_coverage_row_is_approached_before_exact_path_when_far_away():
+    row_start = RouteWaypoint(lat=-31.48556, lon=-64.24092, yaw_deg=180.0)
+
+    # Esta es la segunda pasada despues de una cabecera: no es el indice cero
+    # de la mision, pero comienza a mas de 4 m del robot. Sin aproximarla el
+    # controlador RPP poda la ventana local de FollowPath y termina siguiendo
+    # una recta fuera de la pasada.
+    assert needs_exact_path_approach(
+        follow_exact_path=True,
+        resume_exact_at_start=False,
+        robot_pose=(-31.48552, -64.24095),
+        first_waypoint=row_start,
+        reached_tolerance_m=1.2,
+    )
+    assert not needs_exact_path_approach(
+        follow_exact_path=True,
+        resume_exact_at_start=True,
+        robot_pose=(-31.48552, -64.24095),
+        first_waypoint=row_start,
+        reached_tolerance_m=1.2,
+    )
 
 
 def test_chunk_from_headland_guide_continues_to_next_row_key():
@@ -1281,6 +1429,27 @@ def test_prepare_route_waypoints_skips_reached_prefix_for_non_loop_routes():
     assert prepared.skipped_waypoints == 2
     assert prepared.note == "skipped 2 reached waypoints"
     assert prepared.waypoints == [route[2]]
+
+
+def test_prepare_route_waypoints_keeps_first_coverage_waypoint_when_forced():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=0.0005, yaw_deg=0.0),
+    ]
+
+    prepared, error = prepare_route_waypoints(
+        route,
+        loop=False,
+        robot_lat=0.0,
+        robot_lon=0.0,
+        waypoint_reached_tolerance_m=1.2,
+        force_first_waypoint=True,
+    )
+
+    assert error == ""
+    assert prepared is not None
+    assert prepared.skipped_waypoints == 0
+    assert prepared.waypoints == route
 
 
 def test_prepare_route_waypoints_joins_nearest_segment_for_non_loop_routes():
@@ -1669,6 +1838,106 @@ def test_costmap_clear_timeout_abort_waits_for_controlled_retry():
     assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
 
 
+def test_tf_extrapolation_abort_waits_for_controlled_retry():
+    node = _fake_blocking_node()
+    event = NavEvent()
+    event.component = "nav_command_server"
+    event.code = "GOAL_RESULT_ABORTED"
+    event.message = "controller transform failed"
+    event.details = [
+        KeyValue(key="failure_reason_code", value="TF_EXTRAPOLATION"),
+        KeyValue(
+            key="failure_reason",
+            value="Nav2 no pudo transformar la pose por un desfase transitorio de TF",
+        ),
+    ]
+
+    RouteExecutorNode._on_nav_event(node, event)
+    RouteExecutorNode._on_nav_telemetry(
+        node,
+        _telemetry_result(
+            GoalStatus.STATUS_ABORTED,
+            text="FollowWaypoints result: aborted (missed=[0])",
+        ),
+    )
+
+    assert node._mission_active is True
+    assert node._blocked_state == BLOCKED_STATE_WAITING
+    assert node._blocked_reason_code == "TF_EXTRAPOLATION"
+    assert "desfase transitorio de TF" in node._blocked_reason_text
+    assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
+
+
+def test_action_server_ack_timeout_abort_waits_for_controlled_retry():
+    node = _fake_blocking_node()
+    event = NavEvent()
+    event.component = "nav_command_server"
+    event.code = "GOAL_RESULT_ABORTED"
+    event.message = "internal action server acknowledgement timed out"
+    event.details = [
+        KeyValue(key="failure_reason_code", value="ACTION_SERVER_ACK_TIMEOUT"),
+        KeyValue(
+            key="failure_reason",
+            value="Nav2 no recibió a tiempo la confirmación de un action server interno",
+        ),
+    ]
+
+    RouteExecutorNode._on_nav_event(node, event)
+    RouteExecutorNode._on_nav_telemetry(
+        node,
+        _telemetry_result(
+            GoalStatus.STATUS_ABORTED,
+            text="FollowWaypoints result: aborted (missed=[0])",
+        ),
+    )
+
+    assert node._mission_active is True
+    assert node._blocked_state == BLOCKED_STATE_WAITING
+    assert node._blocked_reason_code == "ACTION_SERVER_ACK_TIMEOUT"
+    assert "action server interno" in node._blocked_reason_text
+    assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
+
+
+def test_action_server_ack_timeout_abort_fallback_text_waits_for_retry():
+    node = _fake_blocking_node()
+
+    RouteExecutorNode._on_nav_telemetry(
+        node,
+        _telemetry_result(
+            GoalStatus.STATUS_ABORTED,
+            text=(
+                "Timed out while waiting for action server to acknowledge goal request "
+                "for compute_path_to_pose"
+            ),
+        ),
+    )
+
+    assert node._mission_active is True
+    assert node._blocked_state == BLOCKED_STATE_WAITING
+    assert node._blocked_reason_code == "ACTION_SERVER_ACK_TIMEOUT"
+    assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
+
+
+def test_tf_extrapolation_abort_fallback_text_waits_for_controlled_retry():
+    node = _fake_blocking_node()
+
+    RouteExecutorNode._on_nav_telemetry(
+        node,
+        _telemetry_result(
+            GoalStatus.STATUS_ABORTED,
+            text=(
+                "Lookup would require extrapolation into the future while transforming "
+                "odom to map"
+            ),
+        ),
+    )
+
+    assert node._mission_active is True
+    assert node._blocked_state == BLOCKED_STATE_WAITING
+    assert node._blocked_reason_code == "TF_EXTRAPOLATION"
+    assert node.events[-1][1] == "ROUTE_BLOCKED_WAITING"
+
+
 def test_blocking_abort_does_not_finish_mission_without_nav_event():
     node = _fake_blocking_node()
 
@@ -1704,6 +1973,23 @@ def test_blocked_retry_clears_costmaps_and_resends_same_chunk():
     assert node.events[0][1] == "ROUTE_BLOCKED_RETRYING"
     assert node.events[0][3]["requested_start_index"] == 1
     assert node.events[0][3]["resolved_start_index"] == 1
+    assert node.events[-1][1] == "ROUTE_BLOCKED_CLEARED"
+
+
+def test_action_server_ack_timeout_retry_skips_costmap_clear():
+    node = _fake_blocking_node()
+    node._blocked_state = BLOCKED_STATE_RETRYING
+    node._blocked_reason_code = "ACTION_SERVER_ACK_TIMEOUT"
+    node._blocked_reason_text = "internal action server acknowledgement timed out"
+    node._blocked_retry_attempt = 1
+    node._blocked_retry_inflight = True
+    node._current_start_index = 1
+
+    RouteExecutorNode._run_blocked_retry(node)
+
+    assert node.clear_costmap_calls == 0
+    assert node.sent_chunk_starts == [1]
+    assert node._blocked_state == BLOCKED_STATE_NONE
     assert node.events[-1][1] == "ROUTE_BLOCKED_CLEARED"
 
 

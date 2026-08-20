@@ -5,7 +5,12 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    SetEnvironmentVariable,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -266,10 +271,23 @@ def generate_launch_description():
     )
 
     world = LaunchConfiguration("world")
+    ign_partition = LaunchConfiguration("ign_partition")
+    ign_ip = LaunchConfiguration("ign_ip")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="True"),
+            # Evita que una instancia Gazebo previa (incluso fuera de este
+            # contenedor) comparta /clock y el servicio /world/*/create. Sin
+            # aislamiento el robot puede crearse en otro servidor y Nav2 queda
+            # esperando para siempre el TF map -> base_footprint.
+            DeclareLaunchArgument("ign_partition", default_value="salus_sim_v2"),
+            # El host puede anunciar Gazebo por una interfaz VPN. Para esta
+            # simulacion local se fuerza loopback: servidor, GUI, bridge y
+            # spawner se ven entre si, pero no se mezclan con otro host.
+            DeclareLaunchArgument("ign_ip", default_value="127.0.0.1"),
+            SetEnvironmentVariable(name="IGN_PARTITION", value=ign_partition),
+            SetEnvironmentVariable(name="IGN_IP", value=ign_ip),
             DeclareLaunchArgument(
                 "lidar_to_scan_params_file",
                 default_value=default_lidar_to_scan_params,

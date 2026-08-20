@@ -3222,7 +3222,9 @@ class WebZoneServerNode(Node):
         active_profile = str(getattr(res, "active_profile", "") or "")
         return bool(res.ok), str(res.error), active_profile
 
-    def current_coverage_reference(self) -> Tuple[Optional[Dict[str, float]], str]:
+    def current_coverage_reference(
+        self, *, require_heading: bool = True
+    ) -> Tuple[Optional[Dict[str, float]], str]:
         now = time.monotonic()
         with self._lock:
             pose = (
@@ -3234,20 +3236,25 @@ class WebZoneServerNode(Node):
             heading_updated = self._last_robot_heading_monotonic
         if pose is None:
             return None, "current robot GPS pose is unavailable"
-        if "heading_deg" not in pose:
+        if require_heading and "heading_deg" not in pose:
             return None, "current robot map heading is unavailable"
         if pose_updated is None or (now - float(pose_updated)) > float(
             self.coverage_reference_max_age_s
         ):
             return None, "current robot GPS pose is stale"
-        if heading_updated is None or (now - float(heading_updated)) > float(
+        if require_heading and (
+            heading_updated is None or (now - float(heading_updated)) > float(
             self.coverage_reference_max_age_s
+            )
         ):
             return None, "current robot map heading is stale"
         reference = {
             "lat": float(pose["lat"]),
             "lon": float(pose["lon"]),
-            "yaw_deg": float(pose["heading_deg"]),
+            # Fields2Cover elige la direccion de la primera pasada; su
+            # preflight no compara rumbo. Se conserva un valor finito para el
+            # payload de auditoria sin inventar que habia una medicion.
+            "yaw_deg": float(pose.get("heading_deg", 0.0)),
         }
         if not all(np.isfinite(value) for value in reference.values()):
             return None, "current robot reference contains non-finite values"
@@ -3368,8 +3375,11 @@ class WebZoneServerNode(Node):
         # planificador propio. `topology_audited=false` significa que el plan no
         # salio de ese planificador —hoy, Fields2Cover— y ahi no aplican: su
         # trayectoria no tiene guias de cabecera ni dos metas por pasada.
-        legacy_shape = bool(res.topology_audited)
-        nogo_applied = int(res.nogo_polygon_count) > 0 or not legacy_shape
+        # La interfaz actual siempre expone este campo; el fallback conserva
+        # compatibilidad con un route_executor anterior durante un despliegue
+        # escalonado y hace que sus invariantes se validen de forma estricta.
+        legacy_shape = bool(getattr(res, "topology_audited", True))
+        nogo_applied = int(getattr(res, "nogo_polygon_count", 0)) > 0 or not legacy_shape
         expected_key_count = 2 * int(res.row_count)
         if not nogo_applied and len(response_key_values) != expected_key_count:
             return (
@@ -3384,13 +3394,19 @@ class WebZoneServerNode(Node):
             for value in waypoint
         ):
             return False, "generate_coverage_plan_ll returned non-finite key values", {}
+        # Las acciones por waypoint son opcionales: un backend viejo no manda el
+        # arreglo. Se rellena con vacio para que el zip no recorte la ruta.
+        response_route_actions = list(getattr(res, "route_action_jsons", []) or [])
+        if len(response_route_actions) != len(res.route_lats):
+            response_route_actions = ["" for _ in res.route_lats]
         response_route_values = [
-            (float(lat), float(lon), float(yaw_deg), bool(is_key))
-            for lat, lon, yaw_deg, is_key in zip(
+            (float(lat), float(lon), float(yaw_deg), bool(is_key), str(action or ""))
+            for lat, lon, yaw_deg, is_key, action in zip(
                 res.route_lats,
                 res.route_lons,
                 res.route_yaws_deg,
                 res.route_key_flags,
+                response_route_actions,
             )
         ]
         if not response_route_values:
@@ -3511,8 +3527,11 @@ class WebZoneServerNode(Node):
                 "yaw_deg": yaw_deg,
                 "key": is_key,
                 "guide": not is_key,
+                # La marcha atras de la cabecera de tres puntos viaja pegada al
+                # waypoint donde hay que hacerla. Vacio en todos los demas.
+                "action_json": action_json,
             }
-            for lat, lon, yaw_deg, is_key in response_route_values
+            for lat, lon, yaw_deg, is_key, action_json in response_route_values
         ]
         global_topology_conflicts = {
             "strict_crossings": strict_crossing_count,
@@ -3563,6 +3582,18 @@ class WebZoneServerNode(Node):
                 for waypoint in key_waypoints
             ]
         )
+        # El ejecutor conserva la semántica habitual de rutas, PATROL y goals
+        # individuales. CAMPO distingue los extremos de pasada, que se siguen
+        # con precisión, de las guías de cabecera. Estas últimas son tránsito:
+        # Nav2 puede recuperar y corregir afuera del lote sin deformar el
+        # trazado que importa dentro.
+        execution_waypoints = [
+            {
+                **waypoint,
+                "role": "coverage" if bool(waypoint.get("key", True)) else "coverage_transit",
+            }
+            for waypoint in execution_waypoints
+        ]
         payload = {
             "reference": {
                 "lat": float(req.start_lat),
@@ -3609,7 +3640,7 @@ class WebZoneServerNode(Node):
                 "global_topology_conflicts": global_topology_conflicts,
                 "topology_safe": bool(res.topology_safe),
                 "topology_scope": topology_scope,
-                "topology_audited": bool(res.topology_audited),
+                "topology_audited": legacy_shape,
                 "topology_audit_spacing_m": float(
                     res.topology_audit_spacing_m
                 ),
@@ -3626,12 +3657,12 @@ class WebZoneServerNode(Node):
             # Con que definicion de lote planifico el backend, y si corrio la
             # auditoria topologica. El cockpit los necesita para no leer
             # topology_safe como si lo hubiera verificado el verificador legacy.
-            "field_mode": str(res.field_mode or "rectangle"),
-            "topology_audited": bool(res.topology_audited),
-            "nogo_polygon_count": int(res.nogo_polygon_count),
-            "nogo_dropped_count": int(res.nogo_dropped_count),
-            "nogo_detour_count": int(res.nogo_detour_count),
-            "nogo_note": str(res.nogo_note),
+            "field_mode": str(getattr(res, "field_mode", "rectangle") or "rectangle"),
+            "topology_audited": legacy_shape,
+            "nogo_polygon_count": int(getattr(res, "nogo_polygon_count", 0)),
+            "nogo_dropped_count": int(getattr(res, "nogo_dropped_count", 0)),
+            "nogo_detour_count": int(getattr(res, "nogo_detour_count", 0)),
+            "nogo_note": str(getattr(res, "nogo_note", "") or ""),
             "warnings": warnings,
             "route_request": {
                 "op": "set_route_ll",
@@ -3676,7 +3707,14 @@ class WebZoneServerNode(Node):
                 result,
             )
 
-        current_reference, reference_error = self.current_coverage_reference()
+        # El planner propio parte alineado con el vehiculo y necesita rumbo.
+        # Fields2Cover selecciona la primera pasada por geometria, y mas abajo
+        # ya excluimos el chequeo de rumbo cuando topology_audited es falso.
+        # Exigirlo aca bloqueaba CAMPO estacionario aunque no se usara.
+        exige_rumbo = bool(coverage_plan.get("topology_audited", True))
+        current_reference, reference_error = self.current_coverage_reference(
+            require_heading=exige_rumbo
+        )
         if current_reference is None:
             return False, f"coverage approach rejected: {reference_error}", result
 
@@ -3709,7 +3747,6 @@ class WebZoneServerNode(Node):
         # no una falla. Nav2 lo lleva hasta la primera meta como con cualquier
         # otra. El criterio de distancia se mantiene en los dos casos, que es lo
         # que evita arrancar la cobertura de un lote que esta lejos.
-        exige_rumbo = bool(coverage_plan.get("topology_audited", True))
         approach = {
             "checks_heading": exige_rumbo,
             "distance_m": distance_m,
@@ -3799,9 +3836,15 @@ class WebZoneServerNode(Node):
         req.lons = [float(wp["lon"]) for wp in waypoints]
         req.yaws_deg = [float(yaw_deg) for yaw_deg in resolved_yaws_deg]
         req.waypoint_action_jsons = [
-            json.dumps(wp.get("actions", []), separators=(",", ":"), sort_keys=True)
-            if wp.get("actions")
-            else ""
+            # `action_json` ya viene serializado por el backend (la marcha atras
+            # de la cabecera de Campo). `actions` es el formato del editor de
+            # waypoints. El primero gana porque es el que calculo el planner.
+            str(wp.get("action_json") or "")
+            or (
+                json.dumps(wp.get("actions", []), separators=(",", ":"), sort_keys=True)
+                if wp.get("actions")
+                else ""
+            )
             for wp in waypoints
         ]
         req.waypoint_roles = [

@@ -12,7 +12,9 @@ Fuente de verdad: código bajo `src/`, launches y scripts bajo `tools/`
   - `controller_server`
   - `map_tools`
   - `navegacion_gps`
+  - `navegacion_gps_bt`
   - `sensores`
+  - `vision_pipeline`
 - Vendorizados:
   - `rslidar_msg`
   - `rslidar_sdk`
@@ -20,6 +22,11 @@ Fuente de verdad: código bajo `src/`, launches y scripts bajo `tools/`
 Todos los paquetes bajo `src/` viven dentro de este mismo repositorio git.
 
 ## Documentación
+- Referencia integral del código actual: [docs/CODEBASE_REFERENCE.md](docs/CODEBASE_REFERENCE.md)
+- Catálogo archivo por archivo del código propio: [docs/CODE_CATALOG_OWN.md](docs/CODE_CATALOG_OWN.md)
+- Runtime, Docker y herramientas: [docs/CODE_CATALOG_RUNTIME_TOOLS.md](docs/CODE_CATALOG_RUNTIME_TOOLS.md)
+- Código vendorizado RoboSense: [docs/CODE_CATALOG_VENDOR.md](docs/CODE_CATALOG_VENDOR.md)
+- Catálogo archivo por archivo de Cockpit: [cockpit/CODE_CATALOG.md](cockpit/CODE_CATALOG.md)
 - Índice general: [docs/INDEX.md](/home/leo/codigo/ROS2_SALUS/docs/INDEX.md)
 - Matriz de launches y perfiles: [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)
 - Politica de paridad sim/real: [docs/sim-real-parity.md](/home/leo/codigo/ROS2_SALUS/docs/sim-real-parity.md)

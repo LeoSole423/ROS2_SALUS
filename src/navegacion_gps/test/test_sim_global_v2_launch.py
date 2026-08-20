@@ -21,7 +21,7 @@ def _read_repo(relative_path: str) -> str:
     return (PACKAGE_ROOT.parents[1] / relative_path).read_text(encoding="utf-8")
 
 
-def test_coverage_tight_turn_experiment_is_isolated_to_simulation() -> None:
+def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     sim_launch = _read("launch/sim_global_v2.launch.py")
     real_launch = _read("launch/real_global_v2.launch.py")
     sim_params = _read("config/nav2_global_v2_sim_rolling_params.yaml")
@@ -29,38 +29,67 @@ def test_coverage_tight_turn_experiment_is_isolated_to_simulation() -> None:
     real_params = _read("config/nav2_global_v2_real_rolling_params.yaml")
     real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
 
-    # Radio corto de simulacion: el largo del giro de cabecera y la cabecera que
-    # necesita escalan con el radio (27.5 m y 10.4 m a 4.0 m; 19.3 m y 7.4 m a
-    # 2.9 m). El plan de cobertura no puede pedir menos que el Smac que lo sigue,
-    # asi que los tres numeros se mueven juntos.
+    # El plan de cobertura no puede pedir menos que el Smac que lo sigue, asi
+    # que el piso del executor, Coverage Server y Smac se mueven juntos.
     assert '"coverage_planner_min_turning_radius_m": 2.9' in sim_launch
     assert '"coverage_allow_headland_conflicts": True' in sim_launch
-    # El planificador elige el orden. A 1.65 m de separacion y radio 2.9 m el
-    # enlace entre pasadas vecinas es un omega de 19.24 m —el optimo Dubins, no
-    # hay maniobra exterior mejor—. Saltear de a 4 lo convierte en U limpia:
-    # 23 omegas y 1354.6 m pasan a 0 omegas y 1214.2 m, con la cabecera de 7.35
-    # a 2.90 m. Se paga cubriendo el lote en bloques intercalados.
+    # El planificador elige el orden para que las maniobras de cabecera
+    # no fuerzen un giro por debajo del radio configurado.
     assert '"coverage_allow_row_skipping": True' in sim_launch
     assert '"coverage_start_max_distance_m": "50.0"' in sim_launch
-    # Medido: la guia parte la cabecera en un tramo de radio minimo exacto que
-    # Smac cierra con una vuelta completa. El giro entero como una sola meta
-    # reproduce el nominal, asi que simulacion y real comparten la guia apagada.
+    # La ejecucion usa los extremos de surco sobre el borde. Las guias de
+    # cabecera quedan fuera de la ruta ejecutable porque pueden traer una
+    # accion coverage_backup; el enlace lo resuelve Nav2 hacia adelante.
     assert '"coverage_use_headland_guides": "false"' in sim_launch
-    # 25 grados dan un radio efectivo de 2.02 m: es el margen de correccion
-    # sobre los 2.9 m que traza el planner. Con los 18 grados del perfil real
-    # (2.89 m) el seguimiento del omega quedaba sobre el tope de direccion.
+    # Tanto quien envia el goal como quien dibuja mission_path tienen que
+    # interpretar el Point sin header de /fromLL en el mismo frame. Si el
+    # executor usa odom, aplica odom->map una segunda vez y RViz queda corrido.
+    assert sim_launch.count('"fromll_frame": "map"') == 2
+    assert '"path_frame": "map"' in sim_launch
+    # 25 grados dan un radio efectivo de 2.02 m: deja margen de correccion
+    # respecto de los 2.9 m que traza el planner.
     assert '"operational_steering_limit_rad": 0.4363323130' in sim_launch
     assert sim_params.count("minimum_turning_radius: 2.9") == 2
     assert sim_wifi_params.count("minimum_turning_radius: 2.9") == 2
-    assert "minimum_turning_radius: 4.0" not in sim_params
-    assert "minimum_turning_radius: 4.0" not in sim_wifi_params
 
     assert "coverage_allow_headland_conflicts" not in real_launch
     assert "coverage_start_max_distance_m" not in real_launch
     assert "coverage_use_headland_guides" not in real_launch
+    assert real_launch.count('"fromll_frame": "map"') == 2
+    assert '"path_frame": "map"' in real_launch
     assert '"operational_steering_limit_rad": 0.3141592654' in real_launch
-    assert real_params.count("minimum_turning_radius: 4.0") == 2
-    assert real_wifi_params.count("minimum_turning_radius: 4.0") == 2
+    assert real_params.count("minimum_turning_radius: 2.9") == 2
+    assert real_wifi_params.count("minimum_turning_radius: 2.9") == 2
+
+    # El mismo lookahead amortiguado se usa en los cuatro perfiles rolling.
+    # Con 1.0--2.2 m la direccion alternaba de signo aun sobre filas rectas.
+    for contents in (sim_params, sim_wifi_params, real_params, real_wifi_params):
+        assert contents.count("bt_loop_duration: 50") == 1
+        assert contents.count("default_server_timeout: 200") == 1
+        assert contents.count("lookahead_dist: 3.0") == 1
+        assert contents.count("min_lookahead_dist: 2.3") == 1
+        assert contents.count("max_lookahead_dist: 4.5") == 1
+        assert contents.count("lookahead_time: 2.2") == 1
+        assert contents.count("angle_quantization_bins: 48") == 1
+        assert contents.count('plugin: "nav2_controller::PositionGoalChecker"') == 1
+        assert 'plugin: "nav2_controller::SimpleGoalChecker"' not in contents
+
+
+def test_backup_collision_check_uses_the_local_costmap_frame() -> None:
+    for relative_path in (
+        "config/nav2_global_v2_sim_rolling_params.yaml",
+        "config/nav2_global_v2_sim_rolling_wifi_params.yaml",
+        "config/nav2_global_v2_real_rolling_params.yaml",
+        "config/nav2_global_v2_real_rolling_wifi_params.yaml",
+    ):
+        contents = _read(relative_path)
+        behavior = contents.split("behavior_server:", 1)[1].split(
+            "# ================================", 1
+        )[0]
+        assert "costmap_topic: local_costmap/costmap_raw" in behavior
+        assert "footprint_topic: local_costmap/published_footprint" in behavior
+        assert "global_frame: odom" in behavior
+        assert "global_frame: map" not in behavior
 
 
 def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
@@ -200,6 +229,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
 
 def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> None:
     launch_contents = _read("launch/localization_global_v2.launch.py")
+    localization_params = _read("config/localization_global_v2.yaml")
     navsat_yaw_arg = 'DeclareLaunchArgument("navsat_use_odometry_yaw", default_value="false")'
     odom_gate_arg = 'DeclareLaunchArgument(\n                "enable_global_odom_stationary_gate"'
     imu_gate_arg = 'DeclareLaunchArgument(\n                "enable_global_imu_stationary_gate"'
@@ -266,6 +296,9 @@ def test_localization_global_v2_launch_adds_map_filter_and_navsat_support() -> N
     assert "if enable_compass_heading_fusion or enable_compass_initial_guess:" in launch_contents
     assert '("odometry/filtered", "/odometry/local")' in launch_contents
     assert '("odometry/gps", "/odometry/gps")' in launch_contents
+    # El EKF map->odom corre a 30 Hz. Se fecha el TF a futuro para que el
+    # controlador no aborte entre dos publicaciones por extrapolacion de ~33 ms.
+    assert "transform_time_offset: 0.1" in localization_params
 
 
 def test_nav2_global_params_switch_global_frame_to_map() -> None:

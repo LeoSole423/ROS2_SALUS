@@ -295,18 +295,30 @@ def _path_length(points: Sequence[Point]) -> float:
     )
 
 
-def _within_bounds(points: Sequence[Point], bounds: Optional[Bounds]) -> bool:
-    """Decir si todos los puntos caen dentro del rectangulo del lote."""
-    if bounds is None:
-        return True
-    forward_min, forward_max, left_min, left_max = bounds
-    return all(
-        (forward_min - _BOUNDS_TOLERANCE_M) <= float(point[0])
-        <= (forward_max + _BOUNDS_TOLERANCE_M)
-        and (left_min - _BOUNDS_TOLERANCE_M) <= float(point[1])
-        <= (left_max + _BOUNDS_TOLERANCE_M)
-        for point in points
-    )
+def _within_bounds(
+    points: Sequence[Point],
+    bounds: Optional[Bounds],
+    field_boundary: Optional[Polygon] = None,
+) -> bool:
+    """Decir si todos los puntos caben en el lote.
+
+    ``bounds`` conserva el caso rectangular legacy. Para Campo poligonal se
+    pasa tambien ``field_boundary``: la caja envolvente de una L o una U deja
+    huecos que no son lote y no puede servir de permiso para un rodeo.
+    """
+    if bounds is not None:
+        forward_min, forward_max, left_min, left_max = bounds
+        if not all(
+            (forward_min - _BOUNDS_TOLERANCE_M) <= float(point[0])
+            <= (forward_max + _BOUNDS_TOLERANCE_M)
+            and (left_min - _BOUNDS_TOLERANCE_M) <= float(point[1])
+            <= (left_max + _BOUNDS_TOLERANCE_M)
+            for point in points
+        ):
+            return False
+    if field_boundary is not None:
+        return all(point_in_polygon(point, field_boundary) for point in points)
+    return True
 
 
 def detour_along_contour(
@@ -315,6 +327,7 @@ def detour_along_contour(
     polygon: Polygon,
     *,
     bounds: Optional[Bounds] = None,
+    field_boundary: Optional[Polygon] = None,
 ) -> List[Point]:
     """Camino que bordea la zona en vez de atravesarla.
 
@@ -352,10 +365,16 @@ def detour_along_contour(
         [entry_point] + forward_vertices + [exit_point],
         [entry_point] + backward_vertices + [exit_point],
     ]
-    inside = [path for path in candidates if _within_bounds(path, bounds)]
+    inside = [
+        path
+        for path in candidates
+        if _within_bounds(path, bounds, field_boundary)
+    ]
     # Si los dos lados se salen del lote, la zona lo cruza de lado a lado: no hay
     # por donde bordear. Se devuelve el mas corto igual —el llamador ya no tiene
     # mejor opcion— pero el caso queda documentado aca y no como una sorpresa.
+    if not inside and field_boundary is not None:
+        raise ValueError("no hay rodeo no-go que se mantenga dentro del lote")
     elegibles = inside or candidates
     return min(elegibles, key=_path_length)
 
@@ -375,6 +394,7 @@ def clip_plan_to_nogo(
     *,
     margin_m: float = 0.0,
     bounds: Optional[Bounds] = None,
+    field_boundary: Optional[Polygon] = None,
 ) -> Tuple[List[CoverageBodyWaypoint], int, int]:
     """Sacar del plan lo que cae en una zona y bordear lo que la cruza.
 
@@ -407,15 +427,18 @@ def clip_plan_to_nogo(
     if len(kept) < 2:
         raise ValueError("las zonas no-go no dejan superficie para cubrir")
 
-    detoured, detours = _insert_detours(kept, inflated, bounds)
-    return detoured, dropped, detours
+    detoured, dropped_during_detour, detours = _insert_detours(
+        kept, inflated, bounds, field_boundary
+    )
+    return detoured, dropped + dropped_during_detour, detours
 
 
 def _insert_detours(
     waypoints: Sequence[CoverageBodyWaypoint],
     polygons: Sequence[Polygon],
     bounds: Optional[Bounds] = None,
-) -> Tuple[List[CoverageBodyWaypoint], int]:
+    field_boundary: Optional[Polygon] = None,
+) -> Tuple[List[CoverageBodyWaypoint], int, int]:
     """Reemplazar cada tramo que cruza una zona por un rodeo del contorno.
 
     Se repite hasta que ningun tramo cruce: un rodeo puede meter la ruta dentro
@@ -424,8 +447,25 @@ def _insert_detours(
     conteo de cruces no dio cero.
     """
     current = list(waypoints)
+    dropped = 0
     total_detours = 0
     for _ in range(_MAX_DETOUR_PASSES):
+        # Un rodeo de una zona solapada puede dejar uno de sus vertices dentro
+        # de otra. El filtrado inicial no lo ve porque esos puntos todavia no
+        # existian. Repetirlo antes de inspeccionar segmentos es lo que hace al
+        # recorte realmente idempotente: si una segunda pasada tendria que
+        # borrar un punto, esta primera todavia no termino.
+        filtered = []
+        for waypoint in current:
+            position = (float(waypoint.forward_m), float(waypoint.left_m))
+            if any(_strictly_inside(position, polygon) for polygon in polygons):
+                dropped += 1
+                continue
+            filtered.append(waypoint)
+        if len(filtered) < 2:
+            raise ValueError("las zonas no-go no dejan superficie para cubrir")
+        current = filtered
+
         rebuilt: List[CoverageBodyWaypoint] = []
         pass_detours = 0
         for index in range(len(current) - 1):
@@ -435,7 +475,9 @@ def _insert_detours(
 
             start = (float(origin.forward_m), float(origin.left_m))
             end = (float(target.forward_m), float(target.left_m))
-            detour = _shortest_detour(start, end, polygons, bounds)
+            detour = _shortest_detour(
+                start, end, polygons, bounds, field_boundary
+            )
             if not detour:
                 continue
 
@@ -462,8 +504,11 @@ def _insert_detours(
         current = rebuilt
         total_detours += pass_detours
         if pass_detours == 0:
-            break
-    return current, total_detours
+            return current, dropped, total_detours
+
+    # No devolver una ruta que aun requeriria otro rodeo: el llamador la toma
+    # como ejecutable y una segunda aplicacion del recorte cambiaria el plan.
+    raise ValueError("las zonas no-go solapadas no estabilizaron el rodeo")
 
 
 def _shortest_detour(
@@ -471,6 +516,7 @@ def _shortest_detour(
     end: Point,
     polygons: Sequence[Polygon],
     bounds: Optional[Bounds] = None,
+    field_boundary: Optional[Polygon] = None,
 ) -> List[Point]:
     """Rodeo de la primera zona que corta el tramo, yendo desde ``start``."""
     best: Optional[Tuple[float, List[Point]]] = None
@@ -478,7 +524,13 @@ def _shortest_detour(
         crossings = segment_polygon_intersections(start, end, polygon)
         if len(crossings) < 2:
             continue
-        detour = detour_along_contour(start, end, polygon, bounds=bounds)
+        detour = detour_along_contour(
+            start,
+            end,
+            polygon,
+            bounds=bounds,
+            field_boundary=field_boundary,
+        )
         if not detour:
             continue
         entry_t = crossings[0][0]

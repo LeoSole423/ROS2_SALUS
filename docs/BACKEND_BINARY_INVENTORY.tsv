@@ -1,0 +1,4 @@
+path	bytes	sha256	description
+src/navegacion_gps/config/keepout_mask.pgm	9000017	d5cbaac0592a2525b6216d7a11eb9fd0306e2ccc7f4529bf4ff9fa4f60b2114a	máscara raster keepout para map_server
+src/sensores/topicos_del_nodo.png	35603	17a53cb0b61b3c84758c87e018f9cce9e2d5668a1c19e1fc3e42a17e7aa0d535	imagen histórica de tópicos de sensores
+src/vision_pipeline/models/yolo11n.onnx	10930182	634279b40c07c6391472c51ad45b81ebc48706a9a1fe72dd3396322acd0c053b	modelo binario YOLO usado por vision_pipeline

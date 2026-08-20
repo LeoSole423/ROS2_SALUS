@@ -201,7 +201,7 @@ def generate_launch_description():
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
             DeclareLaunchArgument("nav_start_delay_s", default_value="3.0"),
-            DeclareLaunchArgument("use_keepout", default_value="True"),
+            DeclareLaunchArgument("use_keepout", default_value="False"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
             DeclareLaunchArgument("invert_steer_from_cmd_vel", default_value="True"),

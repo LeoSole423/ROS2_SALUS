@@ -275,6 +275,16 @@ def generate_launch_description():
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                         "autostart": True,
+                        # 20 s y no los 4 s de fabrica. Con Gazebo cargando la
+                        # misma maquina, algun nodo tarda mas de 4 s en
+                        # configurarse y el manager abandona la secuencia: queda
+                        # planner_server en inactive y todo lo demas en
+                        # unconfigured, que aparece como "FollowWaypoints action
+                        # server not available" cuando se pide una mision. El
+                        # timeout solo acota cuanto espera al arranque; no
+                        # cambia el comportamiento una vez que el stack esta
+                        # activo.
+                        "bond_timeout": 20.0,
                         "node_names": lifecycle_node_names,
                     }
                 ],
@@ -288,6 +298,7 @@ def generate_launch_description():
                     {
                         "use_sim_time": ParameterValue(use_sim_time, value_type=bool),
                         "autostart": True,
+                        "bond_timeout": 20.0,
                         "node_names": collision_monitor_lifecycle_node_names,
                     }
                 ],

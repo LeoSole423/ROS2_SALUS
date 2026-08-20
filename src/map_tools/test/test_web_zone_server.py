@@ -225,7 +225,12 @@ def test_generate_coverage_plan_maps_typed_arrays_to_preview_and_route_request()
     assert payload["route_request"] == {
         "op": "set_route_ll",
         "waypoints": [
-            {**waypoint, "key": True, "guide": False}
+            {
+                **waypoint,
+                "key": True,
+                "guide": False,
+                "role": "coverage",
+            }
             for waypoint in payload["key_waypoints"]
         ],
         "loop": False,
@@ -274,7 +279,14 @@ def test_generate_coverage_plan_uses_one_headland_guide_only_when_enabled():
     assert ok is True
     assert error == ""
     assert payload["headland_guidance_enabled"] is True
-    assert payload["route_request"]["waypoints"] == payload["route_waypoints"]
+    assert [
+        {key: value for key, value in waypoint.items() if key != "role"}
+        for waypoint in payload["route_request"]["waypoints"]
+    ] == payload["route_waypoints"]
+    assert {
+        waypoint["role"] for waypoint in payload["route_request"]["waypoints"]
+    } == {"coverage", "coverage_transit"}
+    assert payload["route_request"]["waypoints"][2]["role"] == "coverage_transit"
     assert [waypoint["key"] for waypoint in payload["route_request"]["waypoints"]] == [
         True,
         True,
@@ -406,7 +418,7 @@ def test_start_coverage_rejects_far_or_misaligned_approach_without_route_submiss
         },
     }
     node.generate_coverage_plan = lambda _parameters: (True, "", plan)
-    node.current_coverage_reference = lambda: (
+    node.current_coverage_reference = lambda **_kwargs: (
         {"lat": -31.001, "lon": -64.0, "yaw_deg": 90.0},
         "",
     )
@@ -459,7 +471,7 @@ def test_start_coverage_regenerates_checks_approach_and_submits_recommended_rout
         "",
         plan,
     )
-    node.current_coverage_reference = lambda: (
+    node.current_coverage_reference = lambda **_kwargs: (
         {"lat": -31.0, "lon": -64.0, "yaw_deg": 5.0},
         "",
     )
@@ -510,7 +522,7 @@ def test_start_coverage_reports_route_service_timeout_as_unknown():
         },
     }
     node.generate_coverage_plan = lambda _parameters: (True, "", plan)
-    node.current_coverage_reference = lambda: (
+    node.current_coverage_reference = lambda **_kwargs: (
         {"lat": -31.0, "lon": -64.0, "yaw_deg": 0.0},
         "",
     )
@@ -527,6 +539,50 @@ def test_start_coverage_reports_route_service_timeout_as_unknown():
     assert error == "set_route_ll timeout"
     assert result["route_started"] is None
     assert result["route_submission_state"] == "unknown_timeout"
+
+
+def test_start_fields2cover_no_exige_rumbo_actual_del_robot():
+    """El rumbo no participa en el approach de Fields2Cover estacionario."""
+    node = object.__new__(WebZoneServerNode)
+    node.coverage_start_max_distance_m = 5.0
+    node.coverage_start_max_heading_error_deg = 30.0
+    plan = {
+        "topology_safe": True,
+        "topology_audited": False,
+        "metrics": {
+            "topology_conflicts": {
+                "strict_crossings": 0,
+                "nonadjacent_touches": 0,
+                "collinear_overlaps": 0,
+                "total": 0,
+            },
+        },
+        "key_waypoints": [{"lat": -31.0, "lon": -64.0, "yaw_deg": 90.0}],
+        "route_request": {
+            "waypoints": [{"lat": -31.0, "lon": -64.0, "yaw_deg": 90.0}],
+            "leg_spacing_m": 21.0,
+            "chunk_span_m": 60.0,
+            "chunk_max_waypoints": 25,
+        },
+    }
+    node.generate_coverage_plan = lambda _parameters: (True, "", plan)
+    heading_requests = []
+    node.current_coverage_reference = lambda **kwargs: (
+        heading_requests.append(kwargs.get("require_heading")) or {
+            "lat": -31.0,
+            "lon": -64.0,
+            "yaw_deg": 0.0,
+        },
+        "",
+    )
+    node.set_route_mission = lambda *_args, **_kwargs: (True, "", 1, 1)
+
+    ok, error, result = node.start_coverage(_coverage_parameters())
+
+    assert ok is True
+    assert error == ""
+    assert heading_requests == [False]
+    assert result["approach"]["checks_heading"] is False
 
 
 def test_preview_coverage_is_not_a_motion_control_operation():

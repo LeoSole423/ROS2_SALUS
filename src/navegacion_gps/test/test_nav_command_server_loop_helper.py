@@ -141,6 +141,7 @@ class _FakeLoopNode:
         self._active_action = "navigate_through_poses"
         self._failure_code = ""
         self._failure_component = ""
+        self._nav_action_results_to_ignore = 0
         self.nav_failure_hint_window_s = 25.0
         self._recent_nav_failure_hints = []
 
@@ -279,6 +280,41 @@ def test_classify_nav_failure_hint_no_valid_path() -> None:
 
     assert code == "NO_VALID_PATH"
     assert "ruta válida" in summary
+
+
+def test_classify_nav_failure_hint_action_server_ack_timeout() -> None:
+    code, summary = NavCommandServerNode._classify_nav_failure_hint(
+        "bt_navigator_navigate_to_pose_rclcpp_node",
+        (
+            "Timed out while waiting for action server to acknowledge goal request "
+            "for compute_path_to_pose"
+        ),
+    )
+
+    assert code == "ACTION_SERVER_ACK_TIMEOUT"
+    assert "action server interno" in summary
+
+
+def test_classify_nav_failure_hint_tf_extrapolation() -> None:
+    code, summary = NavCommandServerNode._classify_nav_failure_hint(
+        "controller_server",
+        (
+            "Exception in transformPose: Lookup would require extrapolation into the future. "
+            "Requested time 78.906000 but the latest data is at time 78.870000"
+        ),
+    )
+
+    assert code == "TF_EXTRAPOLATION"
+    assert "desfase transitorio de TF" in summary
+
+
+def test_classify_nav_failure_hint_tf_transform_pose_fallback_message() -> None:
+    code, _ = NavCommandServerNode._classify_nav_failure_hint(
+        "controller_server",
+        "Unable to transform robot pose into global plan's frame",
+    )
+
+    assert code == "TF_EXTRAPOLATION"
 
 
 def test_abort_result_includes_recent_nav_failure_hint() -> None:

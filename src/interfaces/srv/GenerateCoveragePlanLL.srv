@@ -57,12 +57,20 @@ float64[] key_lats
 float64[] key_lons
 float64[] key_yaws_deg
 
-# Ruta ejecutable: extremos key + una guia no-key en el punto exterior de cada
-# cabecera. Las guias viajan en el mismo chunk y no son metas de parada.
+# Ruta ejecutable: extremos key + guias no-key a lo largo de cada cabecera.
+# Las guias preservan el radio calculado por Fields2Cover; no son metas de
+# trabajo ni de parada.
 float64[] route_lats
 float64[] route_lons
 float64[] route_yaws_deg
 bool[] route_key_flags
+# Acciones por waypoint de ruta, en el mismo formato que consume
+# SetRouteMissionLL.waypoint_action_jsons. Viene vacio ("") en casi todos: hoy
+# solo lo usa la cabecera de tres puntos de Campo, que marca con
+# coverage_backup el vertice donde el vehiculo tiene que retroceder porque las
+# pasadas quedaron mas juntas que el diametro de giro. Si el arreglo viene
+# vacio del todo, no hay ninguna maniobra que ejecutar.
+string[] route_action_jsons
 
 uint32 row_count
 float64 lane_spacing_m

@@ -1,5 +1,11 @@
 # vision_pipeline
 
+Estado: paquete activo opcional, separado del mainline de Nav2.
+
+Alcance: adquisición de cámara USB/IP, inferencia YOLO ONNX y visualización web de detecciones.
+
+Fuente de verdad: `setup.py`, `launch/`, `config/` y nodos bajo `vision_pipeline/`.
+
 Pipeline ROS 2 de baja latencia para deteccion de objetos en tiempo real con la topologia:
 
 `v4l2_camera -> /camera/image_raw -> yolo_onnx_detector -> /detections + /objeto_detectado`
@@ -17,10 +23,13 @@ Pipeline ROS 2 de baja latencia para deteccion de objetos en tiempo real con la 
 - Publica: `/detections` (`vision_msgs/msg/Detection2DArray`)
 - Publica: `/objeto_detectado` (`std_msgs/msg/String`)
 - Opcional para debug remoto: `/camera/image_raw/compressed` si esta instalado `image_transport_plugins`
+- Opcional: `/camera/camera_info` desde `ip_camera_publisher` cuando se habilita calibración/intrinsics
 
 ## Estructura
 
 - `vision_pipeline/yolo_onnx_detector.py`: nodo principal en `rclpy`
+- `vision_pipeline/ip_camera_publisher.py`: RTSP/MJPEG/snapshot a `sensor_msgs/Image`, con reconexión
+- `vision_pipeline/vision_web_server.py`: servidor HTTP de imagen y overlay de detecciones
 - `launch/vision_pipeline.launch.py`: lanza `v4l2_camera` y el detector
 - `config/v4l2_camera_low_latency.yaml`: camara a 640x480 y 20 FPS
 - `config/yolo_detector.yaml`: parametros del detector
