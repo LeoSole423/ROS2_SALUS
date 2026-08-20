@@ -52,7 +52,20 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     assert sim_params.count("minimum_turning_radius: 4.0") == 2
     assert sim_wifi_params.count("minimum_turning_radius: 4.0") == 2
 
-    assert "coverage_allow_headland_conflicts" not in real_launch
+    # CAMPO corre igual en real que en sim: mismo planificador, mismo piso de
+    # radio y el mismo orden de pasadas. Sin el salteo, dos pasadas vecinas no
+    # se pueden unir con una U y cada giro sale del lote.
+    assert '"coverage_planner_min_turning_radius_m": 4.0' in real_launch
+    assert '"coverage_allow_headland_conflicts": True' in real_launch
+    assert '"coverage_allow_row_skipping": True' in real_launch
+    assert '"coverage_planner": _COVERAGE_PLANNER' in real_launch
+    assert '"coverage_f2c_swath_angle_deg": 0.0' in real_launch
+    # El Coverage Server se agrega solo si el overlay esta instalado: en el
+    # robot, un overlay faltante no puede voltear la navegacion entera.
+    assert "_COVERAGE_SERVER_OK" in real_launch
+    # Lo que NO se copia de sim: el arranque lejos del lote y las guias de
+    # cabecera. El perfil real conserva el preflight estricto de 5 m y el
+    # default sin guias, que son los defaults del editor.
     assert "coverage_start_max_distance_m" not in real_launch
     assert "coverage_use_headland_guides" not in real_launch
     assert real_launch.count('"fromll_frame": "map"') == 2

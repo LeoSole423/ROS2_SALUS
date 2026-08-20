@@ -19,6 +19,29 @@ from launch_ros.parameter_descriptions import ParameterValue
 from navegacion_gps.datum_profile_resolver import resolve_selected_datum
 
 
+def _coverage_server_disponible() -> bool:
+    """Si el overlay de Fields2Cover esta en este entorno.
+
+    Se mira aca, al armar el lanzamiento, y no se asume: el overlay se
+    instala aparte y si no esta, agregar el nodo hace fallar el lanzamiento
+    entero —y con el la navegacion, que en el robot real no puede depender
+    de que este instalado un planificador de cobertura—.
+    """
+    try:
+        get_package_share_directory("opennav_coverage")
+        return True
+    except Exception:
+        return False
+
+
+_COVERAGE_SERVER_OK = _coverage_server_disponible()
+# CAMPO necesita Fields2Cover para trabajar con el poligono del cockpit. Si el
+# overlay no esta, se deja el planificador propio: sigue andando el lote
+# rectangular, y el poligono devuelve un error que dice exactamente que falta,
+# en vez de un timeout.
+_COVERAGE_PLANNER = "fields2cover" if _COVERAGE_SERVER_OK else "legacy"
+
+
 def _read_file(path: str) -> str:
     with open(path, "r", encoding="utf-8") as file_handle:
         return file_handle.read()
@@ -888,6 +911,33 @@ def generate_launch_description():
                         "fromll_frame": "map",
                         "path_frame": "map",
                         "set_route_service": "/route_executor/set_route_ll",
+                        # Tiene que coincidir con el minimum_turning_radius del
+                        # Smac de este perfil: es el piso que el plan de
+                        # cobertura no puede pedir mas chico.
+                        "coverage_planner_min_turning_radius_m": 4.0,
+                        "coverage_allow_headland_conflicts": True,
+                        # El planificador elige el orden de pasadas. Con
+                        # radio 4.0 m y pasadas de poco mas de un metro, dos
+                        # pasadas vecinas no se unen con una U: el enlace
+                        # mas corto es un omega que sale del lote y vuelve.
+                        # Lo unico que lo evita es que las pasadas vecinas
+                        # en el tiempo esten mas separadas, y eso hace el
+                        # salteo. El costo es cubrir el lote en bloques
+                        # intercalados en vez de corrido.
+                        "coverage_allow_row_skipping": True,
+                        # CAMPO planifica con Fields2Cover. Es lo unico que
+                        # entiende el poligono que dibuja el cockpit: el
+                        # planificador propio solo sabe de lotes rectangulares
+                        # y rechaza el pedido antes que planificar una figura
+                        # distinta de la dibujada. Ruta automatica, patrulla y
+                        # goals no pasan por aca.
+                        "coverage_planner": _COVERAGE_PLANNER,
+                        "coverage_f2c_robot_width_m": 1.0,
+                        # 0 grados: pasadas de este a oeste, que es como se
+                        # leen en el mapa. Sin esto Fields2Cover elige la
+                        # orientacion que minimiza el numero de pasadas y
+                        # cambia sola al mover un vertice del lote.
+                        "coverage_f2c_swath_angle_deg": 0.0,
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",
                         "set_patrol_service": "/route_executor/set_patrol_ll",
@@ -899,6 +949,37 @@ def generate_launch_description():
                         "blocked_retry_reanchor_tolerance_m": 8.0,
                     }
                 ],
+            ),
+            # Coverage Server de Fields2Cover: es quien planifica CAMPO
+            # cuando el lote viene como poligono. Queda en `unconfigured`; lo
+            # configura y activa el route_executor al primer pedido, que es
+            # cuando ya sabe el ancho de corte y el radio de giro del vehiculo.
+            # Activarlo aca con los valores por omision no serviria: el server
+            # arma su objeto de robot al configurarse y no vuelve a mirar los
+            # parametros.
+            *(
+                [
+                    Node(
+                        package="opennav_coverage",
+                        executable="opennav_coverage",
+                        name="coverage_server",
+                        output="screen",
+                        parameters=[
+                            {
+                                "use_sim_time": ParameterValue(
+                                    use_sim_time, value_type=bool
+                                ),
+                                "coordinates_type": "cartesian",
+                                "robot_width": 1.0,
+                                "operation_width": 2.0,
+                                "min_turning_radius": 4.0,
+                                "default_headland_width": 0.0,
+                            }
+                        ],
+                    )
+                ]
+                if _COVERAGE_SERVER_OK
+                else []
             ),
             Node(
                 package="navegacion_gps",
