@@ -33,3 +33,10 @@
 # Parches / diffs sueltos
 /franco-borrador_force-push_diff.patch
 /franco-borrador_force-push_diffstat.txt
+
+# Repo anidado del cockpit (proyecto aparte, va en su propio repo/branch)
+/cockpit-main/
+
+# Respaldos locales de pulls y dumps de diff generados
+/.respaldo-pull-*/
+/campo.diff
