@@ -637,7 +637,7 @@ def generate_launch_description():
                         "wheelbase_m": 0.94,
                         "steering_limit_rad": 0.5235987756,
                         # 25 grados: radio efectivo 2.02 m. El planner de este
-                        # perfil traza a 2.9 m, y la diferencia es el margen de
+                        # perfil traza a 4.0 m, y la diferencia es el margen de
                         # correccion del controlador. Con los 18 grados
                         # anteriores (2.89 m) el seguimiento del omega quedaba
                         # exactamente sobre el tope de direccion, sin margen.
@@ -739,11 +739,11 @@ def generate_launch_description():
                         # Tiene que coincidir con el minimum_turning_radius del
                         # Smac de este perfil: es el piso que el plan de
                         # cobertura no puede pedir mas chico.
-                        "coverage_planner_min_turning_radius_m": 2.9,
+                        "coverage_planner_min_turning_radius_m": 4.0,
                         "coverage_allow_headland_conflicts": True,
                         # Se deja que el planificador elija el orden de pasadas.
                         #
-                        # Con radio 2.9 m y pasadas a 1.65 m, dos pasadas
+                        # Medido con radio 2.9 m y pasadas a 1.65 m: dos pasadas
                         # vecinas no se pueden unir con una U: 1.65 m es menos
                         # que el radio. El enlace mas corto que existe —el
                         # optimo Dubins sobre las 6 familias, saliendo libre del
@@ -751,7 +751,8 @@ def generate_launch_description():
                         # que lo mejore; lo unico que lo mejora es que las
                         # pasadas vecinas en el tiempo esten mas separadas.
                         #
-                        # Medido sobre un lote de 40 m (24 pasadas):
+                        # Medido sobre un lote de 40 m (24 pasadas), tambien a
+                        # 2.9 m de radio:
                         #
                         #   adyacente:        23 omegas, 442.6 m de giros,
                         #                     1354.6 m totales, cabecera 7.35 m
@@ -761,6 +762,10 @@ def generate_launch_description():
                         # El buscador elige solo la segunda. El costo es que el
                         # lote queda cubierto en bloques intercalados en vez de
                         # corrido.
+                        #
+                        # Con el radio en 4.0 m la conclusion no cambia (1.65 m
+                        # sigue muy por debajo del diametro de giro), pero los
+                        # omegas y la cabecera crecen con el radio.
                         "coverage_allow_row_skipping": True,
                         # CAMPO planifica con Fields2Cover. Es lo unico que
                         # entiende el poligono que dibuja el cockpit: el

@@ -17,7 +17,7 @@ import websockets
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 CON_ZONA = "--con-zona" in sys.argv
 URL = ARGS[0] if ARGS else "ws://localhost:8766"
-RMIN = 2.9
+RMIN = 4.0
 LADO_M = 40.0
 
 

@@ -17,7 +17,7 @@ from interfaces.msg import GeoRing, NoGoPoint
 LAT0, LON0 = -31.485802, -64.241050
 MLAT = 111320.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-RMIN = 2.9
+RMIN = 4.0
 
 ll = lambda x, y: (LAT0 + y / MLAT, LON0 + x / MLON)
 xy = lambda lat, lon: ((lon - LON0) * MLON, (lat - LAT0) * MLAT)

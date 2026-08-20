@@ -31,7 +31,7 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
 
     # El plan de cobertura no puede pedir menos que el Smac que lo sigue, asi
     # que el piso del executor, Coverage Server y Smac se mueven juntos.
-    assert '"coverage_planner_min_turning_radius_m": 2.9' in sim_launch
+    assert '"coverage_planner_min_turning_radius_m": 4.0' in sim_launch
     assert '"coverage_allow_headland_conflicts": True' in sim_launch
     # El planificador elige el orden para que las maniobras de cabecera
     # no fuerzen un giro por debajo del radio configurado.
@@ -47,10 +47,10 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     assert sim_launch.count('"fromll_frame": "map"') == 2
     assert '"path_frame": "map"' in sim_launch
     # 25 grados dan un radio efectivo de 2.02 m: deja margen de correccion
-    # respecto de los 2.9 m que traza el planner.
+    # respecto de los 4.0 m que traza el planner.
     assert '"operational_steering_limit_rad": 0.4363323130' in sim_launch
-    assert sim_params.count("minimum_turning_radius: 2.9") == 2
-    assert sim_wifi_params.count("minimum_turning_radius: 2.9") == 2
+    assert sim_params.count("minimum_turning_radius: 4.0") == 2
+    assert sim_wifi_params.count("minimum_turning_radius: 4.0") == 2
 
     assert "coverage_allow_headland_conflicts" not in real_launch
     assert "coverage_start_max_distance_m" not in real_launch
@@ -58,8 +58,8 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     assert real_launch.count('"fromll_frame": "map"') == 2
     assert '"path_frame": "map"' in real_launch
     assert '"operational_steering_limit_rad": 0.3141592654' in real_launch
-    assert real_params.count("minimum_turning_radius: 2.9") == 2
-    assert real_wifi_params.count("minimum_turning_radius: 2.9") == 2
+    assert real_params.count("minimum_turning_radius: 4.0") == 2
+    assert real_wifi_params.count("minimum_turning_radius: 4.0") == 2
 
     # El mismo lookahead amortiguado se usa en los cuatro perfiles rolling.
     # Con 1.0--2.2 m la direccion alternaba de signo aun sobre filas rectas.

@@ -1523,11 +1523,11 @@ class RouteExecutorNode(Node):
         self.declare_parameter("coverage_max_sampled_waypoints", 2000)
         self.declare_parameter("coverage_max_field_dimension_m", 500.0)
         self.declare_parameter("coverage_max_turning_radius_m", 100.0)
-        # 2.9 y no 4.0: con la cabecera de tres puntos el giro ya no depende de
-        # que quepa una curva hacia adelante, asi que el piso puede bajar al
-        # radio que el operador realmente usa. El vehiculo hace 2.02 m con el
-        # limite operativo de direccion, o sea que 2.9 deja margen.
-        self.declare_parameter("coverage_planner_min_turning_radius_m", 2.9)
+        # 4.0 y no 2.9: es el radio que pide el operador y el que traza el Smac
+        # de los perfiles rolling. El piso del plan de cobertura tiene que
+        # acompanarlo. El vehiculo hace 2.02 m con el limite operativo de
+        # direccion, o sea que 4.0 deja margen de correccion.
+        self.declare_parameter("coverage_planner_min_turning_radius_m", 4.0)
         self.declare_parameter("coverage_allow_headland_conflicts", False)
         # Apagado: la cobertura recorre las pasadas de a una, desde la del
         # vehiculo hacia el otro borde. Prenderlo deja que el planificador

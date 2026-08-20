@@ -320,7 +320,8 @@ def test_generate_coverage_plan_accepts_a_field_the_audit_used_to_reject() -> No
     """
 
     node = _fake_coverage_node()
-    # Perfil de simulacion: el planner traza a 2.9 m.
+    # El piso del executor se propaga tal cual al plan; el conteo de
+    # pasadas de abajo esta medido con este radio.
     node.coverage_planner_min_turning_radius_m = 2.9
 
     response = node._on_generate_coverage_plan(

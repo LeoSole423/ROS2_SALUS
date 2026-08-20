@@ -80,18 +80,17 @@ planner_server:
       motion_model_for_search: "DUBIN"
       # Radio fisico con wheelbase=0.94m y steering_limit=30deg: ~1.63m.
       # Radio con el limite operativo de direccion de este perfil, 25deg: ~2.02m.
-      # Se planifica a 2.9m, piso del planner de cobertura: con
+      # Se planifica a 4.0m, piso del planner de cobertura: con
       # pasadas mas angostas que el diametro de giro, cada giro es un omega cuyo
       # largo y cuya cabecera escalan con el radio. El margen de steering para corregir
       # seguimiento lo da la diferencia contra los 2.02m del limite operativo.
-      # 2.9 y no 4.0: los 4.0 estaban puestos para que entrara la cabecera
-      # de cobertura hacia adelante. Con el giro de tres puntos la cabecera
-      # ya no necesita ese radio, asi que baja al que pide el operador. El
-      # vehiculo hace 2.02 m con el limite operativo de direccion (25 grados),
-      # o sea que 2.9 sigue dejando margen de correccion.
-      minimum_turning_radius: 2.9
+      # 4.0 y no 2.9: vuelve al radio que pide el operador. Los 2.9 habian
+      # bajado el piso cuando el giro de tres puntos dejo de necesitar que la
+      # cabecera entrara hacia adelante; con 4.0 las curvas son mas abiertas y
+      # queda mas margen contra los 2.02 m del limite operativo de direccion.
+      minimum_turning_radius: 4.0
       # 48 bins mantiene una sola clase angular (incremento de primitiva=1)
-      # con R=2.9m y resolucion=0.25m. Con 64, el incremento era 2 y Smac
+      # con R=4.0m y resolucion=0.25m. Con 64 y R=2.9m el incremento era 2 y Smac
       # separaba bins pares/impares, generando triangulos de hasta 1.36m.
       angle_quantization_bins: 48
       reverse_penalty: 2.8
@@ -120,8 +119,8 @@ smoother_server:
       path_upsampling_factor: 1
       keep_start_orientation: true
       keep_goal_orientation: true
-      # Igual que el planner: el smoother conserva el radio de 2.9m.
-      minimum_turning_radius: 2.9
+      # Igual que el planner: el smoother conserva el radio de 4.0m.
+      minimum_turning_radius: 4.0
       optimizer:
         max_iterations: 80
 
@@ -208,7 +207,7 @@ controller_server:
       approach_velocity_scaling_dist: 1.0
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 2.9
+      regulated_linear_scaling_min_radius: 4.0
       regulated_linear_scaling_min_speed: 1.0
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 0.75
