@@ -922,7 +922,20 @@ def generate_launch_description():
                         # la zona y el rodeo se comia filas de mas; con 3.0 m
                         # arranca 5.7 m antes y sigue con margen sobre el limite
                         # fisico de direccion.
-                        "coverage_nogo_lane_change_radius_m": 3.0,
+                        # El minimo operativo del vehiculo es 4.0 m: es lo que
+                        # traza el planner de Nav2 en el perfil real
+                        # (`minimum_turning_radius: 4.0`). No es un valor
+                        # conservador que se pueda aflojar desde aca.
+                        #
+                        # En sim el esquive usa 3.0 m porque la direccion llega
+                        # a 25 grados; en real llega a 18 y ese radio quedaria
+                        # fuera del minimo configurado. Aca el esquive lleva el
+                        # mismo radio que la cabecera.
+                        "coverage_nogo_lane_change_radius_m": 4.0,
+                        # Piso igual al preferido: en real el esquive NO se
+                        # achica. Si la S no entra, el plan se rechaza en vez de
+                        # pedirle al vehiculo un giro por debajo de su minimo.
+                        "coverage_nogo_lane_change_min_radius_m": 4.0,
                         "coverage_allow_headland_conflicts": True,
                         # Cobertura corrida: fila N -> fila N+1. Los giros
                         # cerrados se resuelven con la cabecera de tres puntos;

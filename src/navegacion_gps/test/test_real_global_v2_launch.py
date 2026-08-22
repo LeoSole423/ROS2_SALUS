@@ -1,3 +1,6 @@
+import pytest
+import re
+import math
 from pathlib import Path
 
 
@@ -58,6 +61,48 @@ def _assert_real_wifi_wrapper_parity(launch_contents: str) -> None:
     assert 'DeclareLaunchArgument("controller_serial_tx_hz", default_value="50.0")' in launch_contents
     assert 'source_path.exists()' in launch_contents
     assert "source_path.parent.exists()" not in launch_contents
+
+
+def test_el_esquive_no_go_respeta_el_minimo_de_giro_del_real() -> None:
+    """El esquive nunca puede pedir un giro por debajo del minimo del vehiculo.
+
+    El minimo operativo del perfil real es 4.0 m: es lo que traza el planner de
+    Nav2 (`minimum_turning_radius: 4.0` en los params reales). En simulacion el
+    esquive usa 3.0 m porque la direccion llega a 25 grados; en real llega a 18
+    y ese valor quedaria por debajo del minimo configurado.
+
+    Por eso en real el piso iguala al radio preferido: el esquive NO se achica.
+    Si la S no entra, se rechaza el plan en vez de pedir un giro imposible.
+    """
+    launch = (PACKAGE_ROOT / "launch" / "real_global_v2.launch.py").read_text(
+        encoding="utf-8"
+    )
+    params = (
+        PACKAGE_ROOT / "config" / "nav2_global_v2_real_rolling_params.yaml"
+    ).read_text(encoding="utf-8")
+
+    minimo_planner_m = min(
+        float(valor)
+        for valor in re.findall(r"minimum_turning_radius:\s*([0-9.]+)", params)
+    )
+    assert minimo_planner_m == pytest.approx(4.0, abs=0.01)
+
+    def valor(nombre: str) -> float:
+        encontrado = re.search(rf'"{nombre}": ([0-9.]+)', launch)
+        assert encontrado, f"{nombre} no esta en el perfil real"
+        return float(encontrado.group(1))
+
+    preferido_m = valor("coverage_nogo_lane_change_radius_m")
+    piso_m = valor("coverage_nogo_lane_change_min_radius_m")
+
+    assert preferido_m >= minimo_planner_m, (
+        f"el esquive usa {preferido_m:.2f} m, por debajo del minimo de giro "
+        f"del vehiculo ({minimo_planner_m:.2f} m)"
+    )
+    assert piso_m >= minimo_planner_m, (
+        f"el achique podria bajar a {piso_m:.2f} m, por debajo del minimo de "
+        f"giro del vehiculo ({minimo_planner_m:.2f} m)"
+    )
 
 
 def test_real_global_v2_launch_reuses_real_stack_with_global_navigation() -> None:
