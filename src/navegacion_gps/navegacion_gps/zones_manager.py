@@ -1,5 +1,7 @@
 import copy
 import json
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -577,8 +579,27 @@ class ZonesManagerNode(Node):
         except Exception as exc:
             return False, f"failed creating output dirs: {exc}"
 
-        if not cv2.imwrite(str(self.mask_image_file), image):
-            return False, f"failed writing image file: {self.mask_image_file}"
+        # map_server puede abrir el PGM durante el arranque al mismo tiempo que
+        # zones_manager regenera la mascara inicial. Escribir directo al destino
+        # deja durante unos milisegundos un PGM truncado y Magick falla con
+        # ``Unexpected end-of-file``. El temporal vive en el mismo directorio,
+        # asi que ``replace`` es atomico: el lector ve el archivo viejo completo
+        # o el nuevo completo, nunca uno a medio escribir.
+        image_fd, image_temp_name = tempfile.mkstemp(
+            prefix=f".{self.mask_image_file.stem}.",
+            suffix=self.mask_image_file.suffix,
+            dir=str(self.mask_image_file.parent),
+        )
+        os.close(image_fd)
+        image_temp = Path(image_temp_name)
+        try:
+            if not cv2.imwrite(str(image_temp), image):
+                return False, f"failed writing image file: {self.mask_image_file}"
+            image_temp.replace(self.mask_image_file)
+        except Exception as exc:
+            return False, f"failed writing image file: {exc}"
+        finally:
+            image_temp.unlink(missing_ok=True)
 
         try:
             image_ref = str(self.mask_image_file.relative_to(self.mask_yaml_file.parent))
@@ -591,11 +612,21 @@ class ZonesManagerNode(Node):
             origin_x=float(effective_origin_x),
             origin_y=float(effective_origin_y),
         )
+        yaml_fd, yaml_temp_name = tempfile.mkstemp(
+            prefix=f".{self.mask_yaml_file.stem}.",
+            suffix=self.mask_yaml_file.suffix,
+            dir=str(self.mask_yaml_file.parent),
+        )
+        os.close(yaml_fd)
+        yaml_temp = Path(yaml_temp_name)
         try:
-            with self.mask_yaml_file.open("w", encoding="utf-8") as handle:
+            with yaml_temp.open("w", encoding="utf-8") as handle:
                 yaml.safe_dump(yaml_data, handle, sort_keys=False)
+            yaml_temp.replace(self.mask_yaml_file)
         except Exception as exc:
             return False, f"failed writing yaml file: {exc}"
+        finally:
+            yaml_temp.unlink(missing_ok=True)
 
         return True, ""
 

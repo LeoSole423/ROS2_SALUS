@@ -1,13 +1,65 @@
+import math
 import threading
 import time
 from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped, Quaternion
 
 from navegacion_gps.nav_command_server import (
     NAV_FAILURE_HINT_SUMMARIES,
     NavCommandServerNode,
 )
+
+
+def _pose(x: float, y: float, yaw_deg: float) -> PoseStamped:
+    pose = PoseStamped()
+    pose.header.frame_id = "map"
+    pose.pose.position.x = float(x)
+    pose.pose.position.y = float(y)
+    yaw_rad = math.radians(yaw_deg)
+    pose.pose.orientation = Quaternion(
+        z=math.sin(0.5 * yaw_rad),
+        w=math.cos(0.5 * yaw_rad),
+    )
+    return pose
+
+
+def test_densify_exact_path_reconstructs_circle_without_new_mission_waypoints() -> None:
+    dense = NavCommandServerNode._densify_exact_path(
+        [_pose(1.0, 0.0, 90.0), _pose(0.0, 1.0, 180.0)],
+        spacing_m=0.20,
+    )
+
+    assert len(dense) > 2
+    assert dense[0].pose.position.x == 1.0
+    assert dense[-1].pose.position.y == 1.0
+    assert all(
+        math.isclose(
+            math.hypot(point.pose.position.x, point.pose.position.y),
+            1.0,
+            abs_tol=1.0e-6,
+        )
+        for point in dense
+    )
+    assert max(
+        math.dist(
+            (start.pose.position.x, start.pose.position.y),
+            (end.pose.position.x, end.pose.position.y),
+        )
+        for start, end in zip(dense, dense[1:])
+    ) <= 0.21
+
+
+def test_densify_exact_path_keeps_straight_lane_straight() -> None:
+    dense = NavCommandServerNode._densify_exact_path(
+        [_pose(0.0, 2.0, 0.0), _pose(3.0, 2.0, 0.0)],
+        spacing_m=0.35,
+    )
+
+    assert len(dense) > 2
+    assert all(math.isclose(point.pose.position.y, 2.0) for point in dense)
+    assert dense[-1].pose.position.x == 3.0
 
 
 def test_build_loop_segment_poses_for_many_items() -> None:

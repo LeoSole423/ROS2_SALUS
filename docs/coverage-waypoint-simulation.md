@@ -71,6 +71,48 @@ extremo se entrelazan igual, porque todo emparejamiento no cruzado contiene un
 par de pasadas adyacentes. Lo que sí elimina es el omega. Los cruces que quedan
 caen enteros en la cabecera, fuera del lote.
 
+### En simulación no se retrocede nunca
+
+`sim_global_v2` es **forward-only**: el vehículo simulado no puede dar marcha
+atrás, ni en la cabecera ni en una recuperación. La política no vive en un solo
+lugar, porque hay cuatro caminos distintos por los que puede aparecer una
+velocidad lineal negativa y hay que cerrarlos todos:
+
+| origen | cómo queda cerrado en `sim_global_v2` |
+| --- | --- |
+| cabecera de tres puntos de CAMPO | `coverage_f2c_allow_reverse: False` |
+| planner global | `motion_model_for_search: "DUBIN"`, que no tiene primitivas hacia atrás |
+| smoother y controlador | `reversing_enabled: false`, `allow_reversing: false` |
+| behaviors de Nav2 | `behavior_plugins` sin `backup`, y el BT sin `BackUp` |
+
+Con la reversa apagada, una cabecera más angosta que el diámetro de giro se
+resuelve con una **omega hacia adelante**: girar para el lado contrario al surco
+siguiente, cerrar el bucle fuera del lote y volver a entrar alineado. Es el
+enlace Dubins `CCC` y existe siempre que las poses estén a menos de `2R`, que es
+exactamente el caso en que la U simple no entra. Ningún punto del plan sale con
+`backup_m`, así que la respuesta del servicio no puede emitir la acción de
+waypoint `coverage_backup`.
+
+Cuándo hace falta construir la maniobra a mano —y cuándo no— lo decide un solo
+criterio, `_needs_headland_maneuver`: rumbos opuestos **y** poses a menos de
+`2R`. Los dos filtros importan. Desde que las zonas no-go se le entregan a
+Fields2Cover como agujeros del lote, una pasada llega partida en dos tramos, y
+esos tramos se encadenan con el **mismo** rumbo o separados a lo largo del
+surco. En los dos casos el enlace `CSC` hacia adelante existe y alcanza con las
+dos guías de siempre; construir un bucle ahí sería inventar una maniobra que
+nadie pidió.
+
+Si alguna vez no hubiera enlace hacia adelante, la planificación **falla con un
+error explícito** (`cobertura forward-only: ...`) en vez de degradarse en
+silencio a marcha atrás. Además hay barrera de admisión —una ruta con
+`coverage_backup` se rechaza al cargarla— y de ejecución —`_run_coverage_backup`
+se niega a correr—, para que tampoco entre una ruta armada por otro backend o
+recuperada de un caché viejo.
+
+El perfil real deja `coverage_f2c_allow_reverse: True` a propósito: ahí la
+marcha atrás está permitida y la cabecera de tres puntos es la maniobra más
+corta. La política de simulación no se hereda.
+
 ### El radio de giro es lo que fija el tamaño del omega
 
 Con las pasadas más angostas que el diámetro de giro, el largo del omega y la
@@ -416,6 +458,180 @@ consola separadas: `--send-route` puede iniciar sin la compuerta atómica de
 `start_coverage`. Para la garantía nominal descrita en este documento se debe
 usar **CAMPO**. El CLI conserva la política global y no representa la excepción
 de cabeceras exteriores que habilita el launch de simulación.
+
+### Los dos escenarios de zona no-go
+
+```bash
+./tools/test_coverage_nogo_inside.sh      # zona circular interna
+./tools/test_coverage_nogo_boundary.sh    # zona circular apoyada en el borde
+```
+
+Cada uno reinicia `sim_global_v2`, verifica los parámetros de la política
+forward-only, carga **una** zona circular por el mismo servicio que usa el
+editor, genera el plan por el WebSocket del Cockpit, arranca la misión y espera
+`route completed`. Cancelar la ruta nunca cuenta como aprobar: sólo se cancela
+cuando la prueba ya falló. Al terminar restaura el GeoJSON original y deja el
+reporte en `artifacts/coverage_nogo_<escenario>_<fecha>.json`.
+
+Opciones útiles: `--preview-only` valida todo el trazado sin mover el vehículo,
+`--no-restart` reutiliza la simulación que ya esté corriendo, `--no-rviz` evita
+abrir la ventana y `--keep-test-zone` deja la zona de prueba cargada.
+
+#### Dos fallas que aparecieron al ejecutar el recorrido completo
+
+El preview puede estar perfecto y la ejecución fallar igual. Las dos causas que
+aparecieron en el escenario interno grande (36 x 23 m, zona en `x=14, y=11.5`)
+se veían iguales desde afuera —`CONTROLLER_COLLISION` al salir de la primera
+curva, después `NO_VALID_PATH` y `route blocked: needs operator`— y son
+independientes.
+
+**1. La máscara keepout quedaba corrida respecto del GeoJSON.**
+`zones_manager` rasteriza la máscara en `map_frame`, y para eso convierte cada
+vértice con `/fromLL`. El frame en que ese servicio responde depende del perfil
+de localización: en los perfiles locales el EKF corre con `world_frame=odom` y
+en `global v2` con `world_frame=map`. `route_executor` y `nav_command_server` ya
+recibían `fromll_frame: "map"` en los dos perfiles global v2; `zones_manager`
+no, así que se quedaba con el default `odom` y aplicaba `odom -> map` una
+segunda vez sobre puntos que ya estaban en `map`.
+
+El resultado es que Nav2 esquiva una zona que no está donde dice el GeoJSON.
+Medido en una corrida bloqueada, con el vehículo detenido en la cabecera:
+
+| dato | valor |
+| --- | --- |
+| centro de la zona (GeoJSON, vía `/fromLL`) | `map (6.80, 22.61)` |
+| blob letal del costmap local | `map (-0.51, 33.79)`, radio `1.60 m`, 738 celdas |
+| desfasaje | **13.36 m** |
+| celdas letales a menos de 6 m del vehículo | 232, la más cercana a `1.59 m` |
+| retornos de `/scan` | **0** (el mundo `vacio.world` no tiene un solo modelo) |
+
+Con cero retornos de LiDAR y el mundo vacío, el único origen de costo letal era
+el filtro keepout, y caía justo sobre la cabecera donde el vehículo sale de la
+primera curva. La corrección es cablear el frame igual que en los otros dos
+nodos: `no_go_editor.launch.py` acepta `fromll_frame` (default `odom`, que es lo
+que necesitan los perfiles locales) y los dos perfiles global v2 le pasan
+`"map"`.
+
+**2. La curva y la fila siguiente viajaban como dos acciones separadas.**
+El bloque se cortaba en la key de reingreso, que es `coverage_transit` y por lo
+tanto se acepta con la tolerancia floja de metros y sin exigir rumbo. La acción
+se daba por cumplida con el vehículo hasta `3 m` afuera y sin alinear, y la fila
+arrancaba como un `FollowPath` nuevo desde esa pose torcida.
+
+Ahora una key floja no cierra bloque: es un punto interno del camino. El bloque
+sólo termina donde la pose importa —el apex de una curva o una key de trabajo—
+así que la salida de la curva y la fila siguiente van en un único `FollowPath`
+continuo:
+
+```
+apex preciso -> tangente floja -> alineación floja -> inicio de fila -> fila entera
+```
+
+No se agrega ningún waypoint: se dejan de cortar los que ya existían. El ancla
+del bloque también dejó de ser "el índice anterior" para pasar a ser "la key
+precisa anterior", de modo que el tramo despachado es el mismo con o sin
+waypoints dados por alcanzados antes de armarlo. En el escenario interno el
+empalme pasó de `12` bloques cortados en metas flojas a `0`: cada bloque termina
+en un apex (`1.25 m`) o en un extremo de fila (`0.35 m`).
+
+#### Sólo cambia de fila la pasada que la zona bloquea de verdad
+
+Una fila **tangente** a la exclusión inflada no tiene nada que esquivar, y sin
+embargo cambiaba de fila igual. La cuenta explica por qué. La exclusión que
+recibe el planificador es la zona inflada por
+
+```
+margen = 0.5 x ancho_de_trabajo + colchón_fijo = 0.5 x 4.0 + 0.5 = 2.5 m
+```
+
+porque la ruta es el centro del implemento. Con una zona de `1.5 m` de radio la
+envolvente queda en `4.0 m`, **exactamente** la separación entre pasadas. Las
+dos filas vecinas de la bloqueada caen entonces justo sobre el borde: despejan
+la zona por los `2.5 m` pedidos, ni un centímetro menos, pero el empate numérico
+las contaba como conflicto.
+
+Medido sobre la envolvente real (polígono de 32 lados inflado a `4.012 m`):
+
+| punto sobre la fila | ¿adentro? | profundidad | ¿conflicto? |
+| --- | --- | --- | --- |
+| `f=10` (vecina) | sí | `0.012 m` | **no**, es tangencia |
+| `f=18` (vecina) | sí | `0.012 m` | **no**, es tangencia |
+| `f=14` (la de la zona) | sí | `3.993 m` | sí |
+
+Ahora hace falta entrar más de `0.10 m` en la envolvente para justificar el
+cambio de fila. Y como Fields2Cover igual parte el swath apenas lo roza, las dos
+mitades de una fila tangente se **vuelven a unir** en una sola pasada recta:
+extenderlas por separado hasta el contorno dejaba dos pasadas superpuestas sobre
+la misma línea.
+
+En el escenario interno el plan pasó de `12` pasadas y `18` guías no-go a `10` y
+`6`: cambia de fila únicamente la pasada sobre la que está la zona, y las dos
+vecinas vuelven a recorrerse enteras y derechas.
+
+#### El esquive del no-go tiene su propio radio
+
+El cambio de fila con que se esquiva una zona no-go interna se dibujaba con el
+radio de cabecera (`coverage_planner_min_turning_radius_m`, `4.0 m`) más un 10 %
+de margen, o sea `4.4 m`. Con la separación entre pasadas en `4.0 m` eso da una
+S que arranca **7.4 m antes** de la zona: un rodeo mucho más ancho que el
+obstáculo que estaba esquivando, que se lleva puestas filas que no hacía falta
+tocar.
+
+Los dos radios no tienen por qué ser el mismo. La cabecera invierte el sentido
+de marcha, ocurre afuera del lote y conserva un radio conservador a propósito.
+El esquive es una S suave, sin inversión, adentro del cultivo y con el vehículo
+ya alineado con la fila. `coverage_nogo_lane_change_radius_m` (`3.0 m` por
+default) lo separa:
+
+| radio | θ | la S arranca antes de la zona |
+| --- | --- | --- |
+| `4.40 m` (cabecera x 1.10) | `56.9°` | `7.38 m` |
+| `3.50 m` | `64.6°` | `6.32 m` |
+| **`3.00 m` (default)** | `70.5°` | **`5.66 m`** |
+| `2.50 m` | `78.5°` | `4.90 m` |
+
+Medido sobre el plan del escenario interno, la S pasó de `8.39 m` a `6.93 m` de
+extensión sin cambiar nada más: `12` filas, salto máximo `1`, `0` rodeos
+circulares y `4.00 m` de despeje.
+
+El piso es geométrico y no se puede bajar: con un radio menor que la mitad de la
+separación entre pasadas la S no llega a cerrar el cambio de una fila, así que
+el valor se recorta a `separación / 2 + 0.05`. Con `0.0` se vuelve al
+comportamiento anterior (radio de cabecera x 1.10). Bajarlo de más acerca el
+esquive al límite físico de dirección: el límite operativo de `25°` da un radio
+efectivo de `2.02 m`, y el default de `3.0 m` deja margen de corrección sobre
+eso.
+
+#### Cómo se detecta la marcha atrás
+
+Se miran tres fuentes, con **dos criterios distintos**, porque no miden lo mismo:
+
+| fuente | qué es | criterio |
+| --- | --- | --- |
+| `/cmd_vel`, `/cmd_vel_final` | lo que se le **ordena** al vehículo | falla al primer valor `< -0.02 m/s` |
+| `/controller/drive_telemetry` | lo que el drive **reporta** | falla al primer `reverse_requested` |
+| `/odometry/global` | lo que el EKF **estima** | falla si el retroceso integrado de una racha supera `0.25 m` |
+
+La tercera fila necesita explicación, porque el umbral instantáneo no sirve ahí.
+Medido en una corrida completa de `inside` sin una sola marcha atrás —
+`/cmd_vel_final` mínimo `0.000 m/s` y `reverse_requested` siempre `false`— el
+twist de `/odometry/global` igual baja hasta `-0.074 m/s` en rachas de décimas
+de segundo: es ruido del EKF con GPS alrededor del reposo y en los giros lentos.
+Aplicarle el umbral instantáneo marcaría reversa en cada frenada. Lo que sí
+distingue ruido de maniobra es la distancia: una racha de ruido de `0.3 s` a
+`0.05 m/s` son `15 mm`, mientras que la marcha atrás más corta que la cobertura
+podría generar —la cabecera de tres puntos— son metros. Con `0.25 m` de
+tolerancia no entra ninguna maniobra real y no se cuela ninguna racha de ruido.
+
+En simulación, `sim_drive_telemetry` publica `speed_mps_measured` como el
+**módulo** de la velocidad, así que esa cifra nunca es negativa; el dato con
+signo de esa fuente es `reverse_requested`, calculado sobre `/odom_raw`, que es
+la velocidad real del vehículo simulado.
+
+Además de la velocidad, cada corrida falla si el plan trae acciones
+`coverage_backup` (se revisan `route_action_jsons` antes de arrancar y
+`mission_action_jsons` durante todo el recorrido), si el plan salta de la fila
+`N` a la `N+2`, o si algún tramo de la ruta ejecutable entra en la zona.
 
 ## Límites de la garantía
 

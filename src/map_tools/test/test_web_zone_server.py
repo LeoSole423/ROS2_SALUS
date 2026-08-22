@@ -30,6 +30,7 @@ def _valid_coverage_service_response(**overrides):
         "route_lons": [-64.0, -63.9998],
         "route_yaws_deg": [0.0, 0.0],
         "route_key_flags": [True, True],
+        "route_phases": ["row", "row"],
         "row_count": 1,
         "lane_spacing_m": 0.0,
         "row_visit_order": [0],
@@ -169,6 +170,7 @@ def test_generate_coverage_plan_maps_typed_arrays_to_preview_and_route_request()
             route_lons=[-64.0, -64.0],
             route_yaws_deg=[90.0, 90.0],
             route_key_flags=[True, True],
+            route_phases=["row", "row"],
             row_count=1,
             lane_spacing_m=0.0,
             row_visit_order=[0],
@@ -229,6 +231,8 @@ def test_generate_coverage_plan_maps_typed_arrays_to_preview_and_route_request()
                 **waypoint,
                 "key": True,
                 "guide": False,
+                "phase": "row",
+                "action_json": "",
                 "role": "coverage",
             }
             for waypoint in payload["key_waypoints"]
@@ -263,6 +267,7 @@ def test_generate_coverage_plan_uses_one_headland_guide_only_when_enabled():
         route_lons=[-64.0, -63.9998, -63.9997, -63.9998, -64.0],
         route_yaws_deg=[0.0, 0.0, 90.0, 180.0, 180.0],
         route_key_flags=[True, True, False, True, True],
+        route_phases=["row", "row", "turn", "row", "row"],
         row_count=2,
         lane_spacing_m=1.5,
         row_visit_order=[0, 1],
@@ -294,6 +299,190 @@ def test_generate_coverage_plan_uses_one_headland_guide_only_when_enabled():
         True,
         True,
     ]
+
+
+def test_generate_coverage_plan_keeps_nogo_transition_block_with_guides_off():
+    node = object.__new__(WebZoneServerNode)
+    node._coverage_plan_client = object()
+    node.coverage_plan_timeout_s = 2.0
+    node.coverage_use_headland_guides = False
+    node._call_service = lambda *_args: _valid_coverage_service_response(
+        sampled_lats=[-31.0] * 6,
+        sampled_lons=[
+            -64.0,
+            -63.99995,
+            -63.9999,
+            -63.9998,
+            -63.99975,
+            -63.9997,
+        ],
+        sampled_yaws_deg=[0.0, 15.0, 30.0, -30.0, -15.0, 0.0],
+        sampled_phases=[
+            "row",
+            "nogo_transition",
+            "nogo_transition",
+            "nogo_transition",
+            "nogo_transition",
+            "row",
+        ],
+        sampled_row_indices=[0] * 6,
+        sampled_key_flags=[True, False, False, True, False, True],
+        key_lats=[-31.0, -31.0, -31.0],
+        key_lons=[-64.0, -63.9998, -63.9997],
+        key_yaws_deg=[0.0, -30.0, 0.0],
+        route_lats=[-31.0] * 6,
+        route_lons=[
+            -64.0,
+            -63.99995,
+            -63.9999,
+            -63.9998,
+            -63.99975,
+            -63.9997,
+        ],
+        route_yaws_deg=[0.0, 15.0, 30.0, -30.0, -15.0, 0.0],
+        route_key_flags=[True, False, False, True, False, True],
+        route_phases=[
+            "row",
+            "nogo_transition",
+            "nogo_transition",
+            "nogo_transition",
+            "nogo_transition",
+            "row",
+        ],
+        nogo_polygon_count=1,
+        nogo_dropped_count=2,
+        nogo_detour_count=1,
+        topology_audited=False,
+        topology_scope="fields2cover",
+    )
+
+    ok, error, payload = node.generate_coverage_plan(_coverage_parameters())
+
+    assert ok is True
+    assert error == ""
+    assert payload["headland_guidance_enabled"] is False
+    waypoints = payload["route_request"]["waypoints"]
+    assert [waypoint["key"] for waypoint in waypoints] == [
+        True,
+        False,
+        False,
+        True,
+        False,
+        True,
+    ]
+    assert [waypoint["role"] for waypoint in waypoints] == [
+        "coverage",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage_curve",
+        "coverage_transit",
+        "coverage_transit",
+    ]
+
+
+@pytest.mark.parametrize("required_phase", ["forward_turn", "nogo_lane_change"])
+def test_generate_coverage_plan_keeps_required_guides_off(required_phase):
+    node = object.__new__(WebZoneServerNode)
+    node._coverage_plan_client = object()
+    node.coverage_plan_timeout_s = 2.0
+    node.coverage_use_headland_guides = False
+    node._call_service = lambda *_args: _valid_coverage_service_response(
+        sampled_lats=[-31.0] * 6,
+        sampled_lons=[
+            -64.0,
+            -63.99995,
+            -63.9999,
+            -63.9998,
+            -63.99975,
+            -63.9997,
+        ],
+        sampled_yaws_deg=[0.0, 45.0, 90.0, -90.0, -135.0, 180.0],
+        sampled_phases=[
+            "row",
+            required_phase,
+            required_phase,
+            required_phase,
+            required_phase,
+            "row",
+        ],
+        sampled_row_indices=[0] * 6,
+        sampled_key_flags=[
+            True,
+            False,
+            False,
+            required_phase == "forward_turn",
+            False,
+            True,
+        ],
+        key_lats=(
+            [-31.0, -31.0, -31.0]
+            if required_phase == "forward_turn"
+            else [-31.0, -31.0]
+        ),
+        key_lons=(
+            [-64.0, -63.9998, -63.9997]
+            if required_phase == "forward_turn"
+            else [-64.0, -63.9997]
+        ),
+        key_yaws_deg=(
+            [0.0, -90.0, 180.0]
+            if required_phase == "forward_turn"
+            else [0.0, 180.0]
+        ),
+        route_lats=[-31.0] * 6,
+        route_lons=[
+            -64.0,
+            -63.99995,
+            -63.9999,
+            -63.9998,
+            -63.99975,
+            -63.9997,
+        ],
+        route_yaws_deg=[0.0, 45.0, 90.0, -90.0, -135.0, 180.0],
+        route_key_flags=[
+            True,
+            False,
+            False,
+            required_phase == "forward_turn",
+            False,
+            True,
+        ],
+        route_phases=[
+            "row",
+            required_phase,
+            required_phase,
+            required_phase,
+            required_phase,
+            "row",
+        ],
+        topology_audited=False,
+        topology_scope="fields2cover",
+    )
+
+    ok, error, payload = node.generate_coverage_plan(_coverage_parameters())
+
+    assert ok is True
+    assert error == ""
+    waypoints = payload["route_request"]["waypoints"]
+    assert [waypoint["phase"] for waypoint in waypoints] == [
+        "row",
+        required_phase,
+        required_phase,
+        required_phase,
+        required_phase,
+        "row",
+    ]
+    if required_phase == "nogo_lane_change":
+        assert {waypoint["role"] for waypoint in waypoints} == {"coverage"}
+    else:
+        assert [waypoint["role"] for waypoint in waypoints] == [
+            "coverage",
+            "coverage_transit",
+            "coverage_transit",
+            "coverage_curve",
+            "coverage_transit",
+            "coverage_transit",
+        ]
 
 
 @pytest.mark.parametrize(

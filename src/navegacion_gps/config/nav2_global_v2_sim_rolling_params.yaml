@@ -141,11 +141,16 @@ behavior_server:
     transform_tolerance: 0.5
     simulate_ahead_time: 5.0
     expansion_factor: 1.0
-    behavior_plugins: ["backup", "drive_on_heading", "wait"]
-    backup:
-      plugin: "nav2_behaviors/BackUp"
-      simulate_ahead_time: 7.0
-      stall_timeout: 3.0
+    # Politica forward-only de la simulacion: el vehiculo simulado no
+    # retrocede, asi que BackUp no se carga. Antes estaba disponible para la
+    # cabecera de tres puntos de Campo (coverage_backup) y para la recuperacion
+    # de colision de nav_command_server; la primera ya no existe en sim
+    # —coverage_f2c_allow_reverse=false la reemplaza por una omega hacia
+    # adelante— y la segunda vive detras de collision_backup_recovery_enabled,
+    # que este perfil deja en false. Sacar el plugin convierte la politica en
+    # estructural: aunque algo pidiera la accion, el server no la expone. El
+    # perfil real conserva BackUp.
+    behavior_plugins: ["drive_on_heading", "wait"]
     drive_on_heading:
       simulate_ahead_time: 2.0
       plugin: "nav2_behaviors/DriveOnHeading"

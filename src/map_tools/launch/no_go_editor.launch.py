@@ -13,6 +13,7 @@ def generate_launch_description():
     gps_status_topic = LaunchConfiguration("gps_status_topic")
     odom_topic = LaunchConfiguration("odom_topic")
     map_frame = LaunchConfiguration("map_frame")
+    fromll_frame = LaunchConfiguration("fromll_frame")
     launch_zones_manager = LaunchConfiguration("launch_zones_manager")
     launch_nav_command_server = LaunchConfiguration("launch_nav_command_server")
     launch_nav_snapshot_server = LaunchConfiguration("launch_nav_snapshot_server")
@@ -92,6 +93,16 @@ def generate_launch_description():
             DeclareLaunchArgument("gps_status_topic", default_value="/gps/rtk_status"),
             DeclareLaunchArgument("odom_topic", default_value="/odometry/local"),
             DeclareLaunchArgument("map_frame", default_value="map"),
+            DeclareLaunchArgument(
+                # Marco en el que /fromLL devuelve los puntos, que depende del
+                # world_frame del perfil de localizacion: `odom` en los perfiles
+                # locales y `map` en global v2. zones_manager rasteriza la
+                # mascara keepout en map_frame, asi que si este valor no
+                # coincide con el perfil aplica una transformada de mas y deja
+                # la zona no-go corrida respecto de donde esta el GeoJSON.
+                "fromll_frame",
+                default_value="odom",
+            ),
             DeclareLaunchArgument("launch_zones_manager", default_value="true"),
             DeclareLaunchArgument("launch_nav_command_server", default_value="true"),
             DeclareLaunchArgument("launch_nav_snapshot_server", default_value="true"),
@@ -254,6 +265,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "map_frame": map_frame,
+                        "fromll_frame": fromll_frame,
                         "set_geojson_service": zones_set_geojson_service,
                         "get_state_service": zones_get_state_service,
                         "reload_from_disk_service": zones_reload_service,

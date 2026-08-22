@@ -915,16 +915,20 @@ def generate_launch_description():
                         # Smac de este perfil: es el piso que el plan de
                         # cobertura no puede pedir mas chico.
                         "coverage_planner_min_turning_radius_m": 4.0,
+                        # El esquive de una zona no-go interna no es una
+                        # cabecera: no invierte marcha y ocurre adentro del
+                        # cultivo, asi que no necesita los 4.0 m conservadores.
+                        # Con el radio de cabecera la S arrancaba 7.4 m antes de
+                        # la zona y el rodeo se comia filas de mas; con 3.0 m
+                        # arranca 5.7 m antes y sigue con margen sobre el limite
+                        # fisico de direccion.
+                        "coverage_nogo_lane_change_radius_m": 3.0,
                         "coverage_allow_headland_conflicts": True,
-                        # El planificador elige el orden de pasadas. Con
-                        # radio 4.0 m y pasadas de poco mas de un metro, dos
-                        # pasadas vecinas no se unen con una U: el enlace
-                        # mas corto es un omega que sale del lote y vuelve.
-                        # Lo unico que lo evita es que las pasadas vecinas
-                        # en el tiempo esten mas separadas, y eso hace el
-                        # salteo. El costo es cubrir el lote en bloques
-                        # intercalados en vez de corrido.
-                        "coverage_allow_row_skipping": True,
+                        # Cobertura corrida: fila N -> fila N+1. Los giros
+                        # cerrados se resuelven con la cabecera de tres puntos;
+                        # una zona no-go interna tampoco puede provocar saltos.
+                        "coverage_allow_row_skipping": False,
+                        "coverage_nogo_enabled": True,
                         # CAMPO planifica con Fields2Cover. Es lo unico que
                         # entiende el poligono que dibuja el cockpit: el
                         # planificador propio solo sabe de lotes rectangulares
@@ -932,6 +936,13 @@ def generate_launch_description():
                         # distinta de la dibujada. Ruta automatica, patrulla y
                         # goals no pasan por aca.
                         "coverage_planner": _COVERAGE_PLANNER,
+                        "coverage_f2c_route_type": "BOUSTROPHEDON",
+                        # El perfil real SI puede retroceder, y la cabecera de
+                        # tres puntos es la maniobra mas corta cuando las
+                        # pasadas quedan mas juntas que el diametro de giro. Se
+                        # deja explicito para que la politica forward-only de
+                        # la simulacion no se filtre al campo sin querer.
+                        "coverage_f2c_allow_reverse": True,
                         "coverage_f2c_robot_width_m": 1.0,
                         # 0 grados: pasadas de este a oeste, que es como se
                         # leen en el mapa. Sin esto Fields2Cover elige la
@@ -1054,6 +1065,12 @@ def generate_launch_description():
                     "gps_topic": "/global_position/raw/fix",
                     "odom_topic": "/odometry/global",
                     "map_frame": "map",
+                    # global v2 corre el EKF de mapa con world_frame=map, asi
+                    # que /fromLL ya devuelve puntos en map. Sin esto,
+                    # zones_manager les aplicaria ademas odom->map y la mascara
+                    # keepout quedaria corrida varios metros respecto del
+                    # GeoJSON, con Nav2 esquivando una zona que no esta ahi.
+                    "fromll_frame": "map",
                     "launch_nav_command_server": "false",
                     "launch_route_executor": "false",
                     "patrol_set_service": "/route_executor/set_patrol_ll",

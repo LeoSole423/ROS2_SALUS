@@ -273,7 +273,11 @@ def generate_launch_description():
                 "nav_trace_output_root",
                 default_value="/ros2_ws/artifacts/nav_traces",
             ),
-            DeclareLaunchArgument("use_keepout", default_value="False"),
+            # Las zonas no-go del Cockpit son dinamicas: zones_manager
+            # regenera la mascara y llama al load_map de este filtro. Dejarlo
+            # apagado hacia que el plan evitara la zona pero que Nav2 cortara
+            # camino por adentro al conducir.
+            DeclareLaunchArgument("use_keepout", default_value="True"),
             DeclareLaunchArgument("vx_deadband_mps", default_value="0.01"),
             DeclareLaunchArgument("vx_min_effective_mps", default_value="0.5"),
             DeclareLaunchArgument("invert_steer_from_cmd_vel", default_value="True"),
@@ -740,33 +744,20 @@ def generate_launch_description():
                         # Smac de este perfil: es el piso que el plan de
                         # cobertura no puede pedir mas chico.
                         "coverage_planner_min_turning_radius_m": 4.0,
+                        # El esquive de una zona no-go interna no es una
+                        # cabecera: no invierte marcha y ocurre adentro del
+                        # cultivo, asi que no necesita los 4.0 m conservadores.
+                        # Con el radio de cabecera la S arrancaba 7.4 m antes de
+                        # la zona y el rodeo se comia filas de mas; con 3.0 m
+                        # arranca 5.7 m antes y sigue con margen sobre el limite
+                        # fisico de direccion.
+                        "coverage_nogo_lane_change_radius_m": 3.0,
                         "coverage_allow_headland_conflicts": True,
-                        # Se deja que el planificador elija el orden de pasadas.
-                        #
-                        # Medido con radio 2.9 m y pasadas a 1.65 m: dos pasadas
-                        # vecinas no se pueden unir con una U: 1.65 m es menos
-                        # que el radio. El enlace mas corto que existe —el
-                        # optimo Dubins sobre las 6 familias, saliendo libre del
-                        # lote— es un omega de 19.24 m. No hay maniobra exterior
-                        # que lo mejore; lo unico que lo mejora es que las
-                        # pasadas vecinas en el tiempo esten mas separadas.
-                        #
-                        # Medido sobre un lote de 40 m (24 pasadas), tambien a
-                        # 2.9 m de radio:
-                        #
-                        #   adyacente:        23 omegas, 442.6 m de giros,
-                        #                     1354.6 m totales, cabecera 7.35 m
-                        #   alternada skip=4:  0 omegas, 302.2 m de giros,
-                        #                     1214.2 m totales, cabecera 2.90 m
-                        #
-                        # El buscador elige solo la segunda. El costo es que el
-                        # lote queda cubierto en bloques intercalados en vez de
-                        # corrido.
-                        #
-                        # Con el radio en 4.0 m la conclusion no cambia (1.65 m
-                        # sigue muy por debajo del diametro de giro), pero los
-                        # omegas y la cabecera crecen con el radio.
-                        "coverage_allow_row_skipping": True,
+                        # Cobertura corrida: fila N -> fila N+1. Los giros
+                        # cerrados se resuelven con la cabecera de tres puntos;
+                        # una zona no-go interna tampoco puede provocar saltos.
+                        "coverage_allow_row_skipping": False,
+                        "coverage_nogo_enabled": True,
                         # CAMPO planifica con Fields2Cover. Es lo unico que
                         # entiende el poligono que dibuja el cockpit: el
                         # planificador propio solo sabe de lotes rectangulares y
@@ -775,6 +766,19 @@ def generate_launch_description():
                         # de la dibujada. Ruta automatica, patrulla y goals no
                         # pasan por aca.
                         "coverage_planner": _COVERAGE_PLANNER,
+                        "coverage_f2c_route_type": "BOUSTROPHEDON",
+                        # Politica forward-only de la simulacion. El vehiculo
+                        # simulado no retrocede: sin esto, dos pasadas vecinas
+                        # mas juntas que el diametro de giro terminaban en la
+                        # cabecera de tres puntos, que retrocede en el pivote y
+                        # emite una accion coverage_backup. Con la reversa
+                        # apagada ese enlace se arma como una omega hacia
+                        # adelante que sale del lote por la cabecera y vuelve a
+                        # entrar. Nav2 acompana: planner Smac en DUBIN,
+                        # smoother con reversing_enabled=false, RPP con
+                        # allow_reversing=false y arbol de comportamiento sin
+                        # BackUp. El perfil real deja esto en True a proposito.
+                        "coverage_f2c_allow_reverse": False,
                         "coverage_f2c_robot_width_m": 1.0,
                         # 0 grados: pasadas de este a oeste, que es como se leen
                         # en el mapa. Sin esto Fields2Cover elige la orientacion
@@ -969,6 +973,12 @@ def generate_launch_description():
                     "gps_topic": "/gps/fix",
                     "odom_topic": "/odometry/global",
                     "map_frame": "map",
+                    # global v2 corre el EKF de mapa con world_frame=map, asi
+                    # que /fromLL ya devuelve puntos en map. Sin esto,
+                    # zones_manager les aplicaria ademas odom->map y la mascara
+                    # keepout quedaria corrida varios metros respecto del
+                    # GeoJSON, con Nav2 esquivando una zona que no esta ahi.
+                    "fromll_frame": "map",
                     "launch_nav_command_server": "false",
                     "launch_route_executor": "false",
                     "patrol_set_service": "/route_executor/set_patrol_ll",

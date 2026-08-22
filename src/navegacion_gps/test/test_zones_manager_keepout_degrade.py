@@ -1,10 +1,49 @@
+import cv2
 import numpy as np
+import yaml
 
 from navegacion_gps.zones_manager import (
+    ZonesManagerNode,
     build_scale_mask_yaml_data,
     compose_keepout_cost_mask,
     cost_mask_to_scale_image,
 )
+
+
+def test_mask_files_are_published_from_same_directory_temporaries(
+    tmp_path, monkeypatch
+):
+    node = object.__new__(ZonesManagerNode)
+    node.mask_image_file = tmp_path / "keepout_mask.pgm"
+    node.mask_yaml_file = tmp_path / "keepout_mask.yaml"
+    node.mask_resolution = 0.1
+    node.mask_origin_x = -150.0
+    node.mask_origin_y = -150.0
+
+    real_imwrite = cv2.imwrite
+    written_paths = []
+
+    def recording_imwrite(path, image):
+        written_paths.append(path)
+        assert path != str(node.mask_image_file)
+        return real_imwrite(path, image)
+
+    monkeypatch.setattr(cv2, "imwrite", recording_imwrite)
+    image = np.array([[255, 128], [0, 255]], dtype=np.uint8)
+
+    ok, error = node._write_mask_files(image)
+
+    assert ok is True
+    assert error == ""
+    assert written_paths
+    assert np.array_equal(cv2.imread(str(node.mask_image_file), 0), image)
+    assert yaml.safe_load(node.mask_yaml_file.read_text(encoding="utf-8"))[
+        "image"
+    ] == "keepout_mask.pgm"
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "keepout_mask.pgm",
+        "keepout_mask.yaml",
+    ]
 
 
 def test_compose_keepout_cost_mask_disabled_matches_binary_baseline():

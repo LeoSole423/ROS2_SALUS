@@ -30,7 +30,7 @@ fi
 prepare_x11_for_docker_rviz
 docker exec "${CONTAINER}" bash -lc "
   mkdir -p /ros2_ws/logs
-  nohup bash -lc 'export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION_VALUE}; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch ${SIM_WIFI_LAUNCH} gps_profile:=f9p_rtk launch_web_app:=True use_keepout:=False world:=${SLOPE_WORLD} world_name:=slope_lidar ${EXTRA_ARGS}' \
+  nohup bash -lc 'export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION_VALUE}; export ROS_DOMAIN_ID=0; export ROS_LOCALHOST_ONLY=0; export CYCLONEDDS_URI=${CYCLONEDDS_WIFI_URI}; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch ${SIM_WIFI_LAUNCH} gps_profile:=f9p_rtk launch_web_app:=True use_keepout:=True world:=${SLOPE_WORLD} world_name:=slope_lidar ${EXTRA_ARGS}' \
     </dev/null >/ros2_ws/logs/sim_global_v2_wifi_slope.log 2>&1 &
 "
 

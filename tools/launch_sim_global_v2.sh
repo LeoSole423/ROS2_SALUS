@@ -20,7 +20,7 @@ ros2_prepare_gui
 
 ros2_docker_exec "${CONTAINER}" bash -lc "
   mkdir -p /ros2_ws/logs
-  nohup bash -lc 'export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION_VALUE}; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps sim_global_v2.launch.py gps_profile:=f9p_rtk launch_web_app:=True use_keepout:=False' \
+  nohup bash -lc 'export DISPLAY=${DISPLAY_VALUE}; export QT_X11_NO_MITSHM=1; export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION_VALUE}; source /opt/ros/humble/setup.bash; source /ros2_ws/install/setup.bash; ros2 launch navegacion_gps sim_global_v2.launch.py gps_profile:=f9p_rtk launch_web_app:=True use_keepout:=True' \
     </dev/null >/ros2_ws/logs/sim_global_v2.log 2>&1 &
 "
 

@@ -24,6 +24,7 @@ from navegacion_gps.route_executor import (
     PatrolMissionProfile,
     RouteExecutorNode,
     WAYPOINT_ROLE_COVERAGE,
+    WAYPOINT_ROLE_COVERAGE_CURVE,
     WAYPOINT_ROLE_COVERAGE_TRANSIT,
     WAYPOINT_ROLE_HOME,
     WAYPOINT_ROLE_NORMAL,
@@ -36,6 +37,10 @@ from navegacion_gps.route_executor import (
     _split_home_waypoint,
     _yaw_to_quaternion,
     build_chunk_waypoints,
+    _coverage_polygon_dimensions_m,
+    block_target_already_passed,
+    coverage_auto_waypoint_spacing_m,
+    coverage_flexible_chunk_pass_indices,
     coverage_full_row_leg_spacing_m,
     drop_duplicate_loop_closure,
     expand_route_waypoints,
@@ -48,6 +53,7 @@ from navegacion_gps.route_executor import (
     resolve_blocked_retry_start,
     route_progress,
     should_follow_exact_coverage_chunk,
+    should_follow_exact_precision_anchor_chunk,
     skip_passed_synthetic_chunk_start,
     skip_reached_chunk_start,
     should_suppress_chunk_success_brake,
@@ -122,6 +128,7 @@ def test_generate_coverage_plan_returns_preview_and_key_waypoints() -> None:
     assert result.route_lats == pytest.approx(result.key_lats)
     assert result.route_lons == pytest.approx(result.key_lons)
     assert list(result.route_key_flags) == [True, True]
+    assert list(result.route_phases) == ["row", "row"]
     assert result.omega_turn_count == 0
     assert result.topology_conflict_count == 0
     assert result.topology_safe is True
@@ -240,6 +247,7 @@ def test_generate_coverage_plan_allows_omega_turns_outside_simulated_field() -> 
     assert len(result.route_lats) == (2 * result.row_count) + (result.row_count - 1)
     assert sum(bool(flag) for flag in result.route_key_flags) == 2 * result.row_count
     assert sum(not bool(flag) for flag in result.route_key_flags) == result.row_count - 1
+    assert len(result.route_phases) == len(result.route_lats)
     assert result.route_key_flags[0] is True
     assert result.route_key_flags[-1] is True
 
@@ -857,11 +865,20 @@ def test_waypoint_roles_accept_single_home():
 
 def test_waypoint_roles_accept_coverage_and_headland_transit():
     roles, err = _parse_waypoint_roles(
-        [WAYPOINT_ROLE_COVERAGE, WAYPOINT_ROLE_COVERAGE_TRANSIT], 2
+        [
+            WAYPOINT_ROLE_COVERAGE,
+            WAYPOINT_ROLE_COVERAGE_CURVE,
+            WAYPOINT_ROLE_COVERAGE_TRANSIT,
+        ],
+        3,
     )
 
     assert err == ""
-    assert roles == [WAYPOINT_ROLE_COVERAGE, WAYPOINT_ROLE_COVERAGE_TRANSIT]
+    assert roles == [
+        WAYPOINT_ROLE_COVERAGE,
+        WAYPOINT_ROLE_COVERAGE_CURVE,
+        WAYPOINT_ROLE_COVERAGE_TRANSIT,
+    ]
 
 
 def test_split_home_waypoint_excludes_home_from_patrol_route():
@@ -1000,6 +1017,190 @@ def test_only_complete_coverage_row_uses_exact_path_follower():
         True, ["coverage", "coverage_transit", "coverage"]
     )
     assert not should_follow_exact_coverage_chunk(False, ["coverage", "coverage"])
+
+
+def test_external_curve_is_exact_only_until_its_precise_midpoint():
+    assert should_follow_exact_precision_anchor_chunk(
+        True,
+        ["coverage", "coverage_transit", "coverage_curve"],
+    )
+    assert should_follow_exact_precision_anchor_chunk(
+        True,
+        ["coverage_curve", "coverage_transit", "coverage_transit"],
+    )
+    assert not should_follow_exact_precision_anchor_chunk(
+        True,
+        ["coverage", "coverage_transit", "coverage_transit"],
+    )
+
+
+def test_flexible_curve_keys_never_close_a_coverage_block():
+    # Empalme real de la prueba interna: fila, tangente, apex, tangente,
+    # alineacion, reingreso flojo (6) y fila siguiente.
+    roles = [
+        "coverage",
+        "coverage",
+        "coverage_transit",
+        "coverage_curve",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage",
+    ]
+    key_flags = [True, True, False, True, False, False, True, True]
+
+    assert coverage_flexible_chunk_pass_indices(roles, key_flags) == {6}
+    # El apex sigue siendo un corte preciso y las guias no son keys.
+    assert 3 not in coverage_flexible_chunk_pass_indices(roles, key_flags)
+
+
+def test_curve_exit_and_next_row_travel_in_one_chunk():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000 + 0.00001 * index, yaw_deg=0.0)
+        for index in range(8)
+    ]
+    roles = [
+        "coverage",
+        "coverage",
+        "coverage_transit",
+        "coverage_curve",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage",
+    ]
+    key_flags = [True, True, False, True, False, False, True, True]
+    key_indices = {index for index, flag in enumerate(key_flags) if flag}
+    pass_indices = coverage_flexible_chunk_pass_indices(roles, key_flags)
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=4,
+        loop=False,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=32,
+        key_stop_indices=key_indices,
+        key_pass_indices=pass_indices,
+    )
+
+    # El bloque cruza el reingreso flojo y cierra recien en el extremo exacto
+    # de la fila siguiente: un unico FollowPath desde el apex.
+    assert end_index == 7
+    assert len(chunk) == 4
+    assert should_follow_exact_precision_anchor_chunk(
+        True,
+        [roles[3]] + roles[4:8],
+    )
+
+
+def test_apex_still_closes_its_own_chunk():
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0000 + 0.00001 * index, yaw_deg=0.0)
+        for index in range(8)
+    ]
+    roles = [
+        "coverage",
+        "coverage",
+        "coverage_transit",
+        "coverage_curve",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage_transit",
+        "coverage",
+    ]
+    key_flags = [True, True, False, True, False, False, True, True]
+    key_indices = {index for index, flag in enumerate(key_flags) if flag}
+
+    chunk, end_index = build_chunk_waypoints(
+        route,
+        start_index=2,
+        loop=False,
+        chunk_span_m=200.0,
+        chunk_max_waypoints=32,
+        key_stop_indices=key_indices,
+        key_pass_indices=coverage_flexible_chunk_pass_indices(roles, key_flags),
+    )
+
+    assert end_index == 3
+    assert len(chunk) == 2
+
+
+def _grados_por_metro_lon(lat: float) -> float:
+    return 1.0 / (111_320.0 * math.cos(math.radians(lat)))
+
+
+def _lote_girado(largo_m: float, ancho_m: float, yaw_deg: float):
+    lat0, lon0 = -31.4858, -64.2410
+    metros_lat = 111_320.0
+    metros_lon = metros_lat * math.cos(math.radians(lat0))
+    giro = math.radians(yaw_deg)
+    anillo = []
+    for x, y in ((0.0, 0.0), (largo_m, 0.0), (largo_m, ancho_m), (0.0, ancho_m)):
+        este = (x * math.cos(giro)) - (y * math.sin(giro))
+        norte = (x * math.sin(giro)) + (y * math.cos(giro))
+        anillo.append((lat0 + (norte / metros_lat), lon0 + (este / metros_lon)))
+    return anillo
+
+
+def test_las_dimensiones_del_lote_no_dependen_de_como_este_girado():
+    # El bounding box lat/lon hacia que el mismo lote midiera 828 m2 apuntando
+    # al este y 1740 m2 girado 45 grados. Como de ahi sale el espaciado
+    # automatico, girar el campo cambiaba la densidad de muestreo sin que
+    # cambiara el trabajo: 2.88 m contra el tope de 4.00 m.
+    medidas = [
+        _coverage_polygon_dimensions_m(_lote_girado(36.0, 23.0, yaw), 36.0, 23.0)
+        for yaw in (0.0, 30.0, 45.0, 60.0, 87.1, 90.0)
+    ]
+    for largo, ancho in medidas:
+        assert largo == pytest.approx(36.0, abs=0.05)
+        assert ancho == pytest.approx(23.0, abs=0.05)
+
+    # Y el espaciado documentado se cumple aunque el lote no este alineado.
+    largo, ancho = _coverage_polygon_dimensions_m(
+        _lote_girado(20.0, 15.0, 37.0), 20.0, 15.0
+    )
+    assert coverage_auto_waypoint_spacing_m(largo, ancho) == pytest.approx(1.73, abs=0.01)
+
+
+def test_bloque_ya_cruzado_se_detecta_para_no_mandar_un_path_vacio():
+    # Tramo de 10 m hacia el este; el vehiculo quedo 2 m mas alla del cierre.
+    paso = _grados_por_metro_lon(0.0)
+    route = [
+        RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
+        RouteWaypoint(lat=0.0, lon=10.0 * paso, yaw_deg=0.0),
+    ]
+
+    assert block_target_already_passed(
+        route,
+        end_index=1,
+        robot_lat=0.0,
+        robot_lon=12.0 * paso,
+        corridor_tolerance_m=5.0,
+    )
+    # Todavia sobre el tramo: hay camino por delante y no se saltea nada.
+    assert not block_target_already_passed(
+        route,
+        end_index=1,
+        robot_lat=0.0,
+        robot_lon=6.0 * paso,
+        corridor_tolerance_m=5.0,
+    )
+    # Paso de largo pero por otra fila: no se puede afirmar que lo recorrio.
+    assert not block_target_already_passed(
+        route,
+        end_index=1,
+        robot_lat=20.0 / 111_320.0,
+        robot_lon=12.0 * paso,
+        corridor_tolerance_m=5.0,
+    )
+    # Sin pose no se saltea nada.
+    assert not block_target_already_passed(
+        route,
+        end_index=1,
+        robot_lat=None,
+        robot_lon=None,
+        corridor_tolerance_m=5.0,
+    )
 
 
 def test_coverage_goal_tolerance_changes_only_when_role_changes():
@@ -2360,3 +2561,112 @@ def test_next_chunk_success_dispatches_return_home_at_exit_waypoint():
 
     assert node.return_home_dispatches == 1
     assert node.sent_chunk_starts == []
+
+
+# ---------------------------------------------------------------------------
+# Politica forward-only de la respuesta de Fields2Cover. La cabecera de tres
+# puntos ya no se genera en simulacion, pero la respuesta es el ultimo lugar
+# donde una marcha atras podria colarse hacia Nav2: aca se fija que no pueda.
+# ---------------------------------------------------------------------------
+
+
+def _fields2cover_node(*, allow_reverse: bool) -> RouteExecutorNode:
+    node = object.__new__(RouteExecutorNode)
+    node.coverage_f2c_max_sampled_waypoints = 10000
+    node.coverage_max_key_waypoints = 200
+    node.max_route_input_waypoints = 200
+    node.coverage_planner_min_turning_radius_m = 4.0
+    node.min_leg_spacing_m = 5.0
+    node.default_chunk_span_m = 20.0
+    node.default_chunk_max_waypoints = 40
+    parametros = {"coverage_f2c_allow_reverse": bool(allow_reverse)}
+    node.get_parameter = lambda name: SimpleNamespace(value=parametros[name])
+    return node
+
+
+def _fields2cover_values() -> dict:
+    return {
+        "start_yaw_deg": 0.0,
+        "route_start_lat": -31.485,
+        "route_start_lon": -64.241,
+        "field_length_m": 40.0,
+        "centerline_length_m": 40.0,
+        "field_mode": "polygon",
+    }
+
+
+def _fields2cover_plan(*, backup_m: float):
+    from navegacion_gps.coverage_waypoint_core import CoverageBodyWaypoint
+
+    return SimpleNamespace(
+        waypoints=[
+            CoverageBodyWaypoint(
+                forward_m=0.0, left_m=0.0, yaw_delta_deg=0.0,
+                phase="row", row_index=0, is_key=True,
+            ),
+            CoverageBodyWaypoint(
+                forward_m=40.0, left_m=0.0, yaw_delta_deg=0.0,
+                phase="row", row_index=0, is_key=True,
+            ),
+            CoverageBodyWaypoint(
+                forward_m=44.5, left_m=4.0, yaw_delta_deg=90.0,
+                phase="turn", row_index=0, is_key=False, is_guide=True,
+                backup_m=float(backup_m),
+            ),
+            CoverageBodyWaypoint(
+                forward_m=40.0, left_m=1.65, yaw_delta_deg=180.0,
+                phase="row", row_index=1, is_key=True,
+            ),
+            CoverageBodyWaypoint(
+                forward_m=0.0, left_m=1.65, yaw_delta_deg=180.0,
+                phase="row", row_index=1, is_key=True,
+            ),
+        ],
+        swath_count=2,
+        lane_spacing_m=1.65,
+        total_length_m=80.0,
+    )
+
+
+def test_fields2cover_publica_la_marcha_atras_cuando_el_perfil_la_permite() -> None:
+    """Control: el perfil real no cambia."""
+    node = _fields2cover_node(allow_reverse=True)
+    result = node._fill_fields2cover_response(
+        _fields2cover_values(),
+        GenerateCoveragePlanLL.Response(),
+        _fields2cover_plan(backup_m=6.35),
+    )
+    assert result.ok is True
+    assert any(
+        "coverage_backup" in str(item) for item in result.route_action_jsons
+    )
+
+
+def test_forward_only_rechaza_un_plan_con_marcha_atras() -> None:
+    """Nunca se manda a Nav2 una ruta que el perfil no puede ejecutar."""
+    node = _fields2cover_node(allow_reverse=False)
+    result = node._fill_fields2cover_response(
+        _fields2cover_values(),
+        GenerateCoveragePlanLL.Response(),
+        _fields2cover_plan(backup_m=6.35),
+    )
+    assert result.ok is False
+    assert "forward-only" in result.error
+    assert list(result.route_action_jsons) == []
+
+
+def test_forward_only_no_emite_coverage_backup_en_las_acciones() -> None:
+    node = _fields2cover_node(allow_reverse=False)
+    result = node._fill_fields2cover_response(
+        _fields2cover_values(),
+        GenerateCoveragePlanLL.Response(),
+        _fields2cover_plan(backup_m=0.0),
+    )
+    assert result.ok is True
+    assert list(result.route_action_jsons) == ["" for _ in result.route_lats]
+    assert not any(
+        "coverage_backup" in str(item) for item in result.route_action_jsons
+    )
+    # La guia de la cabecera viaja igual: lo que se apaga es la reversa, no la
+    # transicion.
+    assert list(result.route_phases) == ["row", "row", "turn", "row", "row"]

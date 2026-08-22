@@ -33,9 +33,11 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     # que el piso del executor, Coverage Server y Smac se mueven juntos.
     assert '"coverage_planner_min_turning_radius_m": 4.0' in sim_launch
     assert '"coverage_allow_headland_conflicts": True' in sim_launch
-    # El planificador elige el orden para que las maniobras de cabecera
-    # no fuerzen un giro por debajo del radio configurado.
-    assert '"coverage_allow_row_skipping": True' in sim_launch
+    # La cobertura avanza fila por fila. Los giros cerrados se resuelven con la
+    # omega hacia adelante y no salteando pasadas.
+    assert '"coverage_allow_row_skipping": False' in sim_launch
+    assert '"coverage_nogo_enabled": True' in sim_launch
+    assert '"coverage_f2c_route_type": "BOUSTROPHEDON"' in sim_launch
     assert '"coverage_start_max_distance_m": "50.0"' in sim_launch
     # La ejecucion usa los extremos de surco sobre el borde. Las guias de
     # cabecera quedan fuera de la ruta ejecutable porque pueden traer una
@@ -44,7 +46,10 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     # Tanto quien envia el goal como quien dibuja mission_path tienen que
     # interpretar el Point sin header de /fromLL en el mismo frame. Si el
     # executor usa odom, aplica odom->map una segunda vez y RViz queda corrido.
-    assert sim_launch.count('"fromll_frame": "map"') == 2
+    # El tercero es zones_manager: rasteriza la mascara keepout en map, asi que
+    # con el default odom la zona no-go queda corrida el offset map->odom y
+    # Nav2 frena por una colision donde el GeoJSON no tiene nada.
+    assert sim_launch.count('"fromll_frame": "map"') == 3
     assert '"path_frame": "map"' in sim_launch
     # 25 grados dan un radio efectivo de 2.02 m: deja margen de correccion
     # respecto de los 4.0 m que traza el planner.
@@ -53,12 +58,13 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     assert sim_wifi_params.count("minimum_turning_radius: 4.0") == 2
 
     # CAMPO corre igual en real que en sim: mismo planificador, mismo piso de
-    # radio y el mismo orden de pasadas. Sin el salteo, dos pasadas vecinas no
-    # se pueden unir con una U y cada giro sale del lote.
+    # radio y el mismo orden adyacente de pasadas.
     assert '"coverage_planner_min_turning_radius_m": 4.0' in real_launch
     assert '"coverage_allow_headland_conflicts": True' in real_launch
-    assert '"coverage_allow_row_skipping": True' in real_launch
+    assert '"coverage_allow_row_skipping": False' in real_launch
+    assert '"coverage_nogo_enabled": True' in real_launch
     assert '"coverage_planner": _COVERAGE_PLANNER' in real_launch
+    assert '"coverage_f2c_route_type": "BOUSTROPHEDON"' in real_launch
     assert '"coverage_f2c_swath_angle_deg": 0.0' in real_launch
     # El Coverage Server se agrega solo si el overlay esta instalado: en el
     # robot, un overlay faltante no puede voltear la navegacion entera.
@@ -68,7 +74,17 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     # default sin guias, que son los defaults del editor.
     assert "coverage_start_max_distance_m" not in real_launch
     assert "coverage_use_headland_guides" not in real_launch
-    assert real_launch.count('"fromll_frame": "map"') == 2
+    assert real_launch.count('"fromll_frame": "map"') == 3
+
+    # El editor tiene que aceptar el frame y bajarselo a zones_manager. Sin
+    # este cableado los dos perfiles global v2 vuelven al default odom y la
+    # mascara keepout se corre respecto del GeoJSON.
+    editor_launch = (
+        PACKAGE_ROOT.parent / "map_tools" / "launch" / "no_go_editor.launch.py"
+    ).read_text(encoding="utf-8")
+    assert 'DeclareLaunchArgument(' in editor_launch
+    assert '"fromll_frame",' in editor_launch
+    assert '"fromll_frame": fromll_frame,' in editor_launch
     assert '"path_frame": "map"' in real_launch
     assert '"operational_steering_limit_rad": 0.3141592654' in real_launch
     assert real_params.count("minimum_turning_radius: 4.0") == 2
@@ -213,6 +229,7 @@ def test_sim_global_v2_launch_reuses_current_sim_stack_without_rviz() -> None:
     assert '"rtk_status_max_age_s": ParameterValue(' in launch_contents
     assert "nav2_global_v2_sim_rolling_params.yaml" in launch_contents
     assert 'DeclareLaunchArgument("launch_web_app", default_value="True")' in launch_contents
+    assert 'DeclareLaunchArgument("use_keepout", default_value="True")' in launch_contents
     assert LIDAR_FILTER_DEFAULT_ARG in launch_contents
     assert SCAN_FILTER_DEFAULT_ARG in launch_contents
     assert SCAN_FILTER_OUTPUT_ARG in launch_contents
@@ -637,3 +654,58 @@ def test_global_v2_local_costmaps_split_lidar_marking_from_clearing() -> None:
         assert "inf_is_valid: False" in params_contents
         assert "clearing: False" in params_contents
         assert "marking: False" in params_contents
+
+
+def test_la_simulacion_es_forward_only_de_punta_a_punta() -> None:
+    """El vehiculo simulado no puede retroceder por ningun camino.
+
+    Son cuatro fuentes posibles de marcha atras y las cuatro tienen que estar
+    cerradas a la vez: la cabecera de tres puntos de la cobertura, el planner
+    global, el smoother/controlador y los behaviors de Nav2. Alcanza con que
+    una quede abierta para que aparezca una velocidad lineal negativa.
+    """
+    sim_launch = _read("launch/sim_global_v2.launch.py")
+    sim_params = _read("config/nav2_global_v2_sim_rolling_params.yaml")
+    sim_wifi_params = _read("config/nav2_global_v2_sim_rolling_wifi_params.yaml")
+
+    # 1. Cobertura: sin cabecera de tres puntos, o sea sin backup_m ni accion
+    #    coverage_backup. La transicion corta se arma como omega.
+    assert '"coverage_f2c_allow_reverse": False' in sim_launch
+
+    for params in (sim_params, sim_wifi_params):
+        # 2. Planner global: Dubins, que no tiene primitivas hacia atras.
+        #    Reeds-Shepp si las tiene y por eso no se usa.
+        assert 'motion_model_for_search: "DUBIN"' in params
+        assert "REEDS_SHEPP" not in params
+        # 3. Smoother y controlador.
+        assert "reversing_enabled: false" in params
+        assert "allow_reversing: false" in params
+        # 4. Behaviors: BackUp ni se carga en el behavior server.
+        assert 'behavior_plugins: ["drive_on_heading", "wait"]' in params
+        assert "nav2_behaviors/BackUp" not in params
+
+
+def test_el_perfil_real_conserva_la_marcha_atras() -> None:
+    """La politica de simulacion no puede filtrarse al campo."""
+    real_launch = _read("launch/real_global_v2.launch.py")
+    real_params = _read("config/nav2_global_v2_real_rolling_params.yaml")
+    real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
+
+    assert '"coverage_f2c_allow_reverse": True' in real_launch
+    for params in (real_params, real_wifi_params):
+        assert 'plugin: "nav2_behaviors/BackUp"' in params
+
+
+def test_los_arboles_de_comportamiento_de_la_simulacion_no_traen_backup() -> None:
+    """Ni el BT ni la lista de plugins pueden invocar BackUp."""
+    sim_launch = _read("launch/sim_global_v2.launch.py")
+    sim_params = _read("config/nav2_global_v2_sim_rolling_params.yaml")
+
+    assert "navigate_through_poses_w_replanning_and_recovery_no_spin.xml" in sim_launch
+    assert "nav2_back_up_action_bt_node" not in sim_params
+    for nombre in (
+        "config/navigate_through_poses_w_replanning_and_recovery_no_spin.xml",
+        "config/navigate_to_pose_w_replanning_and_recovery_no_spin.xml",
+        "config/navigate_to_pose_w_replanning_and_recovery_no_spin_no_backup.xml",
+    ):
+        assert "BackUp" not in _read(nombre)

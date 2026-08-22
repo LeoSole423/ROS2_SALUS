@@ -126,6 +126,7 @@ class NavCommandServerNode(Node):
         self.declare_parameter("backup_action", "backup")
         self.declare_parameter("loop_segment_size", 2)
         self.declare_parameter("waypoint_reached_tolerance_m", 1.2)
+        self.declare_parameter("exact_path_sample_spacing_m", 0.35)
         self.declare_parameter("nav_failure_hint_window_s", 25.0)
 
         self.fromll_service = str(self.get_parameter("fromll_service").value)
@@ -249,6 +250,10 @@ class NavCommandServerNode(Node):
         self.loop_segment_size = max(2, int(self.get_parameter("loop_segment_size").value))
         self.waypoint_reached_tolerance_m = max(
             0.05, float(self.get_parameter("waypoint_reached_tolerance_m").value)
+        )
+        self.exact_path_sample_spacing_m = max(
+            0.10,
+            float(self.get_parameter("exact_path_sample_spacing_m").value),
         )
         self.nav_failure_hint_window_s = max(
             1.0, float(self.get_parameter("nav_failure_hint_window_s").value)
@@ -631,6 +636,203 @@ class NavCommandServerNode(Node):
         qz = math.sin(half_yaw)
         qw = math.cos(half_yaw)
         return Quaternion(x=0.0, y=0.0, z=qz, w=qw)
+
+    @staticmethod
+    def _pose_yaw_rad(pose: PoseStamped) -> float:
+        orientation = pose.pose.orientation
+        return math.atan2(
+            2.0
+            * (
+                float(orientation.w) * float(orientation.z)
+                + float(orientation.x) * float(orientation.y)
+            ),
+            1.0
+            - 2.0
+            * (
+                float(orientation.y) * float(orientation.y)
+                + float(orientation.z) * float(orientation.z)
+            ),
+        )
+
+    @staticmethod
+    def _pose_sample(
+        template: PoseStamped,
+        *,
+        x: float,
+        y: float,
+        z: float,
+        yaw_rad: float,
+    ) -> PoseStamped:
+        sampled = copy.deepcopy(template)
+        sampled.pose.position.x = float(x)
+        sampled.pose.position.y = float(y)
+        sampled.pose.position.z = float(z)
+        sampled.pose.orientation = Quaternion(
+            x=0.0,
+            y=0.0,
+            z=math.sin(0.5 * float(yaw_rad)),
+            w=math.cos(0.5 * float(yaw_rad)),
+        )
+        return sampled
+
+    @staticmethod
+    def _sample_exact_path_segment(
+        start: PoseStamped,
+        end: PoseStamped,
+        *,
+        spacing_m: float,
+    ) -> List[PoseStamped]:
+        """Muestrear un enlace forward-only conservando sus tangentes.
+
+        Las guias de las omegas y de los cambios de fila son tangencias de
+        arcos. Si ambos extremos pertenecen a la misma circunferencia se
+        reconstruye ese arco exactamente. El fallback Bezier se usa para el
+        ultimo enlace arco+recta y conserva posicion y rumbo en ambos extremos.
+        El primer punto no se devuelve para poder concatenar segmentos.
+        """
+        x0 = float(start.pose.position.x)
+        y0 = float(start.pose.position.y)
+        z0 = float(start.pose.position.z)
+        x1 = float(end.pose.position.x)
+        y1 = float(end.pose.position.y)
+        z1 = float(end.pose.position.z)
+        chord_m = math.hypot(x1 - x0, y1 - y0)
+        if chord_m <= 1.0e-6:
+            return [copy.deepcopy(end)]
+
+        yaw0 = NavCommandServerNode._pose_yaw_rad(start)
+        yaw1 = NavCommandServerNode._pose_yaw_rad(end)
+        normal0 = (-math.sin(yaw0), math.cos(yaw0))
+        normal1 = (-math.sin(yaw1), math.cos(yaw1))
+        normals_cross = (
+            (normal0[0] * normal1[1]) - (normal0[1] * normal1[0])
+        )
+        spacing = max(0.10, float(spacing_m))
+
+        if abs(normals_cross) > 1.0e-5:
+            dx = x1 - x0
+            dy = y1 - y0
+            radius0 = ((dx * normal1[1]) - (dy * normal1[0])) / normals_cross
+            radius1 = ((dx * normal0[1]) - (dy * normal0[0])) / normals_cross
+            radius = 0.5 * (abs(radius0) + abs(radius1))
+            radius_error = abs(radius0 - radius1)
+            same_turn = (radius0 * radius1) > 0.0
+            if (
+                same_turn
+                and radius >= 0.25
+                and radius_error <= max(0.20, 0.08 * radius)
+            ):
+                center0 = (
+                    x0 + (radius0 * normal0[0]),
+                    y0 + (radius0 * normal0[1]),
+                )
+                center1 = (
+                    x1 + (radius1 * normal1[0]),
+                    y1 + (radius1 * normal1[1]),
+                )
+                center = (
+                    0.5 * (center0[0] + center1[0]),
+                    0.5 * (center0[1] + center1[1]),
+                )
+                start_angle = math.atan2(y0 - center[1], x0 - center[0])
+                end_angle = math.atan2(y1 - center[1], x1 - center[0])
+                turn_sign = 1.0 if radius0 > 0.0 else -1.0
+                if turn_sign > 0.0:
+                    sweep = (end_angle - start_angle) % (2.0 * math.pi)
+                else:
+                    sweep = -((start_angle - end_angle) % (2.0 * math.pi))
+                if 1.0e-4 < abs(sweep) <= math.pi + 0.20:
+                    steps = max(1, int(math.ceil(radius * abs(sweep) / spacing)))
+                    samples: List[PoseStamped] = []
+                    for step in range(1, steps + 1):
+                        if step == steps:
+                            samples.append(copy.deepcopy(end))
+                            continue
+                        fraction = float(step) / float(steps)
+                        angle = start_angle + (sweep * fraction)
+                        samples.append(
+                            NavCommandServerNode._pose_sample(
+                                start,
+                                x=center[0] + (radius * math.cos(angle)),
+                                y=center[1] + (radius * math.sin(angle)),
+                                z=z0 + ((z1 - z0) * fraction),
+                                yaw_rad=angle + (turn_sign * 0.5 * math.pi),
+                            )
+                        )
+                    return samples
+
+        # Bezier cubica de Hermite: no agrega una meta de mision y evita las
+        # esquinas imposibles que produciria interpolar linealmente las guias.
+        control_m = chord_m / 3.0
+        c1 = (
+            x0 + (control_m * math.cos(yaw0)),
+            y0 + (control_m * math.sin(yaw0)),
+        )
+        c2 = (
+            x1 - (control_m * math.cos(yaw1)),
+            y1 - (control_m * math.sin(yaw1)),
+        )
+        steps = max(1, int(math.ceil(chord_m / spacing)))
+        samples = []
+        for step in range(1, steps + 1):
+            if step == steps:
+                samples.append(copy.deepcopy(end))
+                continue
+            t = float(step) / float(steps)
+            one_minus_t = 1.0 - t
+            x = (
+                (one_minus_t**3 * x0)
+                + (3.0 * one_minus_t**2 * t * c1[0])
+                + (3.0 * one_minus_t * t**2 * c2[0])
+                + (t**3 * x1)
+            )
+            y = (
+                (one_minus_t**3 * y0)
+                + (3.0 * one_minus_t**2 * t * c1[1])
+                + (3.0 * one_minus_t * t**2 * c2[1])
+                + (t**3 * y1)
+            )
+            derivative_x = (
+                3.0 * one_minus_t**2 * (c1[0] - x0)
+                + 6.0 * one_minus_t * t * (c2[0] - c1[0])
+                + 3.0 * t**2 * (x1 - c2[0])
+            )
+            derivative_y = (
+                3.0 * one_minus_t**2 * (c1[1] - y0)
+                + 6.0 * one_minus_t * t * (c2[1] - c1[1])
+                + 3.0 * t**2 * (y1 - c2[1])
+            )
+            yaw = math.atan2(derivative_y, derivative_x)
+            samples.append(
+                NavCommandServerNode._pose_sample(
+                    start,
+                    x=x,
+                    y=y,
+                    z=z0 + ((z1 - z0) * t),
+                    yaw_rad=yaw,
+                )
+            )
+        return samples
+
+    @staticmethod
+    def _densify_exact_path(
+        poses: Sequence[PoseStamped],
+        *,
+        spacing_m: float,
+    ) -> List[PoseStamped]:
+        poses_list = list(poses)
+        if not poses_list:
+            return []
+        dense = [copy.deepcopy(poses_list[0])]
+        for start, end in zip(poses_list, poses_list[1:]):
+            dense.extend(
+                NavCommandServerNode._sample_exact_path_segment(
+                    start,
+                    end,
+                    spacing_m=spacing_m,
+                )
+            )
+        return dense
 
     @staticmethod
     def _normalize_yaw_deg(yaw_deg: float) -> float:
@@ -1976,10 +2178,14 @@ class NavCommandServerNode(Node):
         if not self._follow_path_client.wait_for_server(timeout_sec=2.0):
             return False, "FollowPath action server not available"
 
+        path_poses = self._densify_exact_path(
+            poses_list,
+            spacing_m=self.exact_path_sample_spacing_m,
+        )
         path = Path()
         path.header.frame_id = self.map_frame
         path.header.stamp = self.get_clock().now().to_msg()
-        path.poses = poses_list
+        path.poses = path_poses
         for pose in path.poses:
             pose.header.frame_id = self.map_frame
             pose.header.stamp = path.header.stamp
@@ -2017,6 +2223,7 @@ class NavCommandServerNode(Node):
             "FollowPath exact coverage segment accepted",
             details={
                 "waypoints": len(poses_list),
+                "path_samples": len(path_poses),
                 "reason": reason,
                 **dict(details or {}),
             },

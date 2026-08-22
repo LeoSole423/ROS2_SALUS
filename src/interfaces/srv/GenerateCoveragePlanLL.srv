@@ -43,6 +43,9 @@ float64 route_start_lat
 float64 route_start_lon
 float64 route_start_yaw_deg
 float64 centerline_length_m
+# Espaciado que realmente uso el planificador. Si el cliente envio 0, es el
+# valor calculado a partir de las dimensiones del poligono y los parametros ROS.
+float64 effective_waypoint_spacing_m
 
 # Polilinea completa solo para preview. No debe enviarse como metas a Nav2.
 float64[] sampled_lats
@@ -64,6 +67,9 @@ float64[] route_lats
 float64[] route_lons
 float64[] route_yaws_deg
 bool[] route_key_flags
+# Fase original de cada punto. Permite conservar las guias no-go aunque el
+# perfil desactive las guias normales de cabecera.
+string[] route_phases
 # Acciones por waypoint de ruta, en el mismo formato que consume
 # SetRouteMissionLL.waypoint_action_jsons. Viene vacio ("") en casi todos: hoy
 # solo lo usa la cabecera de tres puntos de Campo, que marca con

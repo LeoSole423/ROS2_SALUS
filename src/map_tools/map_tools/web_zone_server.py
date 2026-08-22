@@ -3290,7 +3290,9 @@ class WebZoneServerNode(Node):
         req.cutter_width_m = float(parameters["cutter_width_m"])
         req.overlap_ratio = float(parameters["overlap_ratio"])
         req.min_turning_radius_m = float(parameters["min_turning_radius_m"])
-        req.waypoint_spacing_m = float(parameters["waypoint_spacing_m"])
+        # 0 significa "calcular automaticamente" en route_executor. El valor
+        # efectivo vuelve en la respuesta y es el que se muestra al operador.
+        req.waypoint_spacing_m = float(parameters.get("waypoint_spacing_m", 0.0))
         req.side = str(parameters["side"])
 
         res = self._call_service(
@@ -3399,13 +3401,31 @@ class WebZoneServerNode(Node):
         response_route_actions = list(getattr(res, "route_action_jsons", []) or [])
         if len(response_route_actions) != len(res.route_lats):
             response_route_actions = ["" for _ in res.route_lats]
+        response_route_phases = list(getattr(res, "route_phases", []) or [])
+        if len(response_route_phases) != len(res.route_lats):
+            # Compatibilidad durante un despliegue escalonado. Un backend viejo
+            # no distingue el tipo de guia; se conserva el comportamiento
+            # anterior y solo se ejecutan sus extremos key cuando las guias de
+            # cabecera estan apagadas.
+            response_route_phases = [
+                "row" if bool(is_key) else "turn"
+                for is_key in res.route_key_flags
+            ]
         response_route_values = [
-            (float(lat), float(lon), float(yaw_deg), bool(is_key), str(action or ""))
-            for lat, lon, yaw_deg, is_key, action in zip(
+            (
+                float(lat),
+                float(lon),
+                float(yaw_deg),
+                bool(is_key),
+                str(phase),
+                str(action or ""),
+            )
+            for lat, lon, yaw_deg, is_key, phase, action in zip(
                 res.route_lats,
                 res.route_lons,
                 res.route_yaws_deg,
                 res.route_key_flags,
+                response_route_phases,
                 response_route_actions,
             )
         ]
@@ -3527,11 +3547,15 @@ class WebZoneServerNode(Node):
                 "yaw_deg": yaw_deg,
                 "key": is_key,
                 "guide": not is_key,
+                # Se conserva en el payload para distinguir una guia opcional
+                # de cabecera de los vertices que hacen viable un giro
+                # Ackermann sin reversa o un rodeo no-go.
+                "phase": _phase,
                 # La marcha atras de la cabecera de tres puntos viaja pegada al
                 # waypoint donde hay que hacerla. Vacio en todos los demas.
                 "action_json": action_json,
             }
-            for lat, lon, yaw_deg, is_key, action_json in response_route_values
+            for lat, lon, yaw_deg, is_key, _phase, action_json in response_route_values
         ]
         global_topology_conflicts = {
             "strict_crossings": strict_crossing_count,
@@ -3570,30 +3594,92 @@ class WebZoneServerNode(Node):
         headland_guidance_enabled = bool(
             getattr(self, "coverage_use_headland_guides", False)
         )
-        execution_waypoints = (
-            route_waypoints
-            if headland_guidance_enabled
-            else [
+        if headland_guidance_enabled:
+            execution_waypoints = list(route_waypoints)
+        else:
+            # Apagar las guias de cabecera evita que Smac agregue un rulo en un
+            # giro normal, pero no puede borrar las del rodeo no-go ni los
+            # tres vertices de una omega forward-only: sin estos un
+            # Ackermann no puede unir dos filas cercanas y Nav2 queda sin plan.
+            # Tampoco se conservan aisladas: por cada guia obligatoria queda el
+            # bloque completo entre la key anterior y la siguiente, evitando
+            # una cuerda nueva que corte el circulo o el giro.
+            selected_indices = {
+                index
+                for index, waypoint in enumerate(route_waypoints)
+                if bool(waypoint["key"])
+            }
+            for index, route_value in enumerate(response_route_values):
+                if route_value[4] not in {
+                    "forward_turn",
+                    "nogo_detour",
+                    "nogo_lane_change",
+                    "nogo_transition",
+                }:
+                    continue
+                start = index
+                while start > 0 and not bool(route_waypoints[start]["key"]):
+                    start -= 1
+                end = index
+                while end + 1 < len(route_waypoints) and not bool(
+                    route_waypoints[end]["key"]
+                ):
+                    end += 1
+                selected_indices.update(range(start, end + 1))
+            execution_waypoints = [
+                waypoint
+                for index, waypoint in enumerate(route_waypoints)
+                if index in selected_indices
+            ]
+        # El cambio interno de fila es geometria de trabajo estricta y se sigue
+        # como ``coverage``. Las guias exteriores (omega y rodeo de borde) son
+        # ``coverage_transit``: Nav2 debe poder planificar alrededor de los
+        # obstaculos del entorno, aunque el bloque completo conserva todas las
+        # guias obligatorias. La key final siempre vuelve a 0.35 m de tolerancia.
+        external_curve_phases = {
+            "forward_turn",
+            "nogo_detour",
+            "nogo_transition",
+        }
+        execution_with_roles = []
+        for index, waypoint in enumerate(execution_waypoints):
+            phase = str(waypoint.get("phase") or "")
+            previous_phase = (
+                str(execution_waypoints[index - 1].get("phase") or "")
+                if index > 0
+                else ""
+            )
+            precise_curve_midpoint = bool(
+                waypoint.get("key", True) and phase in external_curve_phases
+            )
+            flexible_curve_reentry = bool(
+                waypoint.get("key", True)
+                and previous_phase in external_curve_phases
+                and phase not in external_curve_phases
+            )
+            strict_coverage = bool(
+                precise_curve_midpoint
+                or phase == "nogo_lane_change"
+                or (
+                    bool(waypoint.get("key", True))
+                    and not flexible_curve_reentry
+                )
+            )
+            execution_with_roles.append(
                 {
                     **waypoint,
-                    "key": True,
-                    "guide": False,
+                    "role": (
+                        "coverage_curve"
+                        if precise_curve_midpoint
+                        else (
+                            "coverage"
+                            if strict_coverage
+                            else "coverage_transit"
+                        )
+                    ),
                 }
-                for waypoint in key_waypoints
-            ]
-        )
-        # El ejecutor conserva la semántica habitual de rutas, PATROL y goals
-        # individuales. CAMPO distingue los extremos de pasada, que se siguen
-        # con precisión, de las guías de cabecera. Estas últimas son tránsito:
-        # Nav2 puede recuperar y corregir afuera del lote sin deformar el
-        # trazado que importa dentro.
-        execution_waypoints = [
-            {
-                **waypoint,
-                "role": "coverage" if bool(waypoint.get("key", True)) else "coverage_transit",
-            }
-            for waypoint in execution_waypoints
-        ]
+            )
+        execution_waypoints = execution_with_roles
         payload = {
             "reference": {
                 "lat": float(req.start_lat),
@@ -3611,7 +3697,10 @@ class WebZoneServerNode(Node):
                 "cutter_width_m": float(req.cutter_width_m),
                 "overlap_ratio": float(req.overlap_ratio),
                 "min_turning_radius_m": float(req.min_turning_radius_m),
-                "waypoint_spacing_m": float(req.waypoint_spacing_m),
+                "waypoint_spacing_m": float(
+                    getattr(res, "effective_waypoint_spacing_m", req.waypoint_spacing_m)
+                ),
+                "waypoint_spacing_requested_m": float(req.waypoint_spacing_m),
                 "side": str(req.side),
                 "reference_mode": (
                     "field_corner" if req.start_is_field_corner else "first_row_start"
@@ -3646,6 +3735,9 @@ class WebZoneServerNode(Node):
                 ),
                 "planner_min_turning_radius_m": float(
                     res.planner_min_turning_radius_m
+                ),
+                "waypoint_spacing_m": float(
+                    getattr(res, "effective_waypoint_spacing_m", req.waypoint_spacing_m)
                 ),
             },
             "topology_safe": bool(res.topology_safe),
@@ -4725,7 +4817,9 @@ class WebSocketApi:
             "cutter_width_m": msg.get("cutter_width_m", 2.0),
             "overlap_ratio": msg.get("overlap_ratio", 0.15),
             "min_turning_radius_m": msg.get("min_turning_radius_m", 4.0),
-            "waypoint_spacing_m": msg.get("waypoint_spacing_m", 2.0),
+            # 0 delega el detalle al calculo adaptativo del route_executor,
+            # basado en las dimensiones del poligono cargado.
+            "waypoint_spacing_m": msg.get("waypoint_spacing_m", 0.0),
         }
         if raw_values["field_length_m"] is UNSET:
             return None, "field_length_m is required"
