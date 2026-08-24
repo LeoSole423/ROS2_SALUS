@@ -1100,6 +1100,17 @@ def generate_launch_description():
                     "fixed_datum_yaw_deg": datum_yaw_deg,
                     "fixed_datum_source": "real_global_v2_fixed",
                     "datums_file": datums_file,
+                    # Cuan lejos del LOTE se acepta dar INICIAR COBERTURA. El
+                    # default del nodo es 5.0 m, pensado para el planificador
+                    # propio: ahi la primera pasada nace bajo el vehiculo, asi
+                    # que estar lejos de ella era estar lejos del lote. Con
+                    # Fields2Cover la primera pasada la elige la forma del lote
+                    # y puede caer en el extremo opuesto, y el preflight
+                    # rechazaba arranques legitimos por eso. La distancia ahora
+                    # se mide contra el poligono del lote -cero si el vehiculo
+                    # esta adentro- y el umbral pasa a describir "estoy en el
+                    # lote", no "estoy encima de la pasada sorteada".
+                    "coverage_start_max_distance_m": "25.0",
                 }.items(),
                 condition=IfCondition(launch_web_app),
             ),

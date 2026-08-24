@@ -145,6 +145,20 @@ MISSION_STATUS_FILE = "status.json"
 UNSET = object()
 
 
+def _ring_vertices(raw: Any) -> List[Dict[str, Any]]:
+    """Vertices crudos de un anillo del cockpit, en cualquiera de sus dos formas.
+
+    Misma tolerancia de entrada que :func:`_geo_ring`, pero devuelve los dicts sin
+    convertirlos al mensaje: sirve para medir geometria sin armar un GeoRing.
+    """
+    if raw is None:
+        return []
+    vertices = raw.get("vertices") if isinstance(raw, dict) else raw
+    if not isinstance(vertices, list):
+        return []
+    return [vertex for vertex in vertices if isinstance(vertex, dict)]
+
+
 def _geo_ring(raw: Any) -> GeoRing:
     """Anillo del cockpit al mensaje GeoRing.
 
@@ -3222,6 +3236,65 @@ class WebZoneServerNode(Node):
         active_profile = str(getattr(res, "active_profile", "") or "")
         return bool(res.ok), str(res.error), active_profile
 
+    @staticmethod
+    def _offsets_to_reference_m(
+        reference: Dict[str, float],
+        points: Sequence[Dict[str, Any]],
+    ) -> List[Tuple[float, float]]:
+        """Pasa lat/lon a metros (este, norte) relativos a la referencia."""
+        meters_per_deg_lat = 111_320.0
+        meters_per_deg_lon = meters_per_deg_lat * max(
+            1.0e-6,
+            abs(math.cos(math.radians(float(reference["lat"])))),
+        )
+        offsets: List[Tuple[float, float]] = []
+        for point in points:
+            try:
+                lat = float(point["lat"])
+                lon = float(point["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            offsets.append(
+                (
+                    (lon - float(reference["lon"])) * meters_per_deg_lon,
+                    (lat - float(reference["lat"])) * meters_per_deg_lat,
+                )
+            )
+        return offsets
+
+    @staticmethod
+    def _distance_to_ring_m(ring_m: Sequence[Tuple[float, float]]) -> float:
+        """Distancia del origen al anillo, en metros. Cero si cae adentro.
+
+        Devuelve ``inf`` si el anillo no llega a ser un poligono, para que el
+        llamador distinga "lejos" de "no habia poligono que medir".
+        """
+        if len(ring_m) < 3:
+            return float("inf")
+        dentro = False
+        distancia = float("inf")
+        total = len(ring_m)
+        for indice in range(total):
+            ax, ay = ring_m[indice]
+            bx, by = ring_m[(indice + 1) % total]
+            # Ray casting hacia +este desde el origen.
+            if (ay > 0.0) != (by > 0.0):
+                cruce = ax + (0.0 - ay) * (bx - ax) / (by - ay)
+                if cruce > 0.0:
+                    dentro = not dentro
+            # Distancia del origen al segmento AB.
+            dx = bx - ax
+            dy = by - ay
+            largo_cuadrado = dx * dx + dy * dy
+            if largo_cuadrado <= 1.0e-12:
+                distancia = min(distancia, math.hypot(ax, ay))
+                continue
+            t = max(0.0, min(1.0, -(ax * dx + ay * dy) / largo_cuadrado))
+            distancia = min(distancia, math.hypot(ax + t * dx, ay + t * dy))
+        return 0.0 if dentro else distancia
+
     def current_coverage_reference(
         self, *, require_heading: bool = True
     ) -> Tuple[Optional[Dict[str, float]], str]:
@@ -3811,21 +3884,34 @@ class WebZoneServerNode(Node):
             return False, f"coverage approach rejected: {reference_error}", result
 
         first_key = coverage_plan["key_waypoints"][0]
-        meters_per_deg_lat = 111_320.0
-        average_lat_rad = math.radians(
-            0.5 * (float(current_reference["lat"]) + float(first_key["lat"]))
+        # La distancia se mide contra el LOTE, no contra la primera pasada.
+        # Fields2Cover elige el swath inicial por la forma del lote y puede caer
+        # en el extremo opuesto al vehiculo: medir contra el rechazaba arranques
+        # legitimos por donde cayo esa eleccion, y en un lote grande no hay
+        # umbral que sirva sin volverse mas ancho que la diagonal, que ya no
+        # cuida nada. Lo que el criterio quiere evitar es arrancar la cobertura
+        # de un lote lejano, y eso se responde contra el poligono del lote.
+        distance_scope = "field_polygon"
+        distance_m = self._distance_to_ring_m(
+            self._offsets_to_reference_m(
+                current_reference,
+                _ring_vertices(parameters.get("coverage_polygon")),
+            )
         )
-        meters_per_deg_lon = meters_per_deg_lat * max(
-            1.0e-6,
-            abs(math.cos(average_lat_rad)),
-        )
-        north_m = (
-            float(first_key["lat"]) - float(current_reference["lat"])
-        ) * meters_per_deg_lat
-        east_m = (
-            float(first_key["lon"]) - float(current_reference["lon"])
-        ) * meters_per_deg_lon
-        distance_m = float(math.hypot(north_m, east_m))
+        if not math.isfinite(distance_m):
+            # Modo rectangulo legacy: sin poligono, la meta key mas cercana es la
+            # mejor descripcion del lote que hay disponible.
+            distance_scope = "nearest_key_waypoint"
+            distance_m = min(
+                (
+                    float(math.hypot(este_m, norte_m))
+                    for este_m, norte_m in self._offsets_to_reference_m(
+                        current_reference,
+                        coverage_plan["key_waypoints"],
+                    )
+                ),
+                default=float("inf"),
+            )
         heading_error_deg = abs(
             self._normalize_yaw_deg(
                 float(current_reference["yaw_deg"]) - float(first_key["yaw_deg"])
@@ -3842,6 +3928,7 @@ class WebZoneServerNode(Node):
         approach = {
             "checks_heading": exige_rumbo,
             "distance_m": distance_m,
+            "distance_scope": distance_scope,
             "max_distance_m": float(self.coverage_start_max_distance_m),
             "heading_error_deg": float(heading_error_deg),
             "max_heading_error_deg": float(
@@ -3864,7 +3951,7 @@ class WebZoneServerNode(Node):
             return (
                 False,
                 "coverage approach rejected "
-                f"(distance={distance_m:.2f} m, "
+                f"(distance={distance_m:.2f} m al lote, "
                 f"limit={float(self.coverage_start_max_distance_m):.2f} m"
                 f"{detalle_rumbo})",
                 result,

@@ -69,10 +69,33 @@ def test_coverage_turning_radius_is_consistent_across_profiles() -> None:
     # El Coverage Server se agrega solo si el overlay esta instalado: en el
     # robot, un overlay faltante no puede voltear la navegacion entera.
     assert "_COVERAGE_SERVER_OK" in real_launch
-    # Lo que NO se copia de sim: el arranque lejos del lote y las guias de
-    # cabecera. El perfil real conserva el preflight estricto de 5 m y el
-    # default sin guias, que son los defaults del editor.
-    assert "coverage_start_max_distance_m" not in real_launch
+    # El preflight de arranque. El default del nodo son 5.0 m y describe al
+    # planificador propio: ahi la primera pasada nace bajo el vehiculo, asi que
+    # estar lejos de ella era estar lejos del lote. Con Fields2Cover la primera
+    # pasada la elige la forma del lote y puede caer en el extremo opuesto, de
+    # modo que el default rechazaba arranques legitimos: CAMPO planificaba bien
+    # y no arrancaba nunca en el robot. Ahora la distancia se mide contra el
+    # poligono del lote y el umbral describe "estoy en el lote".
+    #
+    # El real tiene que pasarlo -sin esto vuelve al default de 5 m- y tiene que
+    # seguir siendo mas estricto que sim, que es lo que la version anterior de
+    # este test queria proteger cuando pedia que el real no lo copiara.
+    assert '"coverage_start_max_distance_m": "25.0"' in real_launch
+    real_max_start_m = float(
+        real_launch.split('"coverage_start_max_distance_m": "')[1].split('"')[0]
+    )
+    sim_max_start_m = float(
+        sim_launch.split('"coverage_start_max_distance_m": "')[1].split('"')[0]
+    )
+    assert real_max_start_m < sim_max_start_m
+    # Medir contra el lote es lo que vuelve util al umbral: contra la pasada
+    # sorteada no hay numero que sirva sin ser mas ancho que la diagonal.
+    servidor_web = (
+        PACKAGE_ROOT.parent / "map_tools" / "map_tools" / "web_zone_server.py"
+    ).read_text(encoding="utf-8")
+    assert "_distance_to_ring_m" in servidor_web
+    assert '"distance_scope"' in servidor_web
+    # Las guias de cabecera si siguen sin copiarse: son el default del editor.
     assert "coverage_use_headland_guides" not in real_launch
     assert real_launch.count('"fromll_frame": "map"') == 3
 
