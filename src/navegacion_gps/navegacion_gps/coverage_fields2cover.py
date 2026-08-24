@@ -945,15 +945,31 @@ def reorder_internal_nogo_swaths(
             dropped_waypoints += sum(len(run) for run in group["runs"])
         elif is_affected:
             for run in group["runs"]:
-                changed, dropped = _lane_change_escape_run(
-                    run,
-                    exclusions=exclusions,
-                    field_boundary=field_boundary,
-                    lane_spacing_m=float(plan.lane_spacing_m),
-                    min_turning_radius_m=float(min_turning_radius_m),
-                    lane_change_radius_m=float(lane_change_radius_m),
-                    lane_change_min_radius_m=float(lane_change_min_radius_m),
-                )
+                try:
+                    changed, dropped = _lane_change_escape_run(
+                        run,
+                        exclusions=exclusions,
+                        field_boundary=field_boundary,
+                        lane_spacing_m=float(plan.lane_spacing_m),
+                        min_turning_radius_m=float(min_turning_radius_m),
+                        lane_change_radius_m=float(lane_change_radius_m),
+                        lane_change_min_radius_m=float(lane_change_min_radius_m),
+                    )
+                except Fields2CoverError:
+                    # La S no entra: la zona quedo demasiado cerca de la
+                    # cabecera y no hay fila libre para anticipar el cambio.
+                    #
+                    # Antes esto rechazaba el PLAN ENTERO. El cockpit se
+                    # quedaba sin ruta con la zona aplicada, su recorte local
+                    # intentaba arreglarla caminando el perimetro de la
+                    # exclusion, y con una zona circular de 32 vertices eso
+                    # dibujaba una espiral de treinta y pico de puntos.
+                    #
+                    # Se cae a la estrategia de cabecera SOLO para esta media
+                    # fila: no se recorre y el resto del lote se enlaza normal.
+                    # Perder una pasada es mejor que no entregar plan.
+                    dropped_waypoints += len(run)
+                    continue
                 candidates.append(changed)
                 dropped_waypoints += dropped
         else:

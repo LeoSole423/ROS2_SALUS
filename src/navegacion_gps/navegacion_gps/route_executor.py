@@ -4282,7 +4282,12 @@ class RouteExecutorNode(Node):
                 break
             next_start = int(end_index) + 1
             if (
-                loop_enabled
+                # Solo CAMPO. Una Ruta o un Patrol recorren este despacho
+                # exactamente como antes de la cobertura: sin esta guarda el
+                # camino compartido queda identico al de `main`, que es lo que
+                # ya estaba probado en campo.
+                not follow_exact_path
+                or loop_enabled
                 or int(end_index) in action_indices
                 or next_start >= len(route)
                 or skipped_passed_blocks >= max(1, len(route))

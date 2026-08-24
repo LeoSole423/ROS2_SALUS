@@ -681,6 +681,32 @@ def test_por_default_la_fila_bloqueada_se_recorre_con_una_ese() -> None:
     ]
 
 
+def test_si_la_ese_no_entra_se_saltea_la_fila_en_vez_de_rechazar_el_plan() -> None:
+    """Una zona pegada a la cabecera no puede tumbar el plan entero.
+
+    Cuando la S no entra, antes se levantaba Fields2CoverError y el pedido se
+    rechazaba completo. El cockpit se quedaba sin ruta con la zona aplicada, su
+    recorte local intentaba arreglarla caminando el perimetro de la exclusion, y
+    con una zona circular de 32 vertices eso dibujaba una espiral.
+
+    Ahora esa media fila se saltea y el resto del lote se planifica igual.
+    """
+    # Radio enorme: la anticipacion no entra en ninguna media fila del lote.
+    salida = reorder_internal_nogo_swaths(
+        _plan_con_dos_filas_partidas(),
+        [_circulo_interno()],
+        field_boundary=_contorno_lote(),
+        min_turning_radius_m=4.0,
+        lane_change_radius_m=40.0,
+        lane_change_min_radius_m=40.0,
+        internal_strategy="lane_change",
+    )
+    # Hay plan, no excepcion.
+    assert salida.waypoints
+    # Y lo que no se pudo recorrer quedo contabilizado, no perdido en silencio.
+    assert salida.internal_nogo_dropped_waypoint_count > 0
+
+
 def test_la_anticipacion_de_la_ese_sigue_la_formula_cerrada() -> None:
     # anticipacion = sqrt(s * (4R - s)). Son los valores que se miden en el
     # plan: 7.38 m con el radio de cabecera y 5.66 m con el propio.
