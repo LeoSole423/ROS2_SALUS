@@ -913,3 +913,78 @@ def test_nogo_interno_no_genera_ningun_giro_dentro_del_lote() -> None:
             0.0,
             abs_tol=1.0e-6,
         )
+
+
+def _plan_del_lote_medido() -> Fields2CoverPlan:
+    """La geometria real de la corrida del 24/08: pasadas de 28 m a 5.96 m.
+
+    Los numeros salen de las trazas del robot, no de una figura inventada: las
+    cinco filas quedaron en x = 13063, 13069, 13075, 13081 y 13087 del frame
+    map, y los extremos entre y = 6895 y y = 6924.
+    """
+    surco_0 = _surco(0, (0.0, 0.0), (28.1, 0.0))
+    surco_1 = _surco(1, (28.1, 5.96), (0.0, 5.96))
+    waypoints = surco_0 + _omega(0, (32.1, 2.98)) + surco_1
+    return Fields2CoverPlan(
+        waypoints=waypoints,
+        swath_count=2,
+        work_length_m=56.2,
+        transition_length_m=37.7,
+        route_type="SNAKE",
+        path_type="DUBIN",
+    )
+
+
+def test_sin_reversa_la_cabecera_del_lote_medido_se_resuelve_igual() -> None:
+    """5.96 m de separacion con radio 4.0 m: la omega tiene que entrar.
+
+    Es la condicion que hace util apagar `coverage_f2c_allow_reverse` en el
+    perfil real. Si aca saltara ForwardOnlyTurnError, la cobertura del campo
+    quedaria sin plan y el arreglo seria peor que el problema.
+    """
+    plan = replace_turns_with_flexible_headlands(
+        _plan_del_lote_medido(),
+        margin_m=0.5,
+        min_turning_radius_m=4.0,
+        allow_reverse=False,
+    )
+    transiciones = _transiciones(plan)
+    assert transiciones, "la cabecera quedo sin waypoints de giro"
+    # Ningun punto puede pedir marcha atras.
+    assert all(
+        float(getattr(punto, "backup_m", 0.0) or 0.0) == 0.0 for punto in plan.waypoints
+    )
+
+
+def test_la_fase_del_giro_sin_reversa_es_la_que_sobrevive_al_filtro() -> None:
+    """El giro tiene que salir como forward_turn, no como headland.
+
+    Las guias de cabecera estan apagadas por default y su filtro conserva
+    forward_turn pero no headland. Si el giro saliera con la otra fase, se
+    calcularia y se tiraria, que es exactamente lo que dejaba al robot con los
+    extremos de surco pelados y a Nav2 improvisando un rulo.
+    """
+    plan = replace_turns_with_flexible_headlands(
+        _plan_del_lote_medido(),
+        margin_m=0.5,
+        min_turning_radius_m=4.0,
+        allow_reverse=False,
+    )
+    fases = {punto.phase for punto in plan.waypoints if punto.phase != WORK_PHASE}
+    assert FORWARD_TURN_PHASE in fases, f"fases producidas: {fases}"
+
+
+def test_los_waypoints_de_trabajo_del_lote_medido_no_se_tocan() -> None:
+    """Apagar la reversa cambia el enlace, nunca las pasadas."""
+    original = _trabajo(_plan_del_lote_medido())
+    plan = replace_turns_with_flexible_headlands(
+        _plan_del_lote_medido(),
+        margin_m=0.5,
+        min_turning_radius_m=4.0,
+        allow_reverse=False,
+    )
+    resultado = _trabajo(plan)
+    assert len(resultado) == len(original)
+    for antes, despues in zip(original, resultado):
+        assert antes.forward_m == pytest.approx(despues.forward_m)
+        assert antes.left_m == pytest.approx(despues.left_m)

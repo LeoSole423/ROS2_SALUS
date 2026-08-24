@@ -708,15 +708,55 @@ def test_la_simulacion_es_forward_only_de_punta_a_punta() -> None:
         assert "nav2_behaviors/BackUp" not in params
 
 
-def test_el_perfil_real_conserva_la_marcha_atras() -> None:
-    """La politica de simulacion no puede filtrarse al campo."""
+def test_la_cobertura_del_perfil_real_no_planifica_marcha_atras() -> None:
+    """Automatico no retrocede; la recuperacion de Nav2 es otra cosa.
+
+    Son dos mecanismos distintos y solo uno esta prohibido. `BackUp` es una
+    recuperacion: la dispara Nav2 cuando el vehiculo queda trabado, y en el
+    robot real se conserva. `coverage_f2c_allow_reverse` es otra cosa: decide
+    si un PLAN de cobertura puede pedir marcha atras mientras trabaja el lote,
+    sin nadie mirando. Eso no se permite.
+
+    Apagarlo ademas es lo que hace que la curva llegue al robot. Con reversa,
+    una separacion menor que el diametro de giro se resuelve con la cabecera de
+    tres puntos, cuya fase es "headland"; el filtro de guias apagadas conserva
+    forward_turn y las fases nogo_*, pero no "headland", asi que el giro se
+    calculaba y se tiraba. Sin reversa la maniobra es la omega hacia adelante,
+    con fase forward_turn, que si sobrevive.
+    """
     real_launch = _read("launch/real_global_v2.launch.py")
     real_params = _read("config/nav2_global_v2_real_rolling_params.yaml")
     real_wifi_params = _read("config/nav2_global_v2_real_rolling_wifi_params.yaml")
 
-    assert '"coverage_f2c_allow_reverse": True' in real_launch
+    assert '"coverage_f2c_allow_reverse": False' in real_launch
+    assert '"coverage_f2c_allow_reverse": True' not in real_launch
+    # La recuperacion de Nav2 se conserva: es la diferencia con simulacion.
     for params in (real_params, real_wifi_params):
         assert 'plugin: "nav2_behaviors/BackUp"' in params
+
+
+def test_el_filtro_de_guias_conserva_la_fase_que_produce_cada_perfil() -> None:
+    """La fase del giro tiene que estar en la lista que el filtro respeta.
+
+    Este es el eslabon que fallaba: el planificador producia la maniobra y la
+    ruta ejecutable la descartaba, dejando al robot con los extremos de surco
+    pelados. Si alguien vuelve a permitir la marcha atras en cobertura, o saca
+    forward_turn de la lista, esto tiene que romperse.
+    """
+    servidor = (
+        PACKAGE_ROOT.parent / "map_tools" / "map_tools" / "web_zone_server.py"
+    ).read_text(encoding="utf-8")
+    planificador = _read("navegacion_gps/coverage_fields2cover.py")
+
+    # Las dos fases de giro que existen, segun con que se resuelva la cabecera.
+    assert '"forward_turn"' in planificador
+    assert '"headland"' in planificador
+    # El filtro solo respeta una de las dos.
+    assert '"forward_turn",' in servidor
+    assert '"headland",' not in servidor
+    # Por eso los dos perfiles tienen que planificar hacia adelante.
+    for perfil in ("launch/sim_global_v2.launch.py", "launch/real_global_v2.launch.py"):
+        assert '"coverage_f2c_allow_reverse": False' in _read(perfil)
 
 
 def test_los_arboles_de_comportamiento_de_la_simulacion_no_traen_backup() -> None:

@@ -950,12 +950,32 @@ def generate_launch_description():
                         # goals no pasan por aca.
                         "coverage_planner": _COVERAGE_PLANNER,
                         "coverage_f2c_route_type": "BOUSTROPHEDON",
-                        # El perfil real SI puede retroceder, y la cabecera de
-                        # tres puntos es la maniobra mas corta cuando las
-                        # pasadas quedan mas juntas que el diametro de giro. Se
-                        # deja explicito para que la politica forward-only de
-                        # la simulacion no se filtre al campo sin querer.
-                        "coverage_f2c_allow_reverse": True,
+                        # La cobertura automatica NO retrocede. El vehiculo
+                        # puede hacerlo -BackUp sigue cargado como recuperacion
+                        # de Nav2- pero un plan de cobertura no puede pedirlo:
+                        # nadie mira al robot mientras trabaja el lote.
+                        #
+                        # Antes esto estaba en True y traia una consecuencia que
+                        # no era obvia. Con reversa, una separacion menor que el
+                        # diametro de giro se resuelve con la cabecera de tres
+                        # puntos, que sale con fase "headland". Las guias de
+                        # cabecera estan apagadas por default y su filtro
+                        # conserva forward_turn y las fases nogo_*, pero no
+                        # "headland": el planificador calculaba el giro y el
+                        # filtro lo tiraba. Al robot le llegaban los extremos de
+                        # surco pelados, sin un solo waypoint de curva, y Nav2
+                        # improvisaba el enlace. Con pasadas a 5.96 m y radio
+                        # 4.0 m el diametro de giro es 8.0 m -faltan 2.04 m para
+                        # que la U entre- asi que lo que improvisaba era un rulo
+                        # hacia afuera: se midio uno de 32.4 m para alcanzar una
+                        # sola meta.
+                        #
+                        # En False la maniobra pasa a ser la omega hacia
+                        # adelante, con fase forward_turn, que el filtro SI
+                        # conserva. La curva viaja en la ruta y ningun waypoint
+                        # sale con backup_m, asi que aguas abajo no puede
+                        # aparecer una accion coverage_backup.
+                        "coverage_f2c_allow_reverse": False,
                         "coverage_f2c_robot_width_m": 1.0,
                         # 0 grados: pasadas de este a oeste, que es como se
                         # leen en el mapa. Sin esto Fields2Cover elige la
