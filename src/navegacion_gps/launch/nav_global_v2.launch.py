@@ -173,6 +173,23 @@ def generate_launch_description():
                 ],
                 remappings=remappings,
             ),
+            # ANTES que bt_navigator a proposito: el arbol de comportamiento
+            # tiene un nodo `IsPathClearanceValid` que consume el servicio de
+            # este nodo, y lo espera AL CONSTRUIRSE. Si no esta, tira excepcion
+            # y bt_navigator no configura. El orden no alcanza por si solo
+            # -el lanzamiento es concurrente-, por eso ademas los params
+            # llevan `wait_for_service_timeout` amplio.
+            Node(
+                package="navegacion_gps",
+                executable="path_clearance_validator",
+                name="path_clearance_validator",
+                output="screen",
+                parameters=[
+                    configured_nav2_params,
+                    configured_nav2_overrides,
+                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
+                ],
+            ),
             Node(
                 package="nav2_bt_navigator",
                 executable="bt_navigator",
@@ -184,17 +201,6 @@ def generate_launch_description():
                     {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
                 ],
                 remappings=remappings,
-            ),
-            Node(
-                package="navegacion_gps",
-                executable="path_clearance_validator",
-                name="path_clearance_validator",
-                output="screen",
-                parameters=[
-                    configured_nav2_params,
-                    configured_nav2_overrides,
-                    {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
-                ],
             ),
             Node(
                 package="nav2_behaviors",

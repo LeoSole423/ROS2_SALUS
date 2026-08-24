@@ -15,6 +15,24 @@ bt_navigator:
     # En carga, 20 ms no alcanzaban para que compute_path_to_pose confirmara
     # el goal al encadenar waypoints y NavigateToPose abortaba toda la mision.
     default_server_timeout: 200
+    # Cuanto espera un nodo del arbol a que aparezca el servicio que consume,
+    # AL CONSTRUIR EL ARBOL. El default de Nav2 es 1 s y no alcanza en la Jetson:
+    # `IsPathClearanceValid` consume
+    # /path_clearance_validator/is_path_clearance_valid, y ese nodo se lanza en
+    # la misma LaunchDescription que bt_navigator -de hecho despues, en
+    # nav_global_v2.launch.py-, asi que quien gana la carrera depende de cual
+    # termina de inicializar primero.
+    #
+    # Cuando pierde, `bt_service_node.hpp` tira std::runtime_error, el XML no
+    # carga, bt_navigator no configura y el lifecycle manager aborta el bringup
+    # entero: la navegacion global queda muerta aunque el servicio systemd siga
+    # "active". En una maquina de escritorio no se ve porque el servicio aparece
+    # antes del segundo.
+    #
+    # No es un delay al arranque: si el servicio ya esta, wait_for_service
+    # retorna de inmediato. Solo amplia la ventana para que una maquina lenta no
+    # pierda la carrera.
+    wait_for_service_timeout: 20000
     navigators: ["navigate_to_pose", "navigate_through_poses"]
     navigate_to_pose:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
