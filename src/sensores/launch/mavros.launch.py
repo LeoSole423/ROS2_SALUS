@@ -56,6 +56,9 @@ def generate_launch_description():
         if os.path.exists(source_tree_rtk_sources_yaml)
         else os.path.join(sensores_share_dir, "config", "rtk_sources.yaml")
     )
+    local_sources = os.path.join("/ros2_ws", "src", "sensores", "config", "rtk_sources.local.yaml")
+    if os.path.isfile(local_sources):
+        default_rtk_sources_yaml = local_sources
 
     return LaunchDescription(
         [
@@ -127,7 +130,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "active_rtk_source_id",
                 default_value="",
-                description="Initial RTK source id; empty falls back to the first entry in rtk_sources_config",
+                description="Initial RTK source id; empty uses the saved selection, then the first entry",
             ),
             DeclareLaunchArgument(
                 "rtk_source_select_topic",
@@ -255,7 +258,10 @@ def generate_launch_description():
                 executable="rtk_source_manager",
                 name="rtk_source_manager",
                 output="screen",
-                condition=IfCondition(enable_rtk_source_manager),
+                condition=IfCondition(PythonExpression([
+                    "'", enable_rtk, "'.lower() in ('true', '1') and '",
+                    enable_rtk_source_manager, "'.lower() in ('true', '1')",
+                ])),
                 parameters=[
                     {"sources_config": rtk_sources_config},
                     {"active_source_id": active_rtk_source_id},
@@ -276,9 +282,9 @@ def generate_launch_description():
                         [
                             "'",
                             enable_rtk,
-                            "' == 'true' and '",
+                            "'.lower() in ('true', '1') and '",
                             enable_rtk_source_manager,
-                            "' == 'true'",
+                            "'.lower() in ('true', '1')",
                         ]
                     )
                 ),
@@ -304,9 +310,9 @@ def generate_launch_description():
                         [
                             "'",
                             enable_rtk,
-                            "' == 'true' and '",
+                            "'.lower() in ('true', '1') and '",
                             enable_rtk_source_manager,
-                            "' != 'true'",
+                            "'.lower() not in ('true', '1')",
                         ]
                     )
                 ),

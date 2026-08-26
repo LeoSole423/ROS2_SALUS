@@ -167,6 +167,7 @@ def generate_launch_description():
             DeclareLaunchArgument("use_sim_time", default_value="False"),
             DeclareLaunchArgument("wheelbase_m", default_value="0.94"),
             DeclareLaunchArgument("enable_rtk", default_value="True"),
+            DeclareLaunchArgument("enable_rtk_source_manager", default_value="true"),
             DeclareLaunchArgument("invert_measured_steer_sign", default_value="True"),
             DeclareLaunchArgument(
                 "custom_urdf",
@@ -322,6 +323,7 @@ def generate_launch_description():
                     "use_sim_time": use_sim_time,
                     "wheelbase_m": wheelbase_m,
                     "enable_rtk": enable_rtk,
+                    "enable_rtk_source_manager": LaunchConfiguration("enable_rtk_source_manager"),
                     "invert_measured_steer_sign": invert_measured_steer_sign,
                     "custom_urdf": custom_urdf,
                     "lidar_to_scan_params_file": lidar_to_scan_params_file,

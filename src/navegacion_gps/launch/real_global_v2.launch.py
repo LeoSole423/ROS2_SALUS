@@ -374,6 +374,7 @@ def generate_launch_description():
             # default para diagnosticar el GNSS aunque el heading GPS siga
             # deshabilitado.
             DeclareLaunchArgument("enable_rtk", default_value="True"),
+            DeclareLaunchArgument("enable_rtk_source_manager", default_value="true"),
             DeclareLaunchArgument(
                 "invert_measured_steer_sign",
                 default_value="True",
@@ -582,6 +583,7 @@ def generate_launch_description():
                     # expresion vuelve a encender la cadena necesaria para
                     # evitar una activacion a medias del heading global.
                     "enable_rtk": effective_enable_rtk,
+                    "enable_rtk_source_manager": LaunchConfiguration("enable_rtk_source_manager"),
                     "rtk_status_topic": gps_rtk_status_topic,
                     "fcu_url": fcu_url,
                 }.items(),

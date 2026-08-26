@@ -18,6 +18,7 @@ Fuente de verdad: launches, scripts, nodos y tests del checkout actual
 - Usar [docs/navigation-traces.md](/home/leo/codigo/ROS2_SALUS/docs/navigation-traces.md) para diagnosticar replanning y progreso de checkpoints en simulacion.
 
 ## Documentación vigente
+- [RTK/NTRIP: configuración privada, estados y activación](rtk-ntrip.md).
 - Raíz del monorepo:
   - [README.md](/home/leo/codigo/ROS2_SALUS/README.md)
   - [docs/launch-matrix.md](/home/leo/codigo/ROS2_SALUS/docs/launch-matrix.md)

@@ -37,6 +37,7 @@ setup(
             'config/mavros_apm_overrides.yaml',
             'config/mavros_sensor_only_pluginlists.yaml',
             'config/rtk_sources.yaml',
+            'config/rtk_sources.example.yaml',
             'config/rs16.yaml',
         ]),
     ] + _wsdl_data_files(),

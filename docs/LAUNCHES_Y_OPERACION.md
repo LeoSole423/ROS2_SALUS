@@ -63,6 +63,7 @@ Args destacados (defaults reales):
 |---|---|---|
 | `use_keepout` | `False` | keepout deshabilitado mientras se estabiliza el costmap 300×300 m |
 | `enable_rtk` | `True` | cadena RTK observable por default |
+| `enable_rtk_source_manager` | `true` | cliente NTRIP en perfiles real/WiFi; ver [RTK/NTRIP](rtk-ntrip.md) para configuración privada y activación segura |
 | `enable_gps_course_heading` | `True` | heading por rumbo GPS |
 | `enable_scan_noise_filter` | `True` | scan efectivo `/scan_clean` |
 | `enable_lidar_obstacle_filter` | `False` | rama RANSAC 3D experimental |

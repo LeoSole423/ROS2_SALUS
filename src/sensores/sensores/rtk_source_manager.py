@@ -5,30 +5,17 @@ import json
 import socket
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import rclpy
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from std_msgs.msg import String, UInt8MultiArray
+from sensores.ntrip_protocol import ChunkDecoder, RtcmDecoder, parse_response
+from sensores.rtk_source_config import RtkSource, load_sources, save_sources, validate_source
 
 RTCM_BUFFER_SIZE = 4096
-RTCM_MIN_FRAME_BYTES = 6
-NTRIP_HEADER_MAX_BYTES = 16384
-
-
-@dataclass(frozen=True)
-class RtkSource:
-    id: str
-    label: str
-    host: str
-    port: int
-    mountpoint: str
-    username: str
-    password: str
 
 
 class RtkSourceManager(Node):
@@ -52,6 +39,8 @@ class RtkSourceManager(Node):
         self.declare_parameter("connect_timeout_s", 5.0)
         self.declare_parameter("read_timeout_s", 2.0)
         self.declare_parameter("reconnect_delay_s", 2.0)
+        self.declare_parameter("max_reconnect_delay_s", 60.0)
+        self.declare_parameter("rtcm_stale_timeout_s", 10.0)
 
         sources_config = str(self.get_parameter("sources_config").value)
         self.rtcm_topic = str(self.get_parameter("rtcm_topic").value)
@@ -73,24 +62,32 @@ class RtkSourceManager(Node):
         self._reconnect_delay_s = float(
             self.get_parameter("reconnect_delay_s").value
         )
+        self._max_reconnect_delay_s = float(self.get_parameter("max_reconnect_delay_s").value)
+        self._rtcm_stale_timeout_s = float(self.get_parameter("rtcm_stale_timeout_s").value)
+        if min(self._connect_timeout_s, self._read_timeout_s, self._reconnect_delay_s,
+               self._max_reconnect_delay_s, self._rtcm_stale_timeout_s) <= 0:
+            raise ValueError("RTK timeouts must be positive")
 
         self._sources_config_path = Path(sources_config)
-        self._sources = self._load_sources(self._sources_config_path)
+        self._sources, saved_source_id = load_sources(self._sources_config_path)
         self._sources_by_id = {source.id: source for source in self._sources}
         if not self._sources_by_id:
             raise RuntimeError(f"No RTK sources found in {sources_config}")
 
-        initial_source_id = str(self.get_parameter("active_source_id").value).strip()
-        if not initial_source_id or initial_source_id not in self._sources_by_id:
-            initial_source_id = self._sources[0].id
+        initial_source_id = str(self.get_parameter("active_source_id").value).strip() or saved_source_id or self._sources[0].id
+        if initial_source_id not in self._sources_by_id:
+            raise ValueError("unknown_initial_rtk_source")
 
         self._data_lock = threading.Lock()
         self._active_source_id = initial_source_id
+        self._source_generation = 0
         self._connected = False
         self._last_error = ""
         self._last_rtcm_time_s: Optional[float] = None
         self._received_count = 0
         self._last_message_size = 0
+        self._crc_errors = 0
+        self._status_sequence = 0
         self._socket: Optional[socket.socket] = None
         self._wake_connect = threading.Event()
         self._stop_event = threading.Event()
@@ -126,29 +123,6 @@ class RtkSourceManager(Node):
             self._worker.join(timeout=2.0)
         return super().destroy_node()
 
-    def _load_sources(self, path: Path) -> list[RtkSource]:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        raw_sources = data.get("sources") or []
-        sources: list[RtkSource] = []
-        for raw in raw_sources:
-            try:
-                sources.append(
-                    RtkSource(
-                        id=str(raw["id"]).strip(),
-                        label=str(raw.get("label") or raw["id"]).strip(),
-                        host=str(raw["host"]).strip(),
-                        port=int(raw.get("port", 2101)),
-                        mountpoint=str(raw["mountpoint"]).strip(),
-                        username=str(raw.get("username", "")).strip(),
-                        password=str(raw.get("password", "")).strip(),
-                    )
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Invalid RTK source entry in {path}: {raw}"
-                ) from exc
-        return sources
-
     def _serialize_sources_locked(self) -> list[dict]:
         return [
             {
@@ -160,27 +134,6 @@ class RtkSourceManager(Node):
             }
             for source in self._sources
         ]
-
-    def _write_sources_locked(self) -> None:
-        payload = {
-            "sources": [
-                {
-                    "id": source.id,
-                    "label": source.label,
-                    "host": source.host,
-                    "port": source.port,
-                    "mountpoint": source.mountpoint,
-                    "username": source.username,
-                    "password": source.password,
-                }
-                for source in self._sources
-            ]
-        }
-        self._sources_config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._sources_config_path.write_text(
-            yaml.safe_dump(payload, sort_keys=False, allow_unicode=False),
-            encoding="utf-8",
-        )
 
     def _replace_sources_locked(self, sources: list[RtkSource]) -> None:
         self._sources = list(sources)
@@ -218,9 +171,9 @@ class RtkSourceManager(Node):
         password = payload.get("password", None)
         if password is None or (str(password).strip() == "" and existing is not None):
             password = existing.password if existing else ""
-        password = str(password or "").strip()
+        password = str(password or "")
 
-        return RtkSource(
+        source = RtkSource(
             id=source_id,
             label=label or source_id,
             host=host,
@@ -229,9 +182,12 @@ class RtkSourceManager(Node):
             username=username,
             password=password,
         )
+        validate_source(source)
+        return source
 
     def _publish_metadata(self) -> None:
         with self._data_lock:
+            self._status_sequence += 1
             msg_sources = String()
             msg_sources.data = json.dumps(
                 {
@@ -244,9 +200,13 @@ class RtkSourceManager(Node):
                 rtcm_age_s = max(0.0, time.monotonic() - self._last_rtcm_time_s)
 
             payload = {
+                "status_sequence": self._status_sequence,
                 "active_source_id": self._active_source_id,
                 "active_source_label": source.label if source else None,
                 "connected": self._connected,
+                "receiving_rtcm": self._connected and rtcm_age_s is not None and rtcm_age_s <= self._rtcm_stale_timeout_s,
+                "rtcm_stale_timeout_s": self._rtcm_stale_timeout_s,
+                "crc_errors": self._crc_errors,
                 "last_error": self._last_error or None,
                 "rtcm_age_s": rtcm_age_s,
                 "received_count": self._received_count,
@@ -273,9 +233,21 @@ class RtkSourceManager(Node):
         with self._data_lock:
             if requested_id == self._active_source_id:
                 return
+            # Persist before changing the live stream. A write error must not
+            # silently switch the receiver to a different reference station.
+            try:
+                save_sources(self._sources_config_path, self._sources, requested_id)
+            except OSError:
+                self._last_error = "rtk_config_write_failed"
+                return
             self._active_source_id = requested_id
+            self._source_generation += 1
             self._connected = False
             self._last_error = ""
+            self._last_rtcm_time_s = None
+            self._received_count = 0
+            self._last_message_size = 0
+            self._crc_errors = 0
 
         self.get_logger().info(f"Switching RTK source to {requested_id}")
         self._publish_metadata()
@@ -312,11 +284,11 @@ class RtkSourceManager(Node):
                     remaining = [
                         source for source in self._sources if source.id != source_id
                     ]
-                    if self._active_source_id == source_id:
-                        self._active_source_id = remaining[0].id
-                        reconnect = True
+                    active = remaining[0].id if self._active_source_id == source_id else self._active_source_id
+                    save_sources(self._sources_config_path, remaining, active)
+                    reconnect = active != self._active_source_id
+                    self._active_source_id = active
                     self._replace_sources_locked(remaining)
-                    self._write_sources_locked()
                     self._last_error = ""
                     self.get_logger().info(f"Deleted RTK source {source_id}")
                 else:
@@ -333,72 +305,100 @@ class RtkSourceManager(Node):
                         ]
                         if existing != source:
                             self.get_logger().info(f"Updated RTK source {source.id}")
+                    active = source.id if activate else self._active_source_id
+                    save_sources(self._sources_config_path, new_sources, active)
+                    reconnect = active != self._active_source_id or (active == source.id and existing != source)
+                    self._active_source_id = active
                     self._replace_sources_locked(new_sources)
-                    self._write_sources_locked()
-                    if activate and self._active_source_id != source.id:
-                        self._active_source_id = source.id
-                        reconnect = True
-                    if self._active_source_id == source.id:
-                        reconnect = True
                     self._last_error = ""
-        except Exception as exc:
-            self.get_logger().warning(f"RTK source management failed: {exc}")
+                if reconnect:
+                    self._source_generation += 1
+                    self._connected = False
+                    self._last_rtcm_time_s = None
+                    self._received_count = 0
+                    self._last_message_size = 0
+                    self._crc_errors = 0
+        except Exception:
+            self.get_logger().warning("RTK source management failed")
             with self._data_lock:
-                self._last_error = str(exc)
+                self._last_error = "rtk_source_management_failed"
             self._publish_metadata()
             return
 
         self._publish_metadata()
         if reconnect:
-            self._set_connected(False, "")
             self._close_socket()
             self._wake_connect.set()
 
-    def _active_source(self) -> RtkSource:
-        with self._data_lock:
-            return self._sources_by_id[self._active_source_id]
-
     def _reader_loop(self) -> None:
-        buffer = bytearray()
+        delay = self._reconnect_delay_s
         while not self._stop_event.is_set():
-            source = self._active_source()
+            with self._data_lock:
+                source = self._sources_by_id[self._active_source_id]
+                generation = self._source_generation
+                self._last_rtcm_time_s = None
             try:
-                sock, initial_payload = self._open_stream(source)
-                self._set_connected(True, "")
-                buffer.clear()
-                if initial_payload:
-                    buffer.extend(initial_payload)
-                    self._consume_rtcm_stream(buffer)
-
+                sock, response = self._open_stream(source, generation)
+                self._set_connected(True, "", generation)
+                decoder = RtcmDecoder()
+                chunks = ChunkDecoder() if response.chunked else None
+                payload = response.payload
+                last_valid = time.monotonic()
                 while not self._stop_event.is_set():
-                    if source.id != self._active_source().id:
-                        raise InterruptedError("RTK source changed")
-                    chunk = sock.recv(RTCM_BUFFER_SIZE)
-                    if not chunk:
-                        raise ConnectionError("NTRIP stream closed")
-                    buffer.extend(chunk)
-                    self._consume_rtcm_stream(buffer)
+                    with self._data_lock:
+                        if generation != self._source_generation:
+                            raise InterruptedError
+                    frames = decoder.feed(chunks.feed(payload) if chunks else payload)
+                    for frame in frames:
+                        self._publish_rtcm_frame(frame, generation)
+                        last_valid = time.monotonic()
+                        delay = self._reconnect_delay_s
+                    with self._data_lock:
+                        if generation == self._source_generation:
+                            self._crc_errors += decoder.crc_errors
+                    decoder.crc_errors = 0
+                    if chunks and chunks.finished:
+                        raise ConnectionError("ntrip_stream_closed")
+                    if time.monotonic() - last_valid > self._rtcm_stale_timeout_s:
+                        raise ConnectionError("ntrip_no_valid_rtcm")
+                    try:
+                        payload = sock.recv(RTCM_BUFFER_SIZE)
+                    except socket.timeout:
+                        payload = b""
+                        continue
+                    if not payload:
+                        raise ConnectionError("ntrip_stream_closed")
             except InterruptedError:
                 pass
             except Exception as exc:
-                self._set_connected(False, str(exc))
+                # Only our controlled protocol errors are safe to publish.
+                error = str(exc) if isinstance(exc, ConnectionError) and str(exc).startswith("ntrip_") else "ntrip_connection_failed"
+                self._set_connected(False, error, generation)
             finally:
                 self._close_socket()
+            if self._wake_connect.wait(timeout=delay):
+                self._wake_connect.clear()
+                delay = self._reconnect_delay_s
+            else:
+                delay = min(delay * 2, self._max_reconnect_delay_s)
 
-            self._wake_connect.wait(timeout=self._reconnect_delay_s)
-            self._wake_connect.clear()
-
-    def _open_stream(self, source: RtkSource) -> tuple[socket.socket, bytes]:
+    def _open_stream(self, source: RtkSource, generation: int):
         sock = socket.create_connection(
             (source.host, source.port), timeout=self._connect_timeout_s
         )
+        with self._data_lock:
+            if generation != self._source_generation or self._stop_event.is_set():
+                sock.close()
+                raise InterruptedError
+            self._socket = sock
         sock.settimeout(self._read_timeout_s)
 
         auth = base64.b64encode(
             f"{source.username}:{source.password}".encode("utf-8")
         ).decode("ascii")
         request = (
-            f"GET /{source.mountpoint} HTTP/1.0\r\n"
+            f"GET /{source.mountpoint.lstrip('/')} HTTP/1.1\r\n"
+            f"Host: {source.host}:{source.port}\r\n"
             "User-Agent: NTRIP RTKLIB/2.4.3\r\n"
             "Accept: */*\r\n"
             "Connection: close\r\n"
@@ -409,90 +409,52 @@ class RtkSourceManager(Node):
         sock.sendall(request.encode("ascii"))
 
         response = bytearray()
+        deadline = time.monotonic() + self._connect_timeout_s
         while True:
+            if time.monotonic() >= deadline:
+                raise ConnectionError("ntrip_handshake_timeout")
+            sock.settimeout(max(0.01, deadline - time.monotonic()))
             chunk = sock.recv(RTCM_BUFFER_SIZE)
             if not chunk:
-                if response:
-                    raise ConnectionError(
-                        f"NTRIP server closed during handshake: "
-                        f"{response.decode('latin1', errors='replace')[:160]}"
-                    )
-                raise ConnectionError("NTRIP server closed before sending headers")
+                raise ConnectionError("ntrip_closed_during_handshake")
             response.extend(chunk)
-            parsed = self._parse_ntrip_response(bytes(response))
+            parsed = parse_response(bytes(response))
             if parsed is not None:
-                first_line, payload = parsed
-                if "200" not in first_line and "ICY 200 OK" not in first_line:
-                    raise ConnectionError(
-                        f"NTRIP server rejected source {source.id}: {first_line}"
-                    )
-                self._socket = sock
+                sock.settimeout(self._read_timeout_s)
                 self.get_logger().info(
                     f"NTRIP source connected: {source.label} "
                     f"({source.host}/{source.mountpoint})"
                 )
-                return sock, payload
-            if len(response) > NTRIP_HEADER_MAX_BYTES:
-                raise ConnectionError("NTRIP headers too large")
+                return sock, parsed
 
-    def _parse_ntrip_response(self, response: bytes) -> Optional[tuple[str, bytes]]:
-        if response.startswith(b"ICY 200 OK"):
-            line_end = response.find(b"\r\n")
-            if line_end == -1:
-                line_end = response.find(b"\n")
-            if line_end == -1:
-                return None
-            first_line = response[:line_end].decode("latin1", errors="replace")
-            separator_len = 2 if response[line_end: line_end + 2] == b"\r\n" else 1
-            return first_line, bytes(response[line_end + separator_len :])
-
-        if response.startswith(b"HTTP/"):
-            line_end = response.find(b"\r\n")
-            if line_end == -1:
-                line_end = response.find(b"\n")
-            if line_end == -1:
-                return None
-            first_line = response[:line_end].decode("latin1", errors="replace")
-            separator_len = 2 if response[line_end: line_end + 2] == b"\r\n" else 1
-            return first_line, bytes(response[line_end + separator_len :])
-
-        return None
-
-    def _consume_rtcm_stream(self, buffer: bytearray) -> None:
-        while len(buffer) >= RTCM_MIN_FRAME_BYTES:
-            if buffer[0] != 0xD3:
-                buffer.pop(0)
-                continue
-
-            payload_length = ((buffer[1] & 0x03) << 8) | buffer[2]
-            frame_length = payload_length + RTCM_MIN_FRAME_BYTES
-            if len(buffer) < frame_length:
-                return
-
-            frame = bytes(buffer[:frame_length])
-            del buffer[:frame_length]
-            self._publish_rtcm_frame(frame)
-
-    def _publish_rtcm_frame(self, frame: bytes) -> None:
+    def _publish_rtcm_frame(self, frame: bytes, generation: int) -> None:
         msg = UInt8MultiArray()
         msg.data = list(frame)
-        self._rtcm_pub.publish(msg)
-
         with self._data_lock:
+            if generation != self._source_generation or self._stop_event.is_set():
+                return
+            self._rtcm_pub.publish(msg)
             self._last_rtcm_time_s = time.monotonic()
             self._received_count += 1
             self._last_message_size = len(frame)
 
-    def _set_connected(self, connected: bool, last_error: str) -> None:
+    def _set_connected(self, connected: bool, last_error: str, generation: int) -> None:
         with self._data_lock:
+            if generation != self._source_generation:
+                return
             self._connected = connected
             self._last_error = last_error
 
     def _close_socket(self) -> None:
-        sock = self._socket
-        self._socket = None
+        with self._data_lock:
+            sock = self._socket
+            self._socket = None
         if sock is None:
             return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             sock.close()
         except OSError:

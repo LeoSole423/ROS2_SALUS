@@ -1,0 +1,11 @@
+# Copy to rtk_sources.local.yaml (ignored by Git); chmod 600 before filling in credentials.
+# UCOR is for the current Cordoba deployment, not a universal nearest-base selection.
+active_source_id: ign_ucor
+sources:
+  - id: ign_ucor
+    label: IGN UCOR
+    host: ntrip.ign.gob.ar
+    port: 2101
+    mountpoint: UCOR-v3.3
+    username: ""
+    password: ""

@@ -14,6 +14,8 @@
 /.trash_mapviz/
 
 # Generated runtime configs
+/src/sensores/config/rtk_sources.local.yaml
+/src/sensores/config/.rtk-*
 /src/navegacion_gps/config/block_loop_benchmark.yaml
 /src/navegacion_gps/config/saved_waypoints.yaml
 
