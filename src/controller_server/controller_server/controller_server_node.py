@@ -57,23 +57,32 @@ class ControllerServerNode(Node):
         self.declare_parameter("telemetry_stale_timeout_s", 0.5)
         self.declare_parameter("battery_state_topic", "/battery_state")
         self.declare_parameter("battery_guard_topic", "/battery_mission_guard")
-        self.declare_parameter("battery_full_voltage", 60.0)
-        self.declare_parameter("battery_empty_voltage", 55.0)
-        self.declare_parameter("battery_low_voltage", 58.0)
-        self.declare_parameter("battery_critical_voltage", 56.0)
+        self.declare_parameter("battery_full_voltage", 53.5)
+        self.declare_parameter("battery_empty_voltage", 44.5)
+        self.declare_parameter("battery_low_voltage", 47.0)
+        self.declare_parameter("battery_critical_voltage", 45.0)
         self.declare_parameter("battery_telemetry_stale_timeout_s", 3.0)
         self.declare_parameter(
             "battery_soc_curve_points",
-            [55.0, 0.0, 57.0, 0.8, 57.5, 0.9, 60.0, 1.0],
+            [
+                44.5,
+                0.0,
+                46.5,
+                0.15,
+                48.0,
+                0.35,
+                50.0,
+                0.60,
+                52.0,
+                0.85,
+                53.5,
+                1.0,
+            ],
         )
-        self.declare_parameter("battery_loaded_fast_tau_s", 4.0)
-        self.declare_parameter("battery_loaded_slow_tau_s", 45.0)
-        self.declare_parameter("battery_recovered_tau_s", 12.0)
-        self.declare_parameter("battery_soc_discharge_tau_s", 180.0)
-        self.declare_parameter("battery_guard_loaded_low_voltage", 56.0)
-        self.declare_parameter("battery_guard_recovered_low_voltage", 57.0)
-        self.declare_parameter("battery_guard_loaded_low_persist_s", 90.0)
-        self.declare_parameter("battery_guard_recovered_low_persist_s", 20.0)
+        self.declare_parameter("battery_return_home_voltage", 46.5)
+        self.declare_parameter("battery_return_home_persist_s", 30.0)
+        self.declare_parameter("battery_guard_clear_voltage", 48.0)
+        self.declare_parameter("battery_guard_clear_persist_s", 30.0)
         self.declare_parameter("transport_backend", "uart")
         self.declare_parameter("sim_cmd_vel_topic", "/cmd_vel_gazebo")
         self.declare_parameter("sim_odom_topic", "/odom_raw")
@@ -191,23 +200,17 @@ class ControllerServerNode(Node):
             self._battery_full_voltage = self._battery_empty_voltage + 1.0
         self._battery_estimator = BatteryEstimator(
             soc_curve_points=battery_soc_curve_points,
-            loaded_fast_tau_s=float(self.get_parameter("battery_loaded_fast_tau_s").value),
-            loaded_slow_tau_s=float(self.get_parameter("battery_loaded_slow_tau_s").value),
-            recovered_tau_s=float(self.get_parameter("battery_recovered_tau_s").value),
-            soc_fast_discharge_tau_s=float(
-                self.get_parameter("battery_soc_discharge_tau_s").value
+            return_home_voltage_v=float(
+                self.get_parameter("battery_return_home_voltage").value
             ),
-            loaded_low_threshold_v=float(
-                self.get_parameter("battery_guard_loaded_low_voltage").value
+            return_home_persist_s=float(
+                self.get_parameter("battery_return_home_persist_s").value
             ),
-            recovered_low_threshold_v=float(
-                self.get_parameter("battery_guard_recovered_low_voltage").value
+            guard_clear_voltage_v=float(
+                self.get_parameter("battery_guard_clear_voltage").value
             ),
-            loaded_low_persist_s=float(
-                self.get_parameter("battery_guard_loaded_low_persist_s").value
-            ),
-            recovered_low_persist_s=float(
-                self.get_parameter("battery_guard_recovered_low_persist_s").value
+            guard_clear_persist_s=float(
+                self.get_parameter("battery_guard_clear_persist_s").value
             ),
         )
         self._transport_backend = str(self.get_parameter("transport_backend").value)
@@ -522,6 +525,10 @@ class ControllerServerNode(Node):
                 link_fresh=battery_link_fresh,
                 suspect=bool(battery_telemetry.suspect),
                 mission_guard_state=battery_estimate.mission_guard_state,
+                voltage_v=float(battery_estimate.filtered_voltage_v),
+                low_voltage_v=self._battery_low_voltage,
+                critical_voltage_v=self._battery_critical_voltage,
+                minimum_voltage_v=self._battery_empty_voltage,
             )
             battery_payload = battery_telemetry.as_dict()
             battery_payload.update(

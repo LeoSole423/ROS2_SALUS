@@ -53,8 +53,8 @@ class SimBatteryState:
 SIM_BATTERY_PRESETS = {
     "full": SimBatteryPreset(
         name="full",
-        recovered_voltage_v=60.0,
-        loaded_voltage_v=59.8,
+        recovered_voltage_v=53.5,
+        loaded_voltage_v=53.3,
         traction_active=False,
         ready=True,
         fresh=True,
@@ -62,8 +62,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "under_load": SimBatteryPreset(
         name="under_load",
-        recovered_voltage_v=60.0,
-        loaded_voltage_v=59.3,
+        recovered_voltage_v=52.0,
+        loaded_voltage_v=50.0,
         traction_active=True,
         ready=True,
         fresh=True,
@@ -71,8 +71,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "watching": SimBatteryPreset(
         name="watching",
-        recovered_voltage_v=57.3,
-        loaded_voltage_v=57.0,
+        recovered_voltage_v=47.2,
+        loaded_voltage_v=47.2,
         traction_active=False,
         ready=True,
         fresh=True,
@@ -80,8 +80,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "return_home_rest": SimBatteryPreset(
         name="return_home_rest",
-        recovered_voltage_v=56.8,
-        loaded_voltage_v=56.6,
+        recovered_voltage_v=46.4,
+        loaded_voltage_v=46.4,
         traction_active=False,
         ready=True,
         fresh=True,
@@ -89,8 +89,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "return_home_load": SimBatteryPreset(
         name="return_home_load",
-        recovered_voltage_v=56.8,
-        loaded_voltage_v=55.8,
+        recovered_voltage_v=46.4,
+        loaded_voltage_v=46.4,
         traction_active=True,
         ready=True,
         fresh=True,
@@ -98,8 +98,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "stale": SimBatteryPreset(
         name="stale",
-        recovered_voltage_v=60.0,
-        loaded_voltage_v=59.8,
+        recovered_voltage_v=53.5,
+        loaded_voltage_v=53.3,
         traction_active=False,
         ready=True,
         fresh=False,
@@ -107,8 +107,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "suspect": SimBatteryPreset(
         name="suspect",
-        recovered_voltage_v=60.0,
-        loaded_voltage_v=59.8,
+        recovered_voltage_v=53.5,
+        loaded_voltage_v=53.3,
         traction_active=False,
         ready=True,
         fresh=True,
@@ -116,8 +116,8 @@ SIM_BATTERY_PRESETS = {
     ),
     "unavailable": SimBatteryPreset(
         name="unavailable",
-        recovered_voltage_v=60.0,
-        loaded_voltage_v=59.8,
+        recovered_voltage_v=53.5,
+        loaded_voltage_v=53.3,
         traction_active=False,
         ready=False,
         fresh=False,
@@ -411,8 +411,8 @@ class SimGazeboBackend:
         self._latest_right_joint_angle_rad: Optional[float] = None
         now_s = time.monotonic()
         self._battery_state = SimBatteryState(
-            recovered_voltage_v=60.0,
-            loaded_voltage_v=59.8,
+            recovered_voltage_v=53.5,
+            loaded_voltage_v=53.3,
             traction_active_override=None,
             ready=True,
             fresh=True,

@@ -2,40 +2,33 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Iterable, Sequence, Tuple
 
-DEFAULT_EMPTY_VOLTAGE_V = 55.0
-DEFAULT_FULL_VOLTAGE_V = 60.0
-DEFAULT_SOC_FAST_DISCHARGE_TAU_S = 180.0
-DEFAULT_LOADED_FAST_TAU_S = 4.0
-DEFAULT_LOADED_SLOW_TAU_S = 45.0
-DEFAULT_RECOVERED_TAU_S = 12.0
-DEFAULT_LOADED_LOW_THRESHOLD_V = 56.0
-DEFAULT_RECOVERED_LOW_THRESHOLD_V = 57.0
-DEFAULT_LOADED_LOW_PERSIST_S = 90.0
-DEFAULT_RECOVERED_LOW_PERSIST_S = 20.0
-DEFAULT_GUARD_CLEAR_HYSTERESIS_V = 0.4
 
-OPERATOR_SOC_MODEL_NAME = "lead_acid_empirical_operator_v1"
-MISSION_GUARD_MODEL_NAME = "lead_acid_voltage_guard_v1"
+DEFAULT_EMPTY_VOLTAGE_V = 44.5
+DEFAULT_FULL_VOLTAGE_V = 53.5
+DEFAULT_RETURN_HOME_VOLTAGE_V = 46.5
+DEFAULT_RETURN_HOME_PERSIST_S = 30.0
+DEFAULT_GUARD_CLEAR_VOLTAGE_V = 48.0
+DEFAULT_GUARD_CLEAR_PERSIST_S = 30.0
 
+OPERATOR_SOC_MODEL_NAME = "pylontech_48v_voltage_estimate_v1"
+MISSION_GUARD_MODEL_NAME = "pylontech_48v_voltage_guard_v1"
+
+# LiFePO4 voltage does not give an exact SOC. This curve is operator guidance;
+# navigation protection is based on voltage and persistence, not percentage.
 DEFAULT_OPERATOR_SOC_CURVE: Tuple[Tuple[float, float], ...] = (
-    (55.0, 0.0),
-    (57.0, 0.8),
-    (57.5, 0.9),
-    (60.0, 1.0),
+    (44.5, 0.0),
+    (46.5, 0.15),
+    (48.0, 0.35),
+    (50.0, 0.60),
+    (52.0, 0.85),
+    (53.5, 1.0),
 )
 
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
-
-
-def _ema(previous: float, sample: float, dt_s: float, tau_s: float) -> float:
-    if dt_s <= 0.0:
-        return float(previous)
-    alpha = 1.0 - math.exp(-dt_s / max(1.0e-6, float(tau_s)))
-    return float(previous) + alpha * (float(sample) - float(previous))
 
 
 def _ensure_monotonic_curve(
@@ -68,8 +61,9 @@ def parse_soc_curve_points(
     raw = [float(value) for value in values]
     if len(raw) < 4 or (len(raw) % 2) != 0:
         raise ValueError("battery_soc_curve_points must contain voltage/pct pairs")
-    pairs = [(raw[idx], raw[idx + 1]) for idx in range(0, len(raw), 2)]
-    return _ensure_monotonic_curve(pairs)
+    return _ensure_monotonic_curve(
+        [(raw[idx], raw[idx + 1]) for idx in range(0, len(raw), 2)]
+    )
 
 
 def piecewise_soc_from_voltage(
@@ -85,8 +79,7 @@ def piecewise_soc_from_voltage(
         return 1.0
     for (v0, p0), (v1, p1) in zip(curve, curve[1:]):
         if voltage_v <= v1:
-            span_v = max(1.0e-6, v1 - v0)
-            ratio = (float(voltage_v) - v0) / span_v
+            ratio = (float(voltage_v) - v0) / max(1.0e-6, v1 - v0)
             return clamp01(p0 + ratio * (p1 - p0))
     return 1.0
 
@@ -112,57 +105,48 @@ class BatteryEstimate:
 
 
 class BatteryEstimator:
+    """48 V LiFePO4 state from the ESP32's already-stabilized sample."""
+
     def __init__(
         self,
         *,
         soc_curve_points: Sequence[Tuple[float, float]] | None = None,
-        loaded_fast_tau_s: float = DEFAULT_LOADED_FAST_TAU_S,
-        loaded_slow_tau_s: float = DEFAULT_LOADED_SLOW_TAU_S,
-        recovered_tau_s: float = DEFAULT_RECOVERED_TAU_S,
-        soc_fast_discharge_tau_s: float = DEFAULT_SOC_FAST_DISCHARGE_TAU_S,
-        loaded_low_threshold_v: float = DEFAULT_LOADED_LOW_THRESHOLD_V,
-        recovered_low_threshold_v: float = DEFAULT_RECOVERED_LOW_THRESHOLD_V,
-        loaded_low_persist_s: float = DEFAULT_LOADED_LOW_PERSIST_S,
-        recovered_low_persist_s: float = DEFAULT_RECOVERED_LOW_PERSIST_S,
-        guard_clear_hysteresis_v: float = DEFAULT_GUARD_CLEAR_HYSTERESIS_V,
+        return_home_voltage_v: float = DEFAULT_RETURN_HOME_VOLTAGE_V,
+        return_home_persist_s: float = DEFAULT_RETURN_HOME_PERSIST_S,
+        guard_clear_voltage_v: float = DEFAULT_GUARD_CLEAR_VOLTAGE_V,
+        guard_clear_persist_s: float = DEFAULT_GUARD_CLEAR_PERSIST_S,
     ) -> None:
         self._soc_curve_points = _ensure_monotonic_curve(
             soc_curve_points or DEFAULT_OPERATOR_SOC_CURVE
         )
-        self._loaded_fast_tau_s = max(1.0e-6, float(loaded_fast_tau_s))
-        self._loaded_slow_tau_s = max(1.0e-6, float(loaded_slow_tau_s))
-        self._recovered_tau_s = max(1.0e-6, float(recovered_tau_s))
-        self._soc_fast_discharge_tau_s = max(1.0e-6, float(soc_fast_discharge_tau_s))
-        self._loaded_low_threshold_v = float(loaded_low_threshold_v)
-        self._recovered_low_threshold_v = float(recovered_low_threshold_v)
-        self._loaded_low_persist_required_s = max(0.0, float(loaded_low_persist_s))
-        self._recovered_low_persist_required_s = max(0.0, float(recovered_low_persist_s))
-        self._guard_clear_hysteresis_v = max(0.0, float(guard_clear_hysteresis_v))
-
-        self._loaded_voltage_fast_v: Optional[float] = None
-        self._loaded_voltage_slow_v: Optional[float] = None
-        self._recovered_voltage_v: Optional[float] = None
-        self._soc_voltage_v: Optional[float] = None
-        self._last_sample_time_s: Optional[float] = None
-        self._loaded_low_elapsed_s = 0.0
-        self._recovered_low_elapsed_s = 0.0
+        self._return_home_voltage_v = float(return_home_voltage_v)
+        self._return_home_persist_s = max(0.0, float(return_home_persist_s))
+        self._guard_clear_voltage_v = max(
+            self._return_home_voltage_v, float(guard_clear_voltage_v)
+        )
+        self._guard_clear_persist_s = max(0.0, float(guard_clear_persist_s))
+        self._last_sample_time_s: float | None = None
+        self._low_elapsed_s = 0.0
+        self._clear_elapsed_s = 0.0
         self._mission_guard_latched = False
 
     @property
     def loaded_low_threshold_v(self) -> float:
-        return self._loaded_low_threshold_v
+        """Compatibility name for the return-home voltage threshold."""
+        return self._return_home_voltage_v
 
     @property
     def recovered_low_threshold_v(self) -> float:
-        return self._recovered_low_threshold_v
+        """Compatibility name for the guard-clear voltage threshold."""
+        return self._guard_clear_voltage_v
 
     @property
     def loaded_low_persist_required_s(self) -> float:
-        return self._loaded_low_persist_required_s
+        return self._return_home_persist_s
 
     @property
     def recovered_low_persist_required_s(self) -> float:
-        return self._recovered_low_persist_required_s
+        return self._guard_clear_persist_s
 
     def update(
         self,
@@ -171,117 +155,53 @@ class BatteryEstimator:
         sample_time_s: float,
         traction_active: bool,
     ) -> BatteryEstimate:
-        raw_voltage_v = float(raw_voltage_v)
-        traction_active = bool(traction_active)
-        if (
-            self._loaded_voltage_fast_v is None
-            or self._loaded_voltage_slow_v is None
-            or self._recovered_voltage_v is None
-            or self._soc_voltage_v is None
-            or self._last_sample_time_s is None
-        ):
-            loaded_voltage_fast_v = raw_voltage_v
-            loaded_voltage_slow_v = raw_voltage_v
-            recovered_voltage_v = raw_voltage_v
-            soc_voltage_v = raw_voltage_v
-            dt_s = 0.0
-        else:
-            dt_s = max(0.0, float(sample_time_s) - float(self._last_sample_time_s))
-            loaded_voltage_fast_v = _ema(
-                self._loaded_voltage_fast_v,
-                raw_voltage_v,
-                dt_s,
-                self._loaded_fast_tau_s,
-            )
-            loaded_voltage_slow_v = _ema(
-                self._loaded_voltage_slow_v,
-                raw_voltage_v,
-                dt_s,
-                self._loaded_slow_tau_s,
-            )
-            if traction_active:
-                recovered_voltage_v = float(self._recovered_voltage_v)
-            else:
-                recovered_voltage_v = _ema(
-                    self._recovered_voltage_v,
-                    raw_voltage_v,
-                    dt_s,
-                    self._recovered_tau_s,
-                )
-
-            if traction_active:
-                soc_target_v = min(float(self._soc_voltage_v), loaded_voltage_slow_v)
-                soc_voltage_v = _ema(
-                    self._soc_voltage_v,
-                    soc_target_v,
-                    dt_s,
-                    self._soc_fast_discharge_tau_s,
-                )
-            else:
-                soc_voltage_v = _ema(
-                    self._soc_voltage_v,
-                    recovered_voltage_v,
-                    dt_s,
-                    self._recovered_tau_s,
-                )
-
-        if traction_active and loaded_voltage_slow_v <= self._loaded_low_threshold_v:
-            self._loaded_low_elapsed_s += dt_s
-        else:
-            self._loaded_low_elapsed_s = 0.0
-
-        if (not traction_active) and recovered_voltage_v <= self._recovered_low_threshold_v:
-            self._recovered_low_elapsed_s += dt_s
-        else:
-            self._recovered_low_elapsed_s = 0.0
+        voltage_v = float(raw_voltage_v)
+        dt_s = (
+            0.0
+            if self._last_sample_time_s is None
+            else max(0.0, float(sample_time_s) - self._last_sample_time_s)
+        )
 
         if not self._mission_guard_latched:
-            if self._loaded_low_elapsed_s >= self._loaded_low_persist_required_s:
-                self._mission_guard_latched = True
-            if self._recovered_low_elapsed_s >= self._recovered_low_persist_required_s:
+            self._clear_elapsed_s = 0.0
+            if voltage_v <= self._return_home_voltage_v:
+                self._low_elapsed_s += dt_s
+            else:
+                self._low_elapsed_s = 0.0
+            if self._low_elapsed_s >= self._return_home_persist_s:
                 self._mission_guard_latched = True
         else:
-            loaded_clear_v = self._loaded_low_threshold_v + self._guard_clear_hysteresis_v
-            recovered_clear_v = (
-                self._recovered_low_threshold_v + self._guard_clear_hysteresis_v
-            )
-            if (
-                loaded_voltage_slow_v >= loaded_clear_v
-                and recovered_voltage_v >= recovered_clear_v
-            ):
+            if voltage_v >= self._guard_clear_voltage_v:
+                self._clear_elapsed_s += dt_s
+            else:
+                self._clear_elapsed_s = 0.0
+            if self._clear_elapsed_s >= self._guard_clear_persist_s:
                 self._mission_guard_latched = False
-                self._loaded_low_elapsed_s = 0.0
-                self._recovered_low_elapsed_s = 0.0
+                self._low_elapsed_s = 0.0
+                self._clear_elapsed_s = 0.0
 
-        self._loaded_voltage_fast_v = loaded_voltage_fast_v
-        self._loaded_voltage_slow_v = loaded_voltage_slow_v
-        self._recovered_voltage_v = recovered_voltage_v
-        self._soc_voltage_v = soc_voltage_v
         self._last_sample_time_s = float(sample_time_s)
-
-        raw_percentage = piecewise_soc_from_voltage(raw_voltage_v, self._soc_curve_points)
-        filtered_percentage = piecewise_soc_from_voltage(
-            soc_voltage_v, self._soc_curve_points
-        )
+        percentage = piecewise_soc_from_voltage(voltage_v, self._soc_curve_points)
         mission_guard_state = (
             "LOW_ENERGY_GO_HOME" if self._mission_guard_latched else "OK"
         )
 
         return BatteryEstimate(
-            raw_voltage_v=raw_voltage_v,
-            filtered_voltage_v=loaded_voltage_slow_v,
-            loaded_voltage_fast_v=loaded_voltage_fast_v,
-            loaded_voltage_slow_v=loaded_voltage_slow_v,
-            recovered_voltage_v=recovered_voltage_v,
-            soc_voltage_v=soc_voltage_v,
-            raw_percentage=raw_percentage,
-            filtered_percentage=filtered_percentage,
-            operator_soc_pct=100.0 * filtered_percentage,
-            traction_active=traction_active,
+            raw_voltage_v=voltage_v,
+            filtered_voltage_v=voltage_v,
+            # Legacy fields mirror the calibrated ESP32 sample.
+            loaded_voltage_fast_v=voltage_v,
+            loaded_voltage_slow_v=voltage_v,
+            recovered_voltage_v=voltage_v,
+            soc_voltage_v=voltage_v,
+            raw_percentage=percentage,
+            filtered_percentage=percentage,
+            operator_soc_pct=100.0 * percentage,
+            traction_active=bool(traction_active),
             return_home_recommended=bool(self._mission_guard_latched),
             mission_guard_state=mission_guard_state,
-            loaded_low_persist_s=self._loaded_low_elapsed_s,
-            recovered_low_persist_s=self._recovered_low_elapsed_s,
+            loaded_low_persist_s=self._low_elapsed_s,
+            recovered_low_persist_s=self._clear_elapsed_s,
         )
 
 
@@ -292,6 +212,10 @@ def battery_state_label(
     link_fresh: bool,
     suspect: bool,
     mission_guard_state: str,
+    voltage_v: float,
+    low_voltage_v: float,
+    critical_voltage_v: float,
+    minimum_voltage_v: float,
 ) -> str:
     if not ready:
         return "UNAVAILABLE"
@@ -299,4 +223,12 @@ def battery_state_label(
         return "STALE"
     if suspect:
         return "SUSPECT"
-    return "LOW_ENERGY_GO_HOME" if mission_guard_state == "LOW_ENERGY_GO_HOME" else "OK"
+    if mission_guard_state == "LOW_ENERGY_GO_HOME":
+        return "LOW_ENERGY_GO_HOME"
+    if voltage_v < minimum_voltage_v:
+        return "BELOW_MINIMUM"
+    if voltage_v <= critical_voltage_v:
+        return "CRITICAL"
+    if voltage_v <= low_voltage_v:
+        return "LOW"
+    return "OK"

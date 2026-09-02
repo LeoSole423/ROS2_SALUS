@@ -134,6 +134,7 @@ def _fake_blocking_node() -> RouteExecutorNode:
     node.default_home_lon = float("nan")
     node.default_home_yaw_deg = 0.0
     node.low_battery_threshold_pct = 25.0
+    node.legacy_low_battery_percentage_fallback_enabled = False
     node.events = []
     node.brake_calls = 0
     node.brake_requests = []
@@ -1536,6 +1537,7 @@ def test_manual_takeover_clears_blocked_state():
 
 def test_low_battery_stops_non_loop_mission_without_returning_home():
     node = _fake_blocking_node()
+    node.legacy_low_battery_percentage_fallback_enabled = True
     node._mission_loop = False
     msg = BatteryState()
     msg.percentage = 0.2
@@ -1552,6 +1554,7 @@ def test_low_battery_stops_non_loop_mission_without_returning_home():
 
 def test_low_battery_requests_return_home_for_loop_mission():
     node = _fake_blocking_node()
+    node.legacy_low_battery_percentage_fallback_enabled = True
     node._mission_loop = True
     node._route_input = [
         RouteWaypoint(lat=0.0, lon=0.0, yaw_deg=0.0),
@@ -1585,16 +1588,16 @@ def test_battery_guard_requests_return_home_for_loop_mission() -> None:
     msg.state = "LOW_ENERGY_GO_HOME"
     msg.return_home_recommended = True
     msg.operator_soc_pct = 24.0
-    msg.recovered_voltage_v = 56.8
-    msg.loaded_voltage_slow_v = 56.4
-    msg.recovered_low_persist_s = 21.0
+    msg.recovered_voltage_v = 46.4
+    msg.loaded_voltage_slow_v = 46.4
+    msg.recovered_low_persist_s = 30.0
 
     RouteExecutorNode._on_battery_mission_guard(node, msg)
 
     assert node._battery_guard_seen is True
     assert node._mission_active is True
     assert node._return_home_requested is True
-    assert any(event[1] == "BATTERY_GUARD_RECOVERED_LOW" for event in node.events)
+    assert any(event[1] == "BATTERY_GUARD_LOW_VOLTAGE_SUSTAINED" for event in node.events)
 
 
 def test_battery_guard_disables_legacy_percentage_trigger_once_seen() -> None:
@@ -1611,6 +1614,16 @@ def test_battery_guard_disables_legacy_percentage_trigger_once_seen() -> None:
     RouteExecutorNode._on_battery_state(node, msg)
 
     assert node._battery_guard_seen is True
+    assert node._low_battery_active is False
+
+
+def test_percentage_fallback_is_disabled_by_default() -> None:
+    node = _fake_blocking_node()
+    msg = BatteryState()
+    msg.percentage = 0.0
+
+    RouteExecutorNode._on_battery_state(node, msg)
+
     assert node._low_battery_active is False
 
 

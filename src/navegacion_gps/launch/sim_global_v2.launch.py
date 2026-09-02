@@ -693,7 +693,7 @@ def generate_launch_description():
                         "nav_telemetry_topic": "/nav_command_server/telemetry",
                         "battery_state_topic": "/battery_state",
                         "battery_guard_topic": "/battery_mission_guard",
-                        "low_battery_threshold_pct": 25.0,
+                        "legacy_low_battery_percentage_fallback_enabled": False,
                         "set_route_service": "/route_executor/set_route_ll",
                         "cancel_route_service": "/route_executor/cancel_route",
                         "get_state_service": "/route_executor/get_state",

@@ -1354,6 +1354,7 @@ class RouteExecutorNode(Node):
         self.declare_parameter("nav_brake_service", "/nav_command_server/brake")
         self.declare_parameter("battery_state_topic", "/battery_state")
         self.declare_parameter("battery_guard_topic", "/battery_mission_guard")
+        self.declare_parameter("legacy_low_battery_percentage_fallback_enabled", False)
         self.declare_parameter("low_battery_threshold_pct", 25.0)
         self.declare_parameter("default_home_lat", float("nan"))
         self.declare_parameter("default_home_lon", float("nan"))
@@ -1459,6 +1460,9 @@ class RouteExecutorNode(Node):
         self.nav_brake_service = str(self.get_parameter("nav_brake_service").value)
         self.battery_state_topic = str(self.get_parameter("battery_state_topic").value)
         self.battery_guard_topic = str(self.get_parameter("battery_guard_topic").value)
+        self.legacy_low_battery_percentage_fallback_enabled = bool(
+            self.get_parameter("legacy_low_battery_percentage_fallback_enabled").value
+        )
         self.low_battery_threshold_pct = max(
             0.0, min(100.0, float(self.get_parameter("low_battery_threshold_pct").value))
         )
@@ -2973,7 +2977,9 @@ class RouteExecutorNode(Node):
         percentage = max(0.0, min(100.0, percentage))
         with self._lock:
             self._battery_pct = float(percentage)
-            if self._battery_guard_seen:
+            if self._battery_guard_seen or not bool(
+                getattr(self, "legacy_low_battery_percentage_fallback_enabled", False)
+            ):
                 return
         if percentage > float(self.low_battery_threshold_pct):
             return
@@ -3031,16 +3037,6 @@ class RouteExecutorNode(Node):
             getattr(msg, "recovered_voltage_v", 0.0) or 0.0
         )
 
-        trigger_code = "BATTERY_GUARD_RECOVERED_LOW"
-        trigger_message = "Battery guard requested return home after low recovered voltage"
-        if bool(getattr(msg, "traction_active", False)) and (
-            loaded_low_persist_s >= recovered_low_persist_s
-        ):
-            trigger_code = "BATTERY_GUARD_LOADED_LOW_SUSTAINED"
-            trigger_message = (
-                "Battery guard requested return home after sustained low loaded voltage"
-            )
-
         battery_pct = (
             max(0.0, min(100.0, operator_soc_pct))
             if np.isfinite(operator_soc_pct)
@@ -3048,8 +3044,8 @@ class RouteExecutorNode(Node):
         )
         self._activate_low_battery_response(
             battery_pct=battery_pct,
-            detected_event_code=trigger_code,
-            detected_message=trigger_message,
+            detected_event_code="BATTERY_GUARD_LOW_VOLTAGE_SUSTAINED",
+            detected_message="Battery guard requested return home after sustained low voltage",
             detected_details={
                 "battery_pct": f"{battery_pct:.1f}",
                 "state": state,

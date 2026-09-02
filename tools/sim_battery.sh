@@ -21,8 +21,8 @@ Uso:
 Ejemplos:
   ./tools/sim_battery.sh preset full
   ./tools/sim_battery.sh preset under_load
-  ./tools/sim_battery.sh set 57.0 56.2 --traction on
-  ./tools/sim_battery.sh set 60.0 59.8 --traction off --ready on --fresh on --suspect off
+  ./tools/sim_battery.sh set 46.4 46.4 --traction on
+  ./tools/sim_battery.sh set 53.5 53.3 --traction off --ready on --fresh on --suspect off
 EOF
 }
 

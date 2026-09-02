@@ -56,35 +56,26 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
 - `estop_brake_pct`
 - `battery_state_topic`
 - `battery_guard_topic`
-- `battery_full_voltage` (default operativo en reposo: `60.0 V`; el pico de carga alto puede ser mayor)
-- `battery_empty_voltage`
-- `battery_low_voltage`
-- `battery_critical_voltage`
+- `battery_full_voltage` (referencia superior: `53.5 V`)
+- `battery_empty_voltage` (mínimo especificado: `44.5 V`)
+- `battery_low_voltage` (advertencia: `47.0 V`)
+- `battery_critical_voltage` (zona de protección VOTOL: `45.0 V`)
 - `battery_telemetry_stale_timeout_s`
 - `battery_soc_curve_points`
-- `battery_loaded_fast_tau_s`
-- `battery_loaded_slow_tau_s`
-- `battery_recovered_tau_s`
-- `battery_soc_discharge_tau_s`
-- `battery_guard_loaded_low_voltage`
-- `battery_guard_recovered_low_voltage`
-- `battery_guard_loaded_low_persist_s`
-- `battery_guard_recovered_low_persist_s`
+- `battery_return_home_voltage` (default `46.5 V`)
+- `battery_return_home_persist_s` (default `30 s`)
+- `battery_guard_clear_voltage` (default `48.0 V`)
+- `battery_guard_clear_persist_s` (default `30 s`)
 
 ## Batería real
-- La ESP32 publica por UART una medición calibrada de voltaje (`battery_cv`) y la edad de muestra.
-- `controller_server` separa batería en dos lógicas:
-  - **SOC de operador**: `%` suave publicado en `/battery_state`
-  - **guardia de misión**: recomendación de `return_home` publicada en `/battery_mission_guard`
-- `/battery_state` publica `voltage=filtered_voltage_v` y `percentage=SOC de operador`.
-- `/battery_mission_guard` publica si la misión debería volver a HOME usando persistencia temporal y voltajes de carga/recuperación.
+- La ESP32 publica por UART una medición de voltaje ya calibrada y estabilizada (`battery_cv`) y la edad de muestra.
+- `controller_server` usa esa muestra directamente: no aplica filtros temporales específicos de la batería de plomo anterior.
+- `/battery_state` publica el voltaje actual y un porcentaje aproximado para el operador; en LiFePO4 el voltaje es la referencia operativa.
+- `/battery_mission_guard` recomienda volver a HOME sólo tras `30 s` continuos a `<=46.5 V`; se limpia tras `30 s` a `>=48.0 V`.
 - `/controller/telemetry` conserva el voltaje crudo recibido por UART y agrega:
   - `raw_voltage_v`
   - `filtered_voltage_v`
-  - `loaded_voltage_fast_v`
-  - `loaded_voltage_slow_v`
-  - `recovered_voltage_v`
-  - `soc_voltage_v`
+  - `loaded_voltage_fast_v`, `loaded_voltage_slow_v`, `recovered_voltage_v` y `soc_voltage_v` se conservan por compatibilidad y reflejan la muestra actual
   - `operator_soc_pct`
   - `traction_active`
   - `mission_guard_state`
@@ -111,8 +102,7 @@ Paquete ROS 2 para traducir `/cmd_vel_final` al backend de actuación del vehíc
   - `suspect`
   - `unavailable`
 - Tiempos esperados de guardia:
-  - `return_home_rest`: alrededor de `20 s`
-  - `return_home_load`: alrededor de `90 s`
+  - `return_home_rest` y `return_home_load`: alrededor de `30 s`
 
 ## Launch
 ```bash
@@ -146,8 +136,8 @@ Control de batería simulada desde el host:
 ./tools/sim_battery.sh preset stale
 ./tools/sim_battery.sh preset suspect
 ./tools/sim_battery.sh preset unavailable
-./tools/sim_battery.sh set 57.0 56.2 --traction on
-./tools/sim_battery.sh set 60.0 59.8 --traction off
+./tools/sim_battery.sh set 46.4 46.4 --traction on
+./tools/sim_battery.sh set 53.5 53.3 --traction off
 ```
 
 ## Validación

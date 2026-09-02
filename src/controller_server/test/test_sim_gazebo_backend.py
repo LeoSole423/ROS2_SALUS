@@ -321,8 +321,8 @@ def test_sim_gazebo_backend_battery_preset_generates_loaded_voltage() -> None:
     assert battery.fresh is True
     assert battery.suspect is False
     assert battery.calibrated is True
-    assert battery.battery_voltage_v == pytest.approx(59.3)
-    assert battery.adc_pin_voltage_v == pytest.approx(59.3 / 25.0)
+    assert battery.battery_voltage_v == pytest.approx(50.0)
+    assert battery.adc_pin_voltage_v == pytest.approx(50.0 / 25.0)
 
 
 def test_sim_gazebo_backend_battery_state_uses_recovered_voltage_when_traction_disabled() -> None:
@@ -345,8 +345,8 @@ def test_sim_gazebo_backend_battery_state_uses_recovered_voltage_when_traction_d
     )
 
     backend.set_sim_battery_state(
-        recovered_voltage_v=57.0,
-        loaded_voltage_v=56.2,
+        recovered_voltage_v=47.0,
+        loaded_voltage_v=46.2,
         traction_active_override=False,
         ready=True,
         fresh=False,
@@ -355,7 +355,7 @@ def test_sim_gazebo_backend_battery_state_uses_recovered_voltage_when_traction_d
     battery = backend.get_latest_battery_telemetry()
 
     assert battery is not None
-    assert battery.battery_voltage_v == pytest.approx(57.0)
+    assert battery.battery_voltage_v == pytest.approx(47.0)
     assert battery.ready is True
     assert battery.fresh is False
     assert battery.suspect is True
